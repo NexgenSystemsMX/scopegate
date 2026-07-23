@@ -15,4 +15,9 @@ if [ "${SCOPEGATE_SEED_DEMO:-0}" = "1" ] && [ ! -f "$SCOPEGATE_HOME/scopegate.ya
   node /app/docker/seed-demo.mjs
 fi
 
+# Production bootstrap (EPIC-19): deposits staged secrets into the vault and
+# wires the real ecosystem upstreams. No-op unless SCOPEGATE_BOOTSTRAP_SECRETS
+# is set; idempotent per item (keep-first).
+node /app/docker/bootstrap-prod.mjs
+
 exec node dist/cli.js "$@"
