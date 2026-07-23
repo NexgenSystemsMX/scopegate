@@ -136,19 +136,28 @@ async function main() {
   assert.ok(JSON.stringify(repo).length > 50, `repo read too small: ${JSON.stringify(repo).slice(0, 150)}`);
   pass("GitHub get_file_contents reads NexgenSystemsMX/huly-platform (installation token)");
 
-  /* -------------------- Cloudflare / Google: waiting -------------------- */
+  /* --------------------------- Cloudflare (live) ------------------------ */
+  await cap("cloudflare:call:list_zones");
+  const zones = parse(await client.callTool({ name: "cloudflare__list_zones", arguments: {} }));
+  const zoneList = zones.zones ?? [];
+  assert.ok(zoneList.length > 0, `expected >=1 Cloudflare zone: ${JSON.stringify(zones).slice(0, 200)}`);
+  assert.ok(
+    zoneList.every((z) => typeof z.name === "string" && typeof z.status === "string"),
+    `zone shape unexpected: ${JSON.stringify(zones).slice(0, 200)}`,
+  );
+  pass(`Cloudflare list_zones: ${zoneList.length} zone(s) live (scoped token)`);
+
+  /* ---------------------- Google: waiting for secrets ------------------- */
   const diag = parse(await client.callTool({ name: "scopegate_diagnose", arguments: {} }));
-  for (const up of ["cloudflare", "google"]) {
-    const entry = diag.upstreams?.[up];
-    assert.ok(entry, `diagnose missing upstream '${up}'`);
-    assert.equal(entry.ok, false, `${up} should be waiting for secrets`);
-    assert.match(
-      String(entry.error ?? ""),
-      /secret add|not found/i,
-      `${up} error must be actionable about the missing secret: ${entry.error}`,
-    );
-  }
-  pass("Cloudflare/Google report actionable waiting-for-secrets state");
+  const gEntry = diag.upstreams?.google;
+  assert.ok(gEntry, "diagnose missing upstream 'google'");
+  assert.equal(gEntry.ok, false, "google should be waiting for secrets");
+  assert.match(
+    String(gEntry.error ?? ""),
+    /secret add|not found/i,
+    `google error must be actionable about the missing secret: ${gEntry.error}`,
+  );
+  pass("Google reports actionable waiting-for-secrets state");
 
   /* ---------------------------- secret hygiene -------------------------- */
   const hygieneText = JSON.stringify({ projects, status, domain, repo, found, created, comment });
