@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 — MCP Tools Reference — ScopeGate Docs</title>
+<meta name="description" content="Exact reference of the six scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gateway">
+<link rel="canonical" href="https://scopegate.io/docs/agents/03-tools-reference">
+<meta property="og:title" content="03 — MCP Tools Reference — ScopeGate Docs">
+<meta property="og:description" content="Exact reference of the six scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gateway">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agents/03-tools-reference">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>03 — MCP Tools Reference</span></nav>
+  <article>
+<h1 id="03-mcp-tools-reference">03 — MCP Tools Reference</h1>
+<p>Exact reference of the six <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
+<h2 id="response-conventions">Response conventions</h2>
+<p>Every management tool returns its payload as pretty-printed JSON in <code>content[0].text</code> — parse it as JSON. Failures are tool errors: text <code>&quot;ERROR: &lt;actionable message&gt;&quot;</code>, <code>isError: true</code>; stack traces never reach you. Three fail-closed gates can deny ANY call: <strong>agent suspended</strong> (honeytoken) and <strong>agent revoked by ScopeGate Cloud</strong> deny everything until a human intervenes; <strong>audit unavailable</strong> denies the action.</p>
+<h2 id="scopegate-request-capability">scopegate_request_capability</h2>
+<p>Request an ephemeral grant before privileged work. Capability format: <code>&lt;upstream&gt;:&lt;action&gt;:&lt;resource&gt;</code>. Request the MINIMUM scope and SHORTEST TTL.</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>capability</code></td><td>string</td><td>yes</td><td>e.g. <code>github:write:easyorder/*</code></td></tr><tr><td><code>ttl</code></td><td>string</td><td>no</td><td><code>&#39;&lt;n&gt;s&#39;</code>, <code>&#39;&lt;n&gt;m&#39;</code> or <code>&#39;&lt;n&gt;h&#39;</code>; the policy ceiling always wins</td></tr><tr><td><code>reason</code></td><td>string</td><td>yes</td><td>one line; recorded in the audit log</td></tr></tbody></table>
+<p><strong>Response — granted</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;granted&quot;: true, &quot;capability&quot;: &quot;github:write:easyorder/*&quot;, &quot;expires_in_seconds&quot;: 900, &quot;matched_rule&quot;: &quot;github:write:easyorder/*&quot; }</code></pre>
+<p><code>expires_in_seconds</code> = <code>min(requested, rule/default ceiling, limits.max_ttl)</code> (default 15m). Re-requesting a held capability is idempotent (<code>matched_rule</code> may be <code>&quot;existing_grant&quot;</code>).</p>
+<p><strong>Response — pending_human_approval</strong></p>
+<pre class="code" data-lang="json"><code>{
+  &quot;granted&quot;: false,
+  &quot;status&quot;: &quot;pending_human_approval&quot;,
+  &quot;approval_id&quot;: &quot;3f6b8c2e-1a2d-4e5f-9a0b-7c8d9e0f1a2b&quot;,
+  &quot;approval_expires_at&quot;: &quot;2026-07-23T18:20:11.492Z&quot;,
+  &quot;reason&quot;: &quot;Capability &#39;aws:deploy:prod&#39; matches &#39;aws:deploy:*&#39; which requires human approval.&quot;,
+  &quot;instructions&quot;: &quot;A human must approve this request. Ask them to run in their terminal: scopegate approve 3f6b8c2e-… (or: scopegate deny 3f6b8c2e-…). Once approved, call scopegate_request_capability again with the SAME capability — do NOT retry with broader scope.&quot;,
+  &quot;next_step&quot;: &quot;Ask the human to approve this action, or wait for approval.&quot;
+}</code></pre>
+<p>STOP and relay the exact <code>scopegate approve &lt;approval_id&gt;</code> command. The request expires after <code>approval_ttl</code> (default 10m; <code>approval_expires_at</code> omitted when unset). Once approved, re-call with the SAME capability — never broader or reworded.</p>
+<p><strong>Response — denied</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;granted&quot;: false, &quot;code&quot;: &quot;no_rule&quot;, &quot;reason&quot;: &quot;No auto_approve rule matches &#39;stripe:write:*&#39; for agent &#39;kimi-code&#39;.&quot;, &quot;next_step&quot;: &quot;Call scopegate_propose_policy with a justification; a human will review it.&quot; }</code></pre>
+<table><thead><tr><th><code>code</code></th><th>meaning</th></tr></thead><tbody><tr><td><code>no_policy</code></td><td>no policy section covers your agent id at all</td></tr><tr><td><code>no_rule</code></td><td>no <code>auto_approve</code> rule matches the capability</td></tr><tr><td><code>ceiling_blocked</code></td><td>hit a hard-limit <code>deny</code> glob — non-negotiable; <code>next_step</code> tells you not to retry</td></tr><tr><td><code>invalid_ttl</code></td><td>your <code>ttl</code> was not <code>&#39;&lt;n&gt;s&#39;/&#39;&lt;n&gt;m&#39;/&#39;&lt;n&gt;h&#39;</code></td></tr><tr><td><code>config_error</code></td><td>broken human-written policy value (fail-closed)</td></tr><tr><td><code>capability_rate_limited</code></td><td>exceeded the request rate limit (default <code>30/m</code>); back off — do NOT loop</td></tr></tbody></table>
+<p>Tool errors: <code>Missing required argument &#39;capability&#39; …</code> / <code>&#39;reason&#39; …</code> (fix the call); <code>… references honeytoken &#39;&lt;ref&gt;&#39; …</code> (canary mentioned; incident recorded).</p>
+<p><strong>Example call</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 1, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_request_capability&quot;,
+              &quot;arguments&quot;: { &quot;capability&quot;: &quot;github:write:easyorder/*&quot;, &quot;ttl&quot;: &quot;15m&quot;, &quot;reason&quot;: &quot;Push the fix branch and open a PR&quot; } } }</code></pre>
+<h2 id="scopegate-list-capabilities">scopegate_list_capabilities</h2>
+<p>List your active (non-expired) grants with remaining TTL. No arguments.</p>
+<pre class="code" data-lang="json"><code>{ &quot;agentId&quot;: &quot;kimi-code&quot;,
+  &quot;active_grants&quot;: [ { &quot;id&quot;: &quot;9d1e0b3a-…&quot;, &quot;capability&quot;: &quot;github:call:create_pull_request&quot;, &quot;remaining_seconds&quot;: 812 } ] }</code></pre>
+<p><code>id</code> is the grant&#39;s UUID; <code>remaining_seconds</code> is clamped at 0. Example call: <code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 2, &quot;method&quot;: &quot;tools/call&quot;, &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_list_capabilities&quot;, &quot;arguments&quot;: {} } }</code></p>
+<h2 id="scopegate-register-upstream">scopegate_register_upstream</h2>
+<p>Register a new upstream behind the gateway. Two envelopes — pass EITHER <code>from_registry</code> alone (1-click; name/transport/auth come from the signed, verified manifest) OR <code>name</code> + <code>transport</code> + <code>auth</code> manually. NEVER pass a secret value — only secretRef NAMES.</p>
+<table><thead><tr><th>field</th><th>type</th><th>notes</th></tr></thead><tbody><tr><td><code>from_registry</code></td><td>string</td><td>envelope A; e.g. <code>github</code>, <code>aws</code>, <code>notion</code>, <code>supabase</code>, <code>stripe</code>; fail-closed on tampered/unknown entries</td></tr><tr><td><code>name</code></td><td>string</td><td>envelope B; lowercase, digits, <code>_</code>, <code>-</code>; tools exposed as <code>&lt;name&gt;__&lt;tool&gt;</code></td></tr><tr><td><code>transport</code></td><td>object</td><td>envelope B; <code>{kind:&quot;http&quot;, url}</code> or <code>{kind:&quot;stdio&quot;, command, args?}</code></td></tr><tr><td><code>auth</code></td><td>object</td><td>envelope B; <code>{type:&quot;bearer&quot;, secretRef, header?, scheme?}</code> · <code>{type:&quot;oauth2&quot;, secretRef}</code> · <code>{type:&quot;env&quot;, env:{ENV_VAR: secretRef}}</code> · <code>{type:&quot;none&quot;}</code></td></tr></tbody></table>
+<p><strong>Response — registered</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;registered&quot;: &quot;grafana&quot;, &quot;connection&quot;: { &quot;ok&quot;: true, &quot;tools&quot;: 14 } }</code></pre>
+<p><code>connection</code> is a live probe (<code>{ok:true, tools:n}</code> or <code>{ok:false, error:&quot;…&quot;}</code>); the upstream is saved either way and the proxy (re)connects lazily on first call.</p>
+<p><strong>Response — waiting_for_secrets</strong></p>
+<pre class="code" data-lang="json"><code>{
+  &quot;registered&quot;: &quot;github&quot;,
+  &quot;status&quot;: &quot;waiting_for_secrets&quot;,
+  &quot;from_registry&quot;: &quot;github&quot;,
+  &quot;setup_hints&quot;: { &quot;github_token&quot;: &quot;&lt;hint text from the registry manifest&gt;&quot; },
+  &quot;action_required&quot;: &quot;Ask the human to run in their terminal: scopegate secret add github_token  — then call scopegate_diagnose.&quot;
+}</code></pre>
+<p>Relay <code>action_required</code> verbatim: the human runs <code>scopegate secret add &lt;ref&gt;</code> in THEIR terminal — never in chat. <code>from_registry</code>/<code>setup_hints</code> appear only for registry registrations.</p>
+<p>Tool errors: <code>Registry entry &#39;&lt;x&gt;&#39; could not be verified — nothing was registered (fail-closed): …</code> · <code>Invalid or missing &#39;name&#39; …</code> · <code>Invalid or missing &#39;transport.kind&#39; …</code> · <code>Missing &#39;transport.url&#39; …</code> · <code>Missing &#39;transport.command&#39; …</code> · <code>auth.secretRef is required</code> · <code>secretRef looks like a raw secret value. …</code> / <code>env value &#39;…&#39; looks like a raw secret. …</code> (heuristic: length &gt; 40, an <code>sk-</code>/<code>ghp_</code>/<code>gho_</code>/<code>xox[bap]-</code>/<code>AKIA</code>/<code>AIza</code>/<code>eyJ</code> prefix, or ≥32-char base64 run — pass a NAME) · <code>Registration denied: &#39;&lt;ref&gt;&#39; is a honeytoken. …</code></p>
+<p><strong>Example call</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 3, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_register_upstream&quot;,
+              &quot;arguments&quot;: { &quot;name&quot;: &quot;grafana&quot;, &quot;transport&quot;: { &quot;kind&quot;: &quot;http&quot;, &quot;url&quot;: &quot;https://g.example.com/mcp&quot; }, &quot;auth&quot;: { &quot;type&quot;: &quot;bearer&quot;, &quot;secretRef&quot;: &quot;grafana_token&quot; } } } }</code></pre>
+<h2 id="scopegate-diagnose">scopegate_diagnose</h2>
+<p>Health-check every enabled upstream (bounded liveness probe + tool count). Call it FIRST on any connection/auth error: a failed connection is dropped and re-established with fresh credentials on the next call. No arguments; never rejects. See <a href="/docs/agents/06-self-repair">06 — Self-Repair</a>.</p>
+<p><strong>Response</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;upstreams&quot;: {
+    &quot;github&quot;: { &quot;ok&quot;: true, &quot;tools&quot;: 42, &quot;mode&quot;: &quot;minted:github_app&quot; },
+    &quot;notion&quot;: { &quot;ok&quot;: true, &quot;tools&quot;: 12, &quot;mode&quot;: &quot;fallback:injection&quot;,
+                &quot;oauth&quot;: { &quot;state&quot;: &quot;needs_reauth&quot;, &quot;token_expires_in_s&quot;: null, &quot;consecutive_failures&quot;: 3 },
+                &quot;action_required&quot;: &quot;run in your terminal: scopegate auth login notion&quot; },
+    &quot;railway&quot;: { &quot;ok&quot;: false, &quot;error&quot;: &quot;health probe of upstream &#39;railway&#39; timed out after 10000 ms&quot;, &quot;mode&quot;: &quot;fallback:injection&quot; } } }</code></pre>
+<p>Per-upstream fields: <code>ok</code> + <code>tools</code> (count) or <code>ok:false</code> + <code>error</code>; <code>mode</code> is <code>none</code> · <code>minted:&lt;provider&gt;</code> (<code>jwt</code>, <code>github_app</code>, <code>aws_sts</code>, <code>huly</code>, <code>google_sa</code>) · <code>fallback:injection</code>. <code>oauth</code> (oauth2 upstreams only): <code>state</code> ∈ <code>ok</code>, <code>backoff</code>, <code>circuit_open</code>, <code>needs_reauth</code>, <code>unknown_expiry</code>; plus <code>token_expires_in_s</code> (null when unknown), <code>consecutive_failures</code>, optional <code>last_refresh_at</code>/<code>next_refresh_in_s</code>. <code>action_required</code> appears when <code>state</code> is <code>needs_reauth</code> — relay verbatim (human-only device-code login). <code>pool</code>: <code>{size, inUse, hits}</code> when pooled. Example call: <code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 4, &quot;method&quot;: &quot;tools/call&quot;, &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_diagnose&quot;, &quot;arguments&quot;: {} } }</code></p>
+<h2 id="scopegate-propose-policy">scopegate_propose_policy</h2>
+<p>Propose a policy rule when a needed capability is denied. Validated, deduplicated, linted against hard limits and appended to <code>policies.pending.yaml</code> (under <code>~/.scopegate</code> by default) for HUMAN review — it NEVER changes live policy. Only <code>{match, ttl}</code> are agent-settable.</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>match</code></td><td>string</td><td>yes</td><td>capability glob, e.g. <code>stripe:read:*</code> (must compile)</td></tr><tr><td><code>ttl</code></td><td>string</td><td>no</td><td>suggested ceiling, <code>&#39;&lt;n&gt;s&#39;/&#39;&lt;n&gt;m&#39;/&#39;&lt;n&gt;h&#39;</code></td></tr><tr><td><code>justification</code></td><td>string</td><td>yes</td><td>a human reads this — explain why it is needed</td></tr></tbody></table>
+<p><strong>Response</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;queued&quot;: true, &quot;deduped&quot;: false, &quot;pending_file&quot;: &quot;/home/user/.scopegate/policies.pending.yaml&quot;,
+  &quot;note&quot;: &quot;A human must review and merge this into policies.yaml. It has NO effect until then.&quot; }</code></pre>
+<p>An identical pending proposal (same agent, <code>match</code>, <code>ttl</code>) returns <code>&quot;queued&quot;: false, &quot;deduped&quot;: true</code>. A proposal colliding with hard limits is queued but flagged <code>&quot;lint&quot;: &quot;conflicts_with_limits&quot;</code> (+ <code>lint_note</code>). Tell the human: <code>scopegate policies review</code>, then <code>scopegate policies accept &lt;n&gt;</code> (or <code>reject &lt;n&gt;</code>). See <a href="/docs/agents/05-policies">05 — Policies</a>.</p>
+<p>Tool errors: <code>Missing required argument &#39;match&#39; …</code> / <code>&#39;justification&#39; …</code> · <code>Proposal rejected: field &#39;&lt;x&gt;&#39; is not agent-settable. …</code> · <code>Proposal rejected: match: invalid glob …</code> / <code>Proposal rejected: Invalid ttl &#39;1d&#39; — expected &#39;&lt;n&gt;s&#39;, &#39;&lt;n&gt;m&#39; or &#39;&lt;n&gt;h&#39; …</code></p>
+<p><strong>Example call</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 5, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_propose_policy&quot;,
+              &quot;arguments&quot;: { &quot;match&quot;: &quot;stripe:read:*&quot;, &quot;ttl&quot;: &quot;10m&quot;, &quot;justification&quot;: &quot;Read invoices to reconcile payout report #4821&quot; } } }</code></pre>
+<h2 id="scopegate-vault-status">scopegate_vault_status</h2>
+<p>List the secret REF NAMES in the vault — never values. Check it before registering an upstream so you pick an existing secretRef. No arguments. A missing ref means asking the human to run <code>scopegate secret add &lt;ref&gt;</code> in their terminal.</p>
+<pre class="code" data-lang="json"><code>{ &quot;secret_refs&quot;: [&quot;github_token&quot;, &quot;grafana_token&quot;, &quot;railway_api_token&quot;] }</code></pre>
+<p>Example call: <code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 6, &quot;method&quot;: &quot;tools/call&quot;, &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_vault_status&quot;, &quot;arguments&quot;: {} } }</code></p>
+<h2 id="proxied-tools-upstream-tool">Proxied tools: <code>&lt;upstream&gt;__&lt;tool&gt;</code></h2>
+<p><code>tools/list</code> returns the six management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
+<p>Every proxied call maps to the capability <code>&lt;upstream&gt;:call:&lt;toolName&gt;</code>. The gateway checks a live covering grant first; with none, it attempts an IMPLICIT request that succeeds only via an <code>auto_approve</code> rule. A denied call is a tool error:</p>
+<pre class="code" data-lang="text"><code>ERROR: Capability &#39;grafana:call:query&#39; not granted. Call scopegate_request_capability first (or scopegate_propose_policy if denied). Reason: No auto_approve rule matches &#39;grafana:call:query&#39; for agent &#39;kimi-code&#39;.</code></pre>
+<p>If the denial escalated, it appends <code> Approval request &lt;id&gt; is pending — ask the human to run: scopegate approve &lt;id&gt;</code>. Unknown names yield <code>ERROR: Unknown tool &#39;&lt;name&gt;&#39;</code>. Correct flow — request explicitly FIRST (the reason lands in the audit log), then call:</p>
+<pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 7, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_request_capability&quot;,
+              &quot;arguments&quot;: { &quot;capability&quot;: &quot;github:call:create_pull_request&quot;, &quot;reason&quot;: &quot;Open the fix PR&quot; } } }
+{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 8, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;github__create_pull_request&quot;,
+              &quot;arguments&quot;: { &quot;owner&quot;: &quot;easyorder&quot;, &quot;repo&quot;: &quot;api&quot;, &quot;title&quot;: &quot;fix&quot;, &quot;head&quot;: &quot;fix/x&quot;, &quot;base&quot;: &quot;main&quot; } } }</code></pre>
+<p>Under the hood: credentials are minted/injected per call with <code>token_ttl = min(provider ceiling, remaining grant TTL)</code>, failed calls reconnect/retry transparently (bounded), and the issuing rule&#39;s <code>redact: [...]</code> categories are applied to the response first.</p>
+<p>Related: <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> · <a href="/docs/agents/05-policies">05 — Policies</a> · <a href="/docs/agents/06-self-repair">06 — Self-Repair</a> · <a href="/docs/agents/07-security-rules">07 — Security Rules</a> · <a href="/docs/agents/">Index</a></p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/agents/02-protocol">← 02 — The Agent Protocol: Operating Behind the Gateway</a><a class="next" href="/docs/agents/04-connectors">04 — Connectors: native upstreams and how to add new ones →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

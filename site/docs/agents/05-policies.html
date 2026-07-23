@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05 — Policies: how to request well and propose new rules — ScopeGate Docs</title>
+<meta name="description" content="policies.yaml is the contract between you (the agent) and the human who owns the machine. It decides which capabilities you get, with what TTL, and which ones e">
+<link rel="canonical" href="https://scopegate.io/docs/agents/05-policies">
+<meta property="og:title" content="05 — Policies: how to request well and propose new rules — ScopeGate Docs">
+<meta property="og:description" content="policies.yaml is the contract between you (the agent) and the human who owns the machine. It decides which capabilities you get, with what TTL, and which ones e">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agents/05-policies">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>05 — Policies: how to request well and propose new rules</span></nav>
+  <article>
+<h1 id="05-policies-how-to-request-well-and-propose-new-rules">05 — Policies: how to request well and propose new rules</h1>
+<p><code>policies.yaml</code> is the contract between you (the agent) and the human who owns the machine. It decides which capabilities you get, with what TTL, and which ones escalate to a human. <strong>You never edit this file.</strong> You read it to know what is already allowed, you request capabilities against it, and when nothing matches you <em>propose</em> a new rule that a human reviews.</p>
+<p>Write asymmetry, non-negotiable:</p>
+<ul><li><strong>Humans</strong> edit <code>~/.scopegate/policies.yaml</code>, run <code>scopegate secret add</code>,</li></ul>
+<p>  <code>scopegate approve &lt;id&gt;</code>, and <code>scopegate policies accept|reject</code>.</p>
+<ul><li><strong>You</strong> call <code>scopegate_request_capability</code> and <code>scopegate_propose_policy</code>.</li></ul>
+<p>  Nothing you do can widen your own access.</p>
+<h2 id="1-anatomy-of-policies-yaml">1. Anatomy of <code>policies.yaml</code></h2>
+<p>Annotated from the shipped <code>policies.example.yaml</code>:</p>
+<pre class="code" data-lang="yaml"><code>version: 1                    # REQUIRED, must be exactly 1 — anything else fails load (fail-closed).
+
+limits:                       # OPTIONAL global hard ceilings (see §4).
+  max_ttl: 1h                 #   No grant ever exceeds this, whatever anyone asks for.
+  deny:                       #   Globs blocked BEFORE any auto_approve rule is evaluated.
+    - &quot;aws:*:production&quot;      #   Fail-closed; audit records `ceiling_blocked`.
+  rate_limit: 30/m            #   Sliding window on scopegate_request_capability, per agent.
+  approval_ttl: 10m           #   How long a pending human-approval request lives (default 10m).
+
+agents:
+  agent-luis-nexgen:          # Your agent id (config.agentId). Exact name match wins…
+    default_ttl: 15m          # TTL ceiling for rules that don&#39;t set their own `ttl`.
+    limits:                   # OPTIONAL per-agent ceilings — WIN over the global ones.
+      max_ttl: 30m
+      deny: [&quot;stripe:write:*&quot;]
+    capabilities:             # Rule list, evaluated top to bottom — FIRST MATCH WINS.
+      - match: &quot;github:call:{get_*,list_*,search_*}&quot;   # picomatch braces: read-only tools.
+        auto_approve: true                             #   granted silently, ceiling 15m (default_ttl).
+      - match: &quot;github:call:*&quot;                         # everything else on github…
+        auto_approve: true
+        ttl: 5m                                        #   …but with a shorter 5m ceiling.
+      - match: &quot;support:call:get_customer&quot;
+        auto_approve: true
+        ttl: 5m
+        redact: [pii]                                  # proxied RESPONSES are masked (see §5).
+      - match: &quot;aws:*:production&quot;                      # placed BEFORE any broader auto rule —
+        require: human_approval                        #   matching stops here and escalates.
+  &quot;*&quot;:                        # …otherwise the &quot;*&quot; fallback applies to any agent without an entry.
+    default_ttl: 5m
+    capabilities:
+      - match: &quot;*:call:{get_*,list_*,search_*,read_*}&quot;
+        auto_approve: true</code></pre>
+<p>Rule fields (anything else is rejected at load time — unknown keys fail closed, so a typo in the human&#39;s file breaks load loudly, never silently):</p>
+<table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody><tr><td><code>match</code></td><td>Required. picomatch glob over the capability string.</td></tr><tr><td><code>auto_approve</code></td><td><code>true</code> → grant without human involvement.</td></tr><tr><td><code>ttl</code></td><td>Per-rule TTL ceiling (<code>&lt;n&gt;s</code>, <code>&lt;n&gt;m</code>, <code>&lt;n&gt;h</code>). Beats <code>default_ttl</code>.</td></tr><tr><td><code>require</code></td><td>Only <code>human_approval</code> is supported. Escalates instead of granting.</td></tr><tr><td><code>redact</code></td><td>List of categories to mask in proxied responses (<code>pii</code>, <code>email</code>, <code>phone</code>, <code>card</code>, <code>aws_access_key</code>).</td></tr></tbody></table>
+<p>The file is hot-reloaded (debounced ~250 ms): a human edit is live in under a second. An invalid edit keeps the <strong>last-good</strong> policy set and is audited as <code>policy_reload_error</code>; a missing file means deny-all. You cannot break it and you cannot exploit a broken one.</p>
+<h2 id="2-how-matching-works">2. How matching works</h2>
+<ul><li>A capability is a string <code>&lt;upstream&gt;:&lt;action&gt;:&lt;resource&gt;</code>. MCP tool calls</li></ul>
+<p>  map to <code>&lt;upstream&gt;:call:&lt;toolName&gt;</code> — e.g. calling <code>merge_pull_request</code> on   the <code>github</code> upstream is <code>github:call:merge_pull_request</code>.</p>
+<ul><li>Your agent entry is your exact agent id; if absent, the <code>&quot;*&quot;</code> fallback</li></ul>
+<p>  applies; if neither exists you get <code>no_policy</code> — ask a human to add you, or   propose rules (§6) so the human has something to accept.</p>
+<ul><li>Globs are picomatch: <code><em></code> within a segment, <code></em>*</code> across segments, and brace</li></ul>
+<p>  expansion <code>{get_*,list_*}</code>. Quote patterns in YAML.</p>
+<ul><li>Rules are evaluated in order, <strong>first match wins</strong> — a <code>require</code> rule placed</li></ul>
+<p>  after a broad <code>auto_approve</code> rule is dead. This is why examples put   <code>require: human_approval</code> rules <em>before</em> the wildcard ones.</p>
+<ul><li><code>limits.deny</code> globs are checked <strong>before</strong> any rule. They always win.</li></ul>
+<p>Practical consequence: before requesting, compute the exact capability string and request that — not a broader one &quot;just in case&quot;. A denied broad request teaches you nothing a narrow one wouldn&#39;t, and <code>deny</code> hits are audited.</p>
+<h2 id="3-ttls-you-can-shorten-never-extend">3. TTLs: you can shorten, never extend</h2>
+<p>Resolution for an auto-approved request:</p>
+<pre class="code"><code>ceiling  = rule.ttl ?? agent.default_ttl ?? 15m      # built-in default is 15 minutes
+grantTTL = min(requested_ttl, ceiling, limits.max_ttl)</code></pre>
+<ul><li>Omit <code>ttl</code> in your request → you get the full ceiling (internally your</li></ul>
+<p>  request is <code>MAX_SAFE_INTEGER</code>, clamped down).</p>
+<ul><li>Ask for less than the ceiling → you get exactly what you asked. Ask for</li></ul>
+<p>  more → silently clamped to the ceiling. <strong>Shorten yes, extend never.</strong></p>
+<ul><li><code>ttl</code> must be <code>&lt;n&gt;s</code>, <code>&lt;n&gt;m</code> or <code>&lt;n&gt;h</code>. Garbage like <code>&quot;1 day&quot;</code> is denied</li></ul>
+<p>  with <code>invalid_ttl</code> — fix the string, don&#39;t retry it.</p>
+<ul><li>Grants persist on disk and expire on their own. Re-requesting the same</li></ul>
+<p>  capability while a covering grant is live returns the existing grant&#39;s   remaining TTL — it does <strong>not</strong> stack or renew. Request again only after   expiry.</p>
+<ul><li><code>limits.max_ttl</code> is the absolute ceiling over everything, including grants</li></ul>
+<p>  materialized from a human approval. A human saying &quot;yes&quot; cannot push a   grant past <code>max_ttl</code> either.</p>
+<p>Ask for the shortest TTL that covers your task. It is faster for a human to trust an agent that requests <code>5m</code> than one that always takes the ceiling.</p>
+<h2 id="4-hard-limits-and-rate-limit-why-they-exist">4. Hard limits and rate limit — why they exist</h2>
+<p><code>limits</code> exist because of prompt injection. If hostile text in an issue, a web page, or a log convinces you to request <code>aws:<em>:production</code> or <code></em>:*</code>, the policy engine is the layer that says no even when you say yes:</p>
+<ul><li><code>deny</code> globs are evaluated before every <code>auto_approve</code> rule (fail-closed).</li></ul>
+<p>  A hit returns code <code>ceiling_blocked</code> with: <em>&quot;Hard limits are non-negotiable   — do NOT retry with broader scope&quot;</em>. Take that literally: do not   rephrase, reslice, or retry. Tell the human which <code>deny</code> glob you hit.</p>
+<ul><li><code>rate_limit</code> (format <code>&lt;n&gt;/s</code>, <code>&lt;n&gt;/m</code>, <code>&lt;n&gt;/h</code>; default <code>30/m</code>) throttles</li></ul>
+<p>  <code>scopegate_request_capability</code> per agent in a sliding window. Exceeding it   returns <code>capability_rate_limited</code> with a backoff hint. Back off and batch   your work around the grants you already hold — never loop requests.</p>
+<ul><li>Per-agent <code>limits</code> override global ones; otherwise global applies.</li></ul>
+<p>These ceilings are not yours to negotiate: only a human editing <code>policies.yaml</code> changes them, and <code>scopegate_propose_policy</code> cannot propose them (§6).</p>
+<h2 id="5-redact-pii">5. <code>redact: [pii]</code></h2>
+<p>A rule may carry <code>redact</code> categories. The grant issued from that rule records them, and every proxied tool <strong>response</strong> under that grant is masked after the upstream answers: <code>pii</code> expands to <code>email</code>, <code>phone</code>, <code>card</code> (Luhn-validated), and <code>aws_access_key</code>, replaced with <code>[REDACTED:&lt;category&gt;]</code>.</p>
+<p>This is a best-effort heuristic, not a DLP guarantee — conservative matchers keep false positives low, and the audit log records replacement <strong>counts</strong> only, never content. For you: if responses under a capability arrive masked, that is policy working as intended, not a bug to route around. You cannot propose <code>redact</code> yourself; mention it in your justification if you believe a rule should have it.</p>
+<h2 id="6-proposing-a-new-rule-scopegate-propose-policy">6. Proposing a new rule: <code>scopegate_propose_policy</code></h2>
+<p>When a request is denied with <code>no_rule</code> or <code>no_policy</code>, propose the rule you need. A human merges it — or not.</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;match&quot;: &quot;huly:call:create_issue&quot;,
+  &quot;ttl&quot;: &quot;10m&quot;,
+  &quot;justification&quot;: &quot;EPIC-14 requires filing one Huly issue per migrated ticket; 10m covers a batch run.&quot;
+}</code></pre>
+<p>Fields: <code>match</code> (required, compilable picomatch glob), <code>ttl</code> (optional, strict <code>&lt;n&gt;s|m|h</code>), <code>justification</code> (required, non-empty). <strong>Nothing else is agent-settable.</strong> Sending <code>require: null</code>, <code>auto_approve</code>, <code>limits</code>, <code>redact</code>, or any extra key rejects the whole call with <em>&quot;field &#39;&lt;k&gt;&#39; is not agent-settable&quot;</em>. You can only ever propose rules that auto-approve something narrower than a human would — the accept path hard-codes <code>auto_approve: true</code> on what you send (§7).</p>
+<p>What happens next:</p>
+<ol><li>The proposal is validated, deduplicated (identical pending</li></ol>
+<p>   <code>agentId + match + ttl</code> returns <code>deduped: true</code> without queuing again),    and linted against hard limits.</p>
+<ol><li>It is appended to <code>~/.scopegate/policies.pending.yaml</code> with status</li></ol>
+<p>   <code>pending_human_review</code> and audited as <code>policy_proposed</code>.</p>
+<ol><li>The tool result tells you plainly: <strong>&quot;It has NO effect until then.&quot;</strong> Do</li></ol>
+<p>   not retry the denied capability expecting the proposal to have helped.</p>
+<ol><li>The human runs <code>scopegate policies review</code>, then</li></ol>
+<p>   <code>scopegate policies accept &lt;n&gt;</code> or    <code>scopegate policies reject &lt;n&gt; --reason &quot;...&quot;</code>. Accept appends    <code>{match, ttl?, auto_approve: true}</code> to your agent&#39;s <code>capabilities</code> in    <code>policies.yaml</code> (comments preserved, schema re-validated, atomic write) and    hot-reload makes it live in under a second.</p>
+<ol><li>If your proposal collided with <code>limits.deny</code> or exceeded <code>max_ttl</code>, it is</li></ol>
+<p>   queued with <code>lint: &quot;conflicts_with_limits&quot;</code> — the human sees the flag, and    accepting it will <strong>not</strong> make it effective. Check limits first; a linted    proposal is a wasted round-trip.</p>
+<p>Writing a justification a human accepts fast:</p>
+<ul><li>State the concrete task (&quot;filing issues for EPIC-14&quot;), not a vague wish.</li><li>Keep <code>match</code> minimal — one tool or a tight brace group, one upstream.</li><li>Keep <code>ttl</code> short and say why it suffices.</li><li>One capability per proposal. Ten small proposals are reviewable; one</li></ul>
+<p>  <code><em>:</em>:*</code> proposal is a reject.</p>
+<h2 id="7-good-and-bad-proposals-with-expected-results">7. Good and bad proposals, with expected results</h2>
+<p>Good — narrow, short, explained:</p>
+<pre class="code" data-lang="json"><code>{ &quot;match&quot;: &quot;railway:call:list_services&quot;, &quot;ttl&quot;: &quot;5m&quot;,
+  &quot;justification&quot;: &quot;Read-only inventory needed to map services before the migration run.&quot; }</code></pre>
+<p>→ <code>{ queued: true, deduped: false, pending_file: &quot;.../policies.pending.yaml&quot;, note: &quot;A human must review…&quot; }</code>. A human accepts with <code>scopegate policies accept 1</code>; you then <code>scopegate_request_capability</code> and proceed.</p>
+<p>Bad — too broad:</p>
+<pre class="code" data-lang="json"><code>{ &quot;match&quot;: &quot;*:*:*&quot;, &quot;justification&quot;: &quot;I need full access to do my job.&quot; }</code></pre>
+<p>→ Queued (it validates), but any human reviewing it rejects it: <code>scopegate policies reject 2 --reason &quot;scope it to one upstream and tool set&quot;</code>. You burned a review cycle. Propose <code>github:call:{get_*,list_*}</code> style instead.</p>
+<p>Bad — forbidden fields:</p>
+<pre class="code" data-lang="json"><code>{ &quot;match&quot;: &quot;aws:*:production&quot;, &quot;require&quot;: null, &quot;justification&quot;: &quot;deploy&quot; }</code></pre>
+<p>→ Tool error: <code>Proposal rejected: field &#39;require&#39; is not agent-settable…</code>. You cannot propose away an escalation; <code>require: human_approval</code> rules mean the human decides per request via <code>scopegate approve &lt;id&gt;</code>.</p>
+<p>Bad — conflicts with hard limits:</p>
+<pre class="code" data-lang="json"><code>{ &quot;match&quot;: &quot;aws:*:production&quot;, &quot;ttl&quot;: &quot;2h&quot;, &quot;justification&quot;: &quot;weekly deploy window&quot; }</code></pre>
+<p>→ Queued with <code>lint: &quot;conflicts_with_limits&quot;</code> (deny glob overlap and/or <code>ttl &gt; max_ttl</code>). The human is told accepting will not make it effective. The honest move is to request the capability, take the <code>escalation: &quot;human_approval&quot;</code> response, and ask the human to run <code>scopegate approve &lt;approvalId&gt;</code> — one-shot, bounded by <code>max_ttl</code>.</p>
+<hr>
+<p>See also: <code>./03-tools-reference.md</code> for the full MCP tool schemas (<code>scopegate_request_capability</code>, <code>scopegate_propose_policy</code>, …).</p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/agents/04-connectors">← 04 — Connectors: native upstreams and how to add new ones</a><a class="next" href="/docs/agents/06-self-repair">06 — Self-Repair Playbook →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

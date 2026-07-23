@@ -91,8 +91,53 @@ interface StaticEntry {
 const LANDING_FILES: Record<string, StaticEntry> = {
   "/": { file: "index.html", contentType: "text/html; charset=utf-8" },
   "/styles.css": { file: "styles.css", contentType: "text/css; charset=utf-8" },
+  "/main.js": { file: "main.js", contentType: "text/javascript; charset=utf-8" },
   "/favicon.svg": { file: "favicon.svg", contentType: "image/svg+xml" },
+  "/og.png": { file: "og.png", contentType: "image/png" },
+  "/og-card.html": { file: "og-card.html", contentType: "text/html; charset=utf-8" },
+  "/robots.txt": { file: "robots.txt", contentType: "text/plain; charset=utf-8" },
+  "/sitemap.xml": { file: "sitemap.xml", contentType: "application/xml; charset=utf-8" },
+  "/llms.txt": { file: "llms.txt", contentType: "text/plain; charset=utf-8" },
+  "/llms-full.txt": { file: "llms-full.txt", contentType: "text/plain; charset=utf-8" },
 };
+
+const DOCS_CONTENT_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+};
+
+/**
+ * Serve the generated documentation pages under /docs/ (SEO: crawlable HTML)
+ * and their raw .md sources (GEO: text/markdown for AI crawlers). Extension-
+ * less paths resolve to <path>.html; directory paths to index.html. Traversal
+ * outside site/docs is refused.
+ */
+function serveDocsFile(res: http.ServerResponse, pathname: string, siteDir: string): boolean {
+  let rel: string;
+  try {
+    rel = decodeURIComponent(pathname.slice("/docs".length));
+  } catch {
+    return false;
+  }
+  if (rel === "" || rel === "/") rel = "/index.html";
+  else if (rel.endsWith("/")) rel += "index.html";
+  else if (!/\.[a-z0-9]+$/i.test(rel)) rel += ".html";
+
+  const base = path.join(siteDir, "docs");
+  const abs = path.normalize(path.join(base, rel));
+  if (abs !== base && !abs.startsWith(base + path.sep)) return false;
+  const contentType = DOCS_CONTENT_TYPES[path.extname(abs).toLowerCase()];
+  if (!contentType || !fs.existsSync(abs)) return false;
+
+  const body = fs.readFileSync(abs);
+  res.writeHead(200, {
+    "content-type": contentType,
+    "content-length": body.length,
+    "cache-control": "no-store",
+  });
+  res.end(body);
+  return true;
+}
 
 const PANEL_FILES: Record<string, StaticEntry> = {
   "/panel": { file: "index.html", contentType: "text/html; charset=utf-8" },
@@ -156,7 +201,13 @@ function serveStatic(
 
   const landing = LANDING_FILES[pathname];
   const panel = PANEL_FILES[pathname];
-  if (!landing && !panel) return false;
+  if (!landing && !panel) {
+    if (pathname.startsWith("/docs")) {
+      const dir = resolveStaticDir(path.join("..", "..", "site"), "site");
+      if (dir !== null && serveDocsFile(res, pathname, dir)) return true;
+    }
+    return false;
+  }
 
   const dir = landing
     ? resolveStaticDir(path.join("..", "..", "site"), "site")

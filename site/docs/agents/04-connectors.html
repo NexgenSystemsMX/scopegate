@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 — Connectors: native upstreams and how to add new ones — ScopeGate Docs</title>
+<meta name="description" content="A connector (upstream) is an MCP server or API behind the gateway. You never touch its credentials — the gateway injects or mints them at the outbound hop. Ever">
+<link rel="canonical" href="https://scopegate.io/docs/agents/04-connectors">
+<meta property="og:title" content="04 — Connectors: native upstreams and how to add new ones — ScopeGate Docs">
+<meta property="og:description" content="A connector (upstream) is an MCP server or API behind the gateway. You never touch its credentials — the gateway injects or mints them at the outbound hop. Ever">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agents/04-connectors">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>04 — Connectors: native upstreams and how to add new ones</span></nav>
+  <article>
+<h1 id="04-connectors-native-upstreams-and-how-to-add-new-ones">04 — Connectors: native upstreams and how to add new ones</h1>
+<p>A <strong>connector</strong> (upstream) is an MCP server or API behind the gateway. You never touch its credentials — the gateway injects or mints them at the outbound hop. Every upstream tool is exposed to you as <code>&lt;upstream&gt;__&lt;tool&gt;</code>, and every call requires the capability <code>&lt;upstream&gt;:call:&lt;tool&gt;</code> granted by policy (see <code>./03-tools-reference.md</code>).</p>
+<p>ScopeGate ships 5 native connectors, installable in one call each from the signed registry (<code>registry/*.yaml</code> — verified fail-closed: signed index + per-manifest sha256 + stdio command allowlist):</p>
+<table><thead><tr><th>Connector</th><th>Tools</th><th>Auth type</th><th>Credential mode</th></tr></thead><tbody><tr><td><code>huly</code></td><td>13</td><td><code>huly</code> (vault blob → workspace token)</td><td><code>minted:huly</code></td></tr><tr><td><code>github</code></td><td>upstream pkg</td><td><code>env</code> (PAT) or <code>github_app</code> (~1h installation token)</td><td><code>fallback:injection</code> / <code>minted:github_app</code></td></tr><tr><td><code>railway</code></td><td>7</td><td><code>env</code> (API token)</td><td><code>fallback:injection</code></td></tr><tr><td><code>cloudflare</code></td><td>8</td><td><code>env</code> (scoped API token)</td><td><code>fallback:injection</code></td></tr><tr><td><code>google</code></td><td>7</td><td><code>google_sa</code> (SA key → ~1h access token)</td><td><code>minted:google_sa</code></td></tr></tbody></table>
+<p><strong>Golden rule.</strong> You register and operate connectors. The human does exactly two things, in THEIR terminal, never in chat: deposit secrets (<code>scopegate secret add &lt;ref&gt;</code>) and approve escalations (<code>scopegate approve &lt;id&gt;</code> / <code>scopegate policies accept &lt;n&gt;</code>). NEVER ask the user to paste a secret value into the conversation.</p>
+<h2 id="1-huly-tracker-documents-chunter-contacts">1. huly — tracker, documents, chunter, contacts</h2>
+<p>Bundled bridge (stdio) covering the four Huly surfaces: tracker (issues/projects), documents, chunter (channels/messages), contact (persons). Markdown in and out.</p>
+<p><strong>Tools (13, exposed as <code>huly__&lt;name&gt;</code>).</strong> Status names: <code>backlog|todo|in_progress|done|canceled</code>; priority: <code>urgent|high|medium|low|none</code> or <code>0-4</code>. <code>project</code> accepts the identifier (<code>DEMO</code>) or an id; <code>issueId</code> accepts <code>DEMO-1</code> or an id.</p>
+<ul><li>tracker: <code>tracker_create_issue {project, title, description?, priority?, assignee?}</code>, <code>tracker_update_issue {issueId, fields}</code>, <code>tracker_comment_issue {issueId, message}</code>, <code>tracker_search_issues {query?, project?, status?, limit?}</code>, <code>tracker_list_projects {}</code></li><li>documents: <code>documents_create {teamspace, title, content}</code>, <code>documents_read {documentId}</code>, <code>documents_update {documentId, content}</code>, <code>documents_list {teamspace?, limit?}</code></li><li>chunter: <code>chunter_post_message {channel, message, thread?}</code>, <code>chunter_list_channels {}</code>, <code>chunter_list_messages {channel, limit?, thread?}</code></li><li>contact: <code>contact_list_persons {limit?}</code></li></ul>
+<p><strong>Auth.</strong> Type <code>huly</code>, <code>secretRef: huly_nexgen</code>. The human deposits a JSON blob (never echoed):</p>
+<pre class="code" data-lang="sh"><code>scopegate secret add huly_nexgen   # value: {&quot;email&quot;:&quot;you@nexgen&quot;,&quot;password&quot;:&quot;…&quot;,&quot;workspace&quot;:&quot;your-workspace&quot;,&quot;accountsUrl&quot;:&quot;https://huly2.nexgen.systems&quot;}</code></pre>
+<p>The gateway runs <code>login → selectWorkspace</code> and mints a short-lived workspace token (TTL = the token&#39;s <code>exp</code>, else 12h; renewed at 80%). Only <code>HULY_TOKEN</code> / <code>HULY_ENDPOINT</code> / <code>HULY_WORKSPACE</code> reach the bridge — the account password never leaves the vault.</p>
+<p><strong>Register</strong> — 1-click, or the exact manual JSON the registry applies verbatim:</p>
+<pre class="code" data-lang="json"><code>scopegate_register_upstream { &quot;from_registry&quot;: &quot;huly&quot; }
+scopegate_register_upstream { &quot;name&quot;: &quot;huly&quot;, &quot;transport&quot;: { &quot;kind&quot;: &quot;stdio&quot;, &quot;command&quot;: &quot;node&quot;, &quot;args&quot;: [&quot;dist/upstreams/huly-bridge/server.js&quot;] }, &quot;auth&quot;: { &quot;type&quot;: &quot;huly&quot;, &quot;secretRef&quot;: &quot;huly_nexgen&quot; } }</code></pre>
+<p><strong>Recommended policy</strong> (from <code>policies.example.yaml</code>): <code>- match: &quot;huly:call:*&quot;</code> with <code>auto_approve: true</code>.</p>
+<p><strong>Ops.</strong> Read-after-write is handled inside the bridge (issue resolution retries briefly), so create → comment/update flows are deterministic. Errors are actionable <code>isError</code> results naming the listing tool to use.</p>
+<h2 id="2-github-repos-issues-prs-code-search">2. github — repos, issues, PRs, code search</h2>
+<p>The ecosystem MCP server <code>@modelcontextprotocol/server-github</code>, spawned over stdio via <code>npx</code> (repos, issues, PRs, code search).</p>
+<p><strong>Tools.</strong> The closed list belongs to that upstream package, not to ScopeGate: the gateway proxies whatever the server lists as <code>github__*</code>. After registering, run <code>scopegate_diagnose</code> and check your tool list for the exact set of the installed version. Names pinned by this repo&#39;s policies and e2e: <code>get_file_contents</code>, <code>get_issue</code>, <code>list_issues</code>, <code>create_pull_request</code>, <code>merge_pull_request</code>, <code>create_or_update_file</code>, <code>delete_file</code>.</p>
+<p><strong>Auth — two modes.</strong></p>
+<ul><li>Default (registry): type <code>env</code>, <code>GITHUB_PERSONAL_ACCESS_TOKEN</code> ← vault ref <code>github_pat</code>. The human creates a fine-grained PAT scoped to only the repos needed (<code>https://github.com/settings/personal-access-tokens</code>) and runs <code>scopegate secret add github_pat</code>.</li><li>Stricter: type <code>github_app</code> — the gateway signs an App JWT (RS256) with the App private key from the vault and exchanges it for a ~1h <strong>installation token</strong>, optionally narrowed by <code>permissions</code> / <code>repositories</code>. Only the installation token reaches the upstream (as <code>Authorization: Bearer</code>; for stdio MCPs also as the <code>GITHUB_PERSONAL_ACCESS_TOKEN</code> env). The human deposits the App private key PEM: <code>scopegate secret add github_app_key</code>.</li></ul>
+<p><strong>Register</strong> — 1-click, manual PAT mode, or per-repo App mode (from <code>scopegate.example.yaml</code>; one upstream per repo — a leaked token is worth ≤1h and only its repo):</p>
+<pre class="code" data-lang="json"><code>scopegate_register_upstream { &quot;from_registry&quot;: &quot;github&quot; }
+scopegate_register_upstream { &quot;name&quot;: &quot;github&quot;, &quot;transport&quot;: { &quot;kind&quot;: &quot;stdio&quot;, &quot;command&quot;: &quot;npx&quot;, &quot;args&quot;: [&quot;-y&quot;, &quot;@modelcontextprotocol/server-github&quot;] }, &quot;auth&quot;: { &quot;type&quot;: &quot;env&quot;, &quot;env&quot;: { &quot;GITHUB_PERSONAL_ACCESS_TOKEN&quot;: &quot;github_pat&quot; } } }
+scopegate_register_upstream { &quot;name&quot;: &quot;github-huly-platform&quot;, &quot;transport&quot;: { &quot;kind&quot;: &quot;http&quot;, &quot;url&quot;: &quot;https://api.githubcopilot.com/mcp&quot; }, &quot;auth&quot;: { &quot;type&quot;: &quot;github_app&quot;, &quot;appId&quot;: &quot;123456&quot;, &quot;installationId&quot;: &quot;11111111&quot;, &quot;secretRef&quot;: &quot;github_app_key&quot;, &quot;repositories&quot;: [&quot;huly-platform&quot;], &quot;permissions&quot;: { &quot;contents&quot;: &quot;write&quot;, &quot;pull_requests&quot;: &quot;write&quot;, &quot;issues&quot;: &quot;write&quot;, &quot;metadata&quot;: &quot;read&quot; } } }</code></pre>
+<p><strong>Recommended policies</strong> — reads and PRs auto, destructive writes escalate:</p>
+<pre class="code" data-lang="yaml"><code>- match: &quot;github:call:{merge_pull_request,create_or_update_file,delete_file}&quot;
+  require: human_approval
+- match: &quot;github:call:*&quot;
+  auto_approve: true
+  ttl: 15m</code></pre>
+<h2 id="3-railway-services-deploys-logs-domains">3. railway — services, deploys, logs, domains</h2>
+<p>Bundled bridge over the Railway public GraphQL API (backboard v2). The token travels only as <code>Authorization: Bearer</code> from the bridge.</p>
+<p><strong>Tools (7, exposed as <code>railway__&lt;name&gt;</code>).</strong> <code>service</code> accepts a name (case-insensitive) or an id. When <code>projectId</code> is omitted the service is resolved across every accessible project: zero matches → &quot;service not found&quot;; more than one → &quot;ambiguous, pass projectId&quot;.</p>
+<ul><li><code>list_services {projectId?}</code> — without <code>projectId</code>, every accessible project with its services</li><li><code>service_status {service, projectId?}</code> — latest deployment: <code>status</code>, <code>createdAt</code>, <code>url</code></li><li><code>deploy {service, projectId?}</code> — triggers a NEW deployment; <code>redeploy {service, projectId?}</code> — redeploys the latest</li><li><code>get_logs {service, lines?=100, projectId?}</code> — deploy (runtime) logs, most recent last</li><li><code>variables_list {service, projectId?}</code> — variable NAMES only (see redaction below)</li><li><code>domain_status {service, projectId?}</code> — service + custom domains with DNS status</li></ul>
+<p><strong>Auth.</strong> Type <code>env</code>, <code>RAILWAY_TOKEN</code> ← vault ref <code>railway_token</code> (long-lived, account-scoped; declared <code>fallback:injection</code>). The human creates a token in the Railway dashboard → Tokens, scoped to the workspace/projects needed, then runs <code>scopegate secret add railway_token</code>.</p>
+<p><strong>Register</strong> — 1-click or manual:</p>
+<pre class="code" data-lang="json"><code>scopegate_register_upstream { &quot;from_registry&quot;: &quot;railway&quot; }
+scopegate_register_upstream { &quot;name&quot;: &quot;railway&quot;, &quot;transport&quot;: { &quot;kind&quot;: &quot;stdio&quot;, &quot;command&quot;: &quot;node&quot;, &quot;args&quot;: [&quot;dist/upstreams/railway-bridge/server.js&quot;] }, &quot;auth&quot;: { &quot;type&quot;: &quot;env&quot;, &quot;env&quot;: { &quot;RAILWAY_TOKEN&quot;: &quot;railway_token&quot; } } }</code></pre>
+<p><strong>Recommended policies</strong> — reads auto, deploys always with a human:</p>
+<pre class="code" data-lang="yaml"><code>- match: &quot;railway:call:{deploy,redeploy}&quot;
+  require: human_approval
+- match: &quot;railway:call:{service_status,list_services,get_logs,domain_status}&quot;
+  auto_approve: true</code></pre>
+<p><strong>Ops.</strong> Redaction is a hard contract: <code>variables_list</code> never returns values — anything the API returns is replaced by <code>&quot;[redacted]&quot;</code> inside the bridge, before it leaves the process. The bridge NEVER writes variables or secrets; rotating one means asking the human for <code>scopegate secret add</code>.</p>
+<h2 id="4-cloudflare-zones-dns-workers-pages-r2">4. cloudflare — zones, DNS, Workers, Pages, R2</h2>
+<p>Bundled bridge over the Cloudflare API v4. The token is verified once at startup (<code>GET /user/tokens/verify</code>) and sent only as <code>Authorization: Bearer</code>.</p>
+<p><strong>Tools (8, exposed as <code>cloudflare__&lt;name&gt;</code>).</strong></p>
+<ul><li><code>list_zones {}</code></li><li><code>dns_list {zone, type?, name?}</code> — <code>zone</code> by name (<code>example.com</code>) or id; <code>type</code>/<code>name</code> are exact-match filters</li><li><code>dns_create {zone, type, name, content, ttl?, proxied?}</code></li><li><code>dns_update {zone, recordId, type?, name?, content?, ttl?, proxied?}</code> — at least one field required</li><li><code>dns_delete {zone, recordId}</code> — the bridge imposes NO extra check; the gateway POLICY gates it</li><li><code>workers_list {accountId?}</code>, <code>pages_projects {accountId?}</code>, <code>r2_buckets {accountId?}</code></li></ul>
+<p><strong>Auth.</strong> Type <code>env</code>, <code>CLOUDFLARE_API_TOKEN</code> ← vault ref <code>cloudflare_api_token</code> (<code>fallback:injection</code>). The human creates a SCOPED token at <code>https://dash.cloudflare.com/profile/api-tokens</code> (Zone.DNS edit on the zones needed + Workers/Pages/R2 read — NEVER a Global API Key), then runs <code>scopegate secret add cloudflare_api_token</code>.</p>
+<p><strong>Register</strong> — 1-click or manual:</p>
+<pre class="code" data-lang="json"><code>scopegate_register_upstream { &quot;from_registry&quot;: &quot;cloudflare&quot; }
+scopegate_register_upstream { &quot;name&quot;: &quot;cloudflare&quot;, &quot;transport&quot;: { &quot;kind&quot;: &quot;stdio&quot;, &quot;command&quot;: &quot;node&quot;, &quot;args&quot;: [&quot;dist/upstreams/cloudflare-bridge/server.js&quot;] }, &quot;auth&quot;: { &quot;type&quot;: &quot;env&quot;, &quot;env&quot;: { &quot;CLOUDFLARE_API_TOKEN&quot;: &quot;cloudflare_api_token&quot; } } }</code></pre>
+<p><strong>Recommended policies:</strong> <code>- match: &quot;cloudflare:call:dns_delete&quot;</code> with <code>require: human_approval</code>, then <code>- match: &quot;cloudflare:call:*&quot;</code> with <code>auto_approve: true</code>.</p>
+<p><strong>Ops.</strong> When <code>accountId</code> is omitted, the bridge resolves it via <code>GET /accounts</code> and uses the FIRST account the token can access (cached per process; the response always carries the <code>accountId</code> used) — pass <code>accountId</code> explicitly for multi-account tokens. <code>401/403</code> means &quot;token rejected or under-scoped&quot;: the fix is a better-scoped deposit, not a retry.</p>
+<h2 id="5-google-drive-gmail-calendar">5. google — Drive, Gmail, Calendar</h2>
+<p>Bundled bridge over the Google REST APIs. The gateway signs a service-account JWT (RS256) with the key from the vault and exchanges it at <code>oauth2.googleapis.com/token</code> for a ~1h access token — only that token (<code>GOOGLE_ACCESS_TOKEN</code>) reaches the bridge.</p>
+<p><strong>Tools (7, exposed as <code>google__&lt;name&gt;</code>).</strong></p>
+<ul><li>drive: <code>drive_list {query?, limit?}</code> (name substring), <code>drive_search {query, limit?}</code> (full-text), <code>drive_read {fileId}</code> — Docs/Sheets/Slides exported to text; content capped at 1 MiB (<code>truncated: true</code>)</li><li>gmail: <code>gmail_send {to, subject, body, cc?}</code> (RFC 822, header-injection safe), <code>gmail_list {query?, limit?}</code></li><li>calendar: <code>calendar_list {calendarId?=primary, limit?, timeMin?=now}</code>, <code>calendar_create {summary, start, end, attendees?, calendarId?=primary, description?}</code> — ISO 8601 datetimes, or <code>YYYY-MM-DD</code> for all-day events</li></ul>
+<p><strong>Auth.</strong> Type <code>google_sa</code>, <code>secretRef: google_sa</code>. The human creates a service account with the minimum scopes, generates its JSON key, and runs <code>scopegate secret add google_sa</code>. The vault blob is <code>{client_email, private_key, subject?}</code> — <code>subject</code> enables domain-wide delegation (impersonating a Workspace user).</p>
+<p><strong>Scopes.</strong> Frozen default set: <code>drive.readonly</code>, <code>gmail.send</code>, <code>calendar.readonly</code>. Widen with <code>auth.scopes</code> on the upstream config (and grant the same to the SA, or to its client id under domain-wide delegation): <code>calendar_create</code> needs <code>…/auth/calendar.events</code>; other common additions are <code>gmail.readonly</code> and <code>drive</code> (write). A 401 means &quot;retry to force a re-mint / re-check the vault blob&quot;; a 403 means &quot;insufficient scope — widen <code>auth.scopes</code>&quot;.</p>
+<p><strong>Register</strong> — 1-click or manual (add <code>&quot;scopes&quot;: [...]</code> to <code>auth</code> to widen). User-OAuth alternative (device-code daemon): the human runs <code>scopegate auth login google</code>, then register with <code>&quot;auth&quot;: { &quot;type&quot;: &quot;oauth2&quot;, &quot;secretRef&quot;: &quot;google_user&quot; }</code>.</p>
+<pre class="code" data-lang="json"><code>scopegate_register_upstream { &quot;from_registry&quot;: &quot;google&quot; }
+scopegate_register_upstream { &quot;name&quot;: &quot;google&quot;, &quot;transport&quot;: { &quot;kind&quot;: &quot;stdio&quot;, &quot;command&quot;: &quot;node&quot;, &quot;args&quot;: [&quot;dist/upstreams/google-bridge/server.js&quot;] }, &quot;auth&quot;: { &quot;type&quot;: &quot;google_sa&quot;, &quot;secretRef&quot;: &quot;google_sa&quot; } }</code></pre>
+<p><strong>Recommended policy:</strong> <code>- match: &quot;google:call:*&quot;</code> with <code>auto_approve: true</code> and <code>ttl: 10m</code>.</p>
+<h2 id="6-adding-a-new-upstream-generic">6. Adding a new upstream (generic)</h2>
+<p>Register any MCP server with the exact envelope:</p>
+<pre class="code" data-lang="json"><code>scopegate_register_upstream { &quot;name&quot;: &quot;my-api&quot;, &quot;transport&quot;: { &quot;kind&quot;: &quot;http&quot;, &quot;url&quot;: &quot;https://api.example.com/mcp&quot; }, &quot;auth&quot;: { &quot;type&quot;: &quot;bearer&quot;, &quot;secretRef&quot;: &quot;my_api_key&quot; } }</code></pre>
+<p><code>name</code>: lowercase <code>[a-z0-9_-]</code>, unique (re-registering the same name replaces it); tools appear as <code>&lt;name&gt;__&lt;tool&gt;</code> after reconnect. <code>transport</code>: <code>{&quot;kind&quot;:&quot;http&quot;,&quot;url&quot;:…}</code> or <code>{&quot;kind&quot;:&quot;stdio&quot;,&quot;command&quot;:…,&quot;args&quot;:[…]}</code>. Optional <code>&quot;exposeTools&quot;: [&quot;tool_a&quot;]</code> allowlists upstream tools.</p>
+<p><strong>Auth types</strong> — only REF NAMES, never values (a raw-looking value is rejected as <code>raw_secret_rejected</code>):</p>
+<ul><li><code>none</code> — <code>{ &quot;type&quot;: &quot;none&quot; }</code></li><li><code>bearer</code> — <code>{ &quot;type&quot;: &quot;bearer&quot;, &quot;secretRef&quot;: &quot;ref&quot;, &quot;header&quot;?: &quot;X-Api-Key&quot;, &quot;scheme&quot;?: &quot;Bearer&quot; }</code> (defaults: header <code>Authorization</code>, scheme <code>Bearer</code>; <code>scheme: &quot;&quot;</code> sends raw)</li><li><code>env</code> — <code>{ &quot;type&quot;: &quot;env&quot;, &quot;env&quot;: { &quot;ENV_VAR&quot;: &quot;ref&quot; } }</code> — vault refs injected as spawn env of a stdio upstream</li><li><code>oauth2</code> — <code>{ &quot;type&quot;: &quot;oauth2&quot;, &quot;secretRef&quot;: &quot;ref&quot;, &quot;header&quot;?, &quot;scheme&quot;?, &quot;authErrorPattern&quot;? }</code> — the token blob is written ONLY by <code>scopegate auth login &lt;upstream&gt;</code> / the refresh daemon</li><li><code>jwt</code> — <code>{ &quot;type&quot;: &quot;jwt&quot;, &quot;secretRef&quot;: &quot;hmac_ref&quot;, &quot;ttl&quot;?: &quot;5m&quot;, &quot;claims&quot;?: {…} }</code> — gateway-signed HS256 tokens for internal APIs</li><li><code>github_app</code> — <code>{ &quot;type&quot;: &quot;github_app&quot;, &quot;appId&quot;, &quot;installationId&quot;, &quot;secretRef&quot;: &quot;pem_ref&quot;, &quot;apiUrl&quot;?, &quot;permissions&quot;?, &quot;repositories&quot;? }</code></li><li><code>aws_sts</code> — <code>{ &quot;type&quot;: &quot;aws_sts&quot;, &quot;secretRef&quot;: &quot;base&quot;, &quot;roleArn&quot;?, &quot;region&quot;?, &quot;durationSeconds&quot;? }</code> — the vault must hold <code>&lt;base&gt;_ACCESS_KEY_ID</code> + <code>&lt;base&gt;_SECRET_ACCESS_KEY</code>; only session credentials are injected</li></ul>
+<p><strong>The <code>waiting_for_secrets</code> flow.</strong> For <code>bearer</code> / <code>oauth2</code> / <code>env</code> the gateway checks the vault BEFORE saving; missing refs come back as:</p>
+<pre class="code" data-lang="json"><code>{ &quot;registered&quot;: &quot;my-api&quot;, &quot;status&quot;: &quot;waiting_for_secrets&quot;,
+  &quot;setup_hints&quot;: { &quot;my_api_key&quot;: &quot;…where to obtain it… (registry registrations only)&quot; },
+  &quot;action_required&quot;: &quot;Ask the human to run in their terminal: scopegate secret add my_api_key — then call scopegate_diagnose.&quot; }</code></pre>
+<p>Relay <code>action_required</code> verbatim. Do NOT retry the registration, do NOT ask for the value in chat. Check which refs already exist yourself with <code>scopegate_vault_status</code>.</p>
+<p><strong>Always verify afterwards.</strong> Once the human confirms the deposit (and after ANY registration), call <code>scopegate_diagnose</code> → <code>{ &quot;upstreams&quot;: { &quot;my-api&quot;: { &quot;ok&quot;: true, &quot;tools&quot;: 12, &quot;mode&quot;: &quot;fallback:injection&quot; } } }</code>. <code>mode</code> is <code>minted:&lt;provider&gt;</code> (jwt/github_app/aws_sts/huly/google_sa), <code>fallback:injection</code> (bearer/env/oauth2) or <code>none</code>. For minted auth types a missing/invalid secret surfaces HERE (<code>ok: false</code> with an actionable <code>error</code>), not at registration. A failing upstream is reconnected automatically on the next call.</p>
+<p><strong>Then get policy.</strong> Registration grants nothing: call <code>scopegate_request_capability</code>, and if denied, <code>scopegate_propose_policy { &quot;match&quot;: &quot;my-api:call:*&quot;, &quot;ttl&quot;: &quot;10m&quot;, &quot;justification&quot;: &quot;…&quot; }</code>. Proposals land in <code>policies.pending.yaml</code> and have NO effect until a human runs <code>scopegate policies review</code> / <code>scopegate policies accept &lt;n&gt;</code>.</p>
+<p>Registry names available beyond the five natives: <code>aws</code>, <code>notion</code>, <code>supabase</code>, <code>stripe</code> (<code>fakegit</code> is a test fixture, not a real service).</p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/agents/03-tools-reference">← 03 — MCP Tools Reference</a><a class="next" href="/docs/agents/05-policies">05 — Policies: how to request well and propose new rules →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

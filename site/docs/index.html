@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScopeGate Documentation — ScopeGate Docs</title>
+<meta name="description" content="ScopeGate is an ephemeral credentials gateway for coding agents (Claude Code, Kimi Code, Cursor, OpenCode). The agent never holds secrets — it holds short-lived">
+<link rel="canonical" href="https://scopegate.io/docs/">
+<meta property="og:title" content="ScopeGate Documentation — ScopeGate Docs">
+<meta property="og:description" content="ScopeGate is an ephemeral credentials gateway for coding agents (Claude Code, Kimi Code, Cursor, OpenCode). The agent never holds secrets — it holds short-lived">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><span>Docs</span></nav>
+  <article>
+<h1 id="scopegate-documentation">ScopeGate Documentation</h1>
+<p>ScopeGate is an <strong>ephemeral credentials gateway for coding agents</strong> (Claude Code, Kimi Code, Cursor, OpenCode). The agent never holds secrets — it holds short-lived, minimum-scope <strong>capabilities</strong>. Secrets live in an encrypted local vault and are injected only at the outbound hop, just before the request leaves your machine.</p>
+<pre class="code"><code>Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)──► GitHub / AWS / your MCPs
+                                      │
+                    vault + policy engine + token minter + signed audit</code></pre>
+<h2 id="pages">Pages</h2>
+<ul><li><a href="/docs/quickstart">Quickstart</a> — zero to first proxied tool call, agent-executable</li><li><a href="/docs/security-model">Security Model</a> — the enforcement rules and why they hold</li><li><a href="/docs/agent-protocol">Agent Protocol</a> — the SKILL protocol agents follow</li><li><a href="/docs/cli-reference">CLI Reference</a> — every command and flag</li><li><a href="/docs/configuration">Configuration</a> — <code>scopegate.yaml</code>, <code>policies.yaml</code>, env vars</li></ul>
+<h2 id="the-contract-in-one-minute">The contract in one minute</h2>
+<ol><li><strong>Capability ≠ credential.</strong> Agents request <code>github:call:create_pull_request</code></li></ol>
+<p>   for 5 minutes; they never see the token that ultimately authorizes the call.</p>
+<ol><li><strong>Secrets enter out-of-band.</strong> <code>scopegate secret add &lt;ref&gt;</code> from a human</li></ol>
+<p>   terminal — hidden prompt or piped stdin, never chat, never argv.</p>
+<ol><li><strong>Write asymmetry.</strong> Agents propose policy changes</li></ol>
+<p>   (<code>policies.pending.yaml</code>); only humans edit <code>policies.yaml</code>.</p>
+<ol><li><strong>Everything is audited.</strong> Append-only, hash-chained, Ed25519-signed JSONL;</li></ol>
+<p>   inputs are hashed, never stored. <code>scopegate audit verify</code> detects tampering.</p>
+<h2 id="status-roadmap">Status &amp; roadmap</h2>
+<p>Implemented today: proxy + injection (<code>bearer</code>, <code>env</code>), OAuth2 refresh daemon with device-code re-auth, token minter (JWT / GitHub App / AWS STS / Google SA / Huly), policy engine with TTL grants, hard limits, rate limiting, PII redaction and human approvals, vault with AES-256-GCM (+ optional <code>vaultd</code> process isolation and OS keychain master keys), multi-harness init (Claude Code, Kimi Code, Cursor, OpenCode, <code>.mcp.json</code>), signed audit trail with verify/query/reindex, upstream registry with signed manifests, EdDSA attestation, honeytokens, and native bridges (Huly, Railway, Cloudflare, Google).</p>
+<p>Also in this repo: <strong>ScopeGate Cloud</strong> — the optional multi-tenant management plane (<code>scopegate cloud serve</code>): landing page at <code>/</code>, product panel at <code>/panel</code> (fleet, approvals, capabilities, audit, versioned signed policies, billing), and the <code>/v1</code> API with enroll, signed policy distribution, verified audit ingest, fleet revocation and the panel-driven approval loop. Local-first holds: gateways keep working with their local policy when the cloud is down.</p>
+<p>Still future (see the roadmap EPICs under <a href="../../docs/Implementacion/"><code>../../docs/Implementacion/</code></a>):</p>
+<ul><li><strong>Cloud hardening</strong> — Postgres store, SSO/SAML with per-team roles, Stripe</li></ul>
+<p>  metering, on-prem packaging, SIEM export (EPIC-10 enterprise stories).</p>
+<ul><li><strong>Ecosystem growth</strong> — more registry upstreams and warm-pool fleets</li></ul>
+<p>  (EPIC-12 follow-ups).</p>
+  </article>
+
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

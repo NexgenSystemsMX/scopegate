@@ -1,0 +1,38 @@
+# ScopeGate
+
+> ScopeGate is an open-source (Apache-2.0) ephemeral-credentials gateway for coding agents — Claude Code, Kimi Code, Cursor, OpenCode, and any MCP-capable harness. The agent never holds secrets; it holds short-lived, minimum-scope capabilities. Real secrets live in an AES-256-GCM encrypted local vault and are injected only at the outbound hop, so a leaked model context leaks nothing of durable value. Think of it as AWS IAM + STS for coding agents, installable by the agent itself in under 90 seconds.
+
+## Product
+
+- [Landing](https://scopegate.io/): What ScopeGate is, the two structural failures it fixes (secret exposure in model context, OAuth expiration mid-session), and how it works.
+- [Quickstart](https://scopegate.io/docs/quickstart): Zero to first proxied tool call; fully agent-executable and non-interactive (`npm i -g scopegate && scopegate init`).
+- [Security model](https://scopegate.io/docs/security-model): The enforcement rules — capability ≠ credential, write asymmetry (agents propose, humans approve), fail-closed hard limits, signed audit.
+- [Agent protocol](https://scopegate.io/docs/agent-protocol): The SKILL protocol agents follow to self-operate the gateway.
+- [CLI reference](https://scopegate.io/docs/cli-reference): Every `scopegate` command and flag.
+- [Configuration](https://scopegate.io/docs/configuration): `scopegate.yaml`, `policies.yaml`, environment variables.
+
+## Agent guides (self-install, self-operate)
+
+- [Agent guides index](https://scopegate.io/docs/agents/): Who the docs are for and how to consume them.
+- [01 — Quickstart: self-install](https://scopegate.io/docs/agents/01-quickstart-self-install): Detect, install and initialize ScopeGate non-interactively; the single human step (depositing secrets).
+- [02 — Protocol](https://scopegate.io/docs/agents/02-protocol): The capability lifecycle — request → grant → use → expire; what `pending_human_approval` means.
+- [03 — Tools reference](https://scopegate.io/docs/agents/03-tools-reference): The six `scopegate_*` MCP tools with exact parameters, return shapes and copy-paste JSON payloads.
+- [04 — Connectors](https://scopegate.io/docs/agents/04-connectors): Native bridges (Huly 13 tools, Railway 7, Cloudflare 8, Google 7, GitHub App) and custom MCP upstreams.
+- [05 — Policies](https://scopegate.io/docs/agents/05-policies): Capability matching, TTL rules, hard limits, and how to propose a policy a human can approve fast.
+- [06 — Self-repair](https://scopegate.io/docs/agents/06-self-repair): The diagnose-first playbook for auth/connection errors.
+- [07 — Security rules](https://scopegate.io/docs/agents/07-security-rules): The non-negotiables and how ScopeGate enforces them.
+
+## Facts
+
+- Open source, Apache-2.0. Gateway is local-first: the cloud management plane is optional and metadata-only (it never receives secret values).
+- Six MCP tools: `scopegate_request_capability`, `scopegate_list_capabilities`, `scopegate_register_upstream`, `scopegate_diagnose`, `scopegate_propose_policy`, `scopegate_vault_status`.
+- Token minter: gateway JWTs, GitHub App installation tokens, AWS STS, Google service-account tokens, Huly workspace tokens.
+- Signed audit trail: append-only, hash-chained, Ed25519-signed JSONL; inputs are hashed, never stored.
+- Fleet revocation via the cloud panel is effective in under 30 seconds on online gateways; offline agents' tokens expire by TTL anyway.
+
+## Links
+
+- [GitHub repository](https://github.com/NexgenSystemsMX/scopegate)
+- [npm package](https://www.npmjs.com/package/scopegate)
+- [Full documentation index](https://scopegate.io/docs/)
+- [Raw markdown docs (text/markdown)](https://scopegate.io/docs/agents/README.md)

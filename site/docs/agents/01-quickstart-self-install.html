@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 — Quickstart: Self-Install ScopeGate (Zero to Running) — ScopeGate Docs</title>
+<meta name="description" content="You are an autonomous coding agent. This guide takes you from &quot;ScopeGate is not installed&quot; to a running gateway that brokers every MCP connection for your harne">
+<link rel="canonical" href="https://scopegate.io/docs/agents/01-quickstart-self-install">
+<meta property="og:title" content="01 — Quickstart: Self-Install ScopeGate (Zero to Running) — ScopeGate Docs">
+<meta property="og:description" content="You are an autonomous coding agent. This guide takes you from &quot;ScopeGate is not installed&quot; to a running gateway that brokers every MCP connection for your harne">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agents/01-quickstart-self-install">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>01 — Quickstart: Self-Install ScopeGate (Zero to Running)</span></nav>
+  <article>
+<h1 id="01-quickstart-self-install-scopegate-zero-to-running">01 — Quickstart: Self-Install ScopeGate (Zero to Running)</h1>
+<p>You are an autonomous coding agent. This guide takes you from &quot;ScopeGate is not installed&quot; to a running gateway that brokers every MCP connection for your harness (Claude Code, Kimi Code, Cursor or OpenCode) — without you ever touching a secret value. Every step is non-interactive and idempotent; the single human action (depositing secrets) is called out in §4.</p>
+<p>What you end up with:</p>
+<ul><li><code>~/.scopegate/</code> — AES-256-GCM vault (<code>vault.enc</code> + <code>master.key</code>), Ed25519</li></ul>
+<p>  audit identity (<code>identity.json</code>), <code>scopegate.yaml</code> (upstream registry),   <code>policies.yaml</code> (grant rules). No plaintext secrets on disk.</p>
+<ul><li>Your harness&#39;s MCP config rewritten so <code>scopegate</code> is the ONLY MCP entry</li></ul>
+<p>  point; pre-existing MCP servers migrated behind the gateway, their   plaintext secrets vaulted and replaced by <code>secretRef</code> names.</p>
+<ul><li>Keep-first backups of every original config as <code>&lt;config&gt;.pre-scopegate.bak</code></li></ul>
+<p>  (restorable with <code>scopegate rollback</code>, §6).</p>
+<h2 id="1-prerequisites">1. Prerequisites</h2>
+<ul><li><strong>Node.js &gt;= 20</strong> with <code>npm</code> on PATH:</li></ul>
+<p>  ``<code>bash   node -v   # must print v20.x or newer   npm -v   </code>``</p>
+<p>  Too old or missing? <code>curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | sh &amp;&amp; nvm install 22</code> (or volta / brew).</p>
+<ul><li>Write access to your home directory (portable/test install: export</li></ul>
+<p>  <code>SCOPEGATE_HOME</code> BEFORE any scopegate command):</p>
+<p>  ``<code>bash   export SCOPEGATE_HOME=/path/to/scopegate-home   </code>``</p>
+<ul><li><strong>Never use sudo.</strong> If the global npm prefix is not writable, use a</li></ul>
+<p>  user-level prefix instead (decision tree in §2).</p>
+<h2 id="2-install">2. Install</h2>
+<p>Pick ONE method. All are idempotent.</p>
+<h3 id="a-global-npm-install-preferred">A. Global npm install (preferred)</h3>
+<pre class="code" data-lang="bash"><code>npm install -g scopegate
+scopegate --version</code></pre>
+<h3 id="b-npx-no-global-install">B. npx (no global install)</h3>
+<pre class="code" data-lang="bash"><code>npx --yes scopegate@latest init   # downloads transiently and runs init</code></pre>
+<h3 id="c-installer-script-curl-sh-built-for-agents">C. Installer script (curl | sh), built for agents</h3>
+<pre class="code" data-lang="bash"><code>curl -sSL https://get.scopegate.dev | sh -s -- --yes</code></pre>
+<ul><li><code>--yes</code> = fully non-interactive. Other flags: <code>--version X.Y.Z</code>, <code>--no-init</code>.</li><li>Checks node &gt;= 20, installs via <code>npm install -g</code> (fallbacks: user prefix</li></ul>
+<p>  <code>~/.npm-global</code>, then <code>npx</code>), and runs <code>init</code> for you.</p>
+<ul><li><strong>Checksum verification (out-of-band):</strong> it prints the published tarball</li></ul>
+<p>  URL and its SHA-1 from the npm registry. Verify independently:</p>
+<p>  ``<code>bash   npm view scopegate dist.tarball dist.shasum   # tarball URL + expected SHA-1   curl -sSL &lt;tarball-url&gt; | shasum -a 1         # output must equal dist.shasum   </code>``</p>
+<h3 id="decision-tree-install">Decision tree — install</h3>
+<pre class="code" data-lang="text"><code>IF `npm install -g scopegate` exits 0          → verify `scopegate --version`; go to §3
+ELSE IF it fails on permissions (EACCES)       → npm install -g --prefix &quot;$HOME/.npm-global&quot; scopegate
+                                                 export PATH=&quot;$HOME/.npm-global/bin:$PATH&quot;
+ELSE (npm install fails for any other reason)  → npx --yes scopegate@latest init  (no global install)</code></pre>
+<h2 id="3-scopegate-init-what-it-does-exactly">3. <code>scopegate init</code> — what it does, exactly</h2>
+<p>Run it from the project root (project-scope configs resolve against your cwd). Non-interactive, exit 0 on success. <code>--dry-run</code> is pure inspection and creates NOTHING — no <code>~/.scopegate</code>, no master key, no vault, no backups:</p>
+<pre class="code" data-lang="bash"><code>scopegate init --dry-run   # report what WOULD change; zero side effects
+scopegate init             # do it (idempotent)</code></pre>
+<p>Step by step:</p>
+<ol><li><strong>Provisions <code>~/.scopegate/</code></strong>: master key + empty encrypted vault; the</li></ol>
+<p>   Ed25519 <code>identity.json</code> that signs the audit log (keep-first: an existing    identity is NEVER regenerated); default <code>policies.yaml</code> (mode 0600) with    a safe rule — <code><em>:call:</em></code> auto-approved at 15-minute TTL; <code>scopegate.yaml</code>    with a generated <code>agentId</code> (<code>agent-&lt;username&gt;-&lt;6 hex&gt;</code>).</p>
+<ol><li><strong>Detects your harness</strong> via four adapters:</li></ol>
+<table><thead><tr><th>Harness</th><th>Project config</th><th>User config</th><th>CLI probe</th></tr></thead><tbody><tr><td><code>claude-code</code></td><td><code>.mcp.json</code></td><td><code>~/.claude.json</code></td><td><code>claude</code></td></tr><tr><td><code>kimi-code</code></td><td><code>.kimi-code/mcp.json</code></td><td><code>~/.kimi-code/mcp.json</code> (or <code>$KIMI_CODE_HOME/mcp.json</code>)</td><td><code>kimi</code></td></tr><tr><td><code>cursor</code></td><td><code>.cursor/mcp.json</code></td><td><code>~/.cursor/mcp.json</code></td><td><code>cursor-agent</code> / <code>cursor</code></td></tr><tr><td><code>opencode</code></td><td><code>opencode.json</code></td><td><code>~/.config/opencode/opencode.json</code></td><td><code>opencode</code></td></tr></tbody></table>
+<p>   Every config file that EXISTS is migrated (a leftover config still holds    secrets). If none exists but the harness CLI is on PATH, init creates the    user-level config fresh; if nothing is found at all, it writes a project    <code>.mcp.json</code> with only scopegate. (<code>~</code> = <code>%USERPROFILE%</code> on Windows.)</p>
+<ol><li><strong>Migrates every MCP server behind the gateway</strong>, vaulting secrets and</li></ol>
+<p>   leaving only <code>secretRef</code> names in <code>scopegate.yaml</code>:    - env vars matching <code>KEY|TOKEN|SECRET|PASSWORD|PASS|CREDENTIAL|AUTH</code>      (case-insensitive) → vaulted as <code>&lt;server&gt;_&lt;var lowercase&gt;</code>;    - headers matching <code>authorization|api-key|token|secret</code> → vaulted      (<code>Bearer </code> prefix stripped; with several secret headers, the first —      Authorization preferred — is wired as the auth header, the rest stay      vaulted with a WARN);    - Kimi <code>bearerTokenEnvVar</code> is resolved at init time; when unset — or an      OpenCode <code>oauth</code> entry — the upstream migrates as <strong>oauth2-PENDING</strong>      (never silently degraded to <code>none</code>) with a WARN naming the exact      <code>scopegate secret add &lt;ref&gt;</code> command — relay it to the human (§4);    - SSE endpoints migrate with <code>enabled: false</code> + WARN (not proxied yet).</p>
+<ol><li><strong>Backs up each original config</strong> to <code>&lt;config&gt;.pre-scopegate.bak</code> —</li></ol>
+<p>   KEEP-FIRST: written once, never overwritten, always the rollback target.</p>
+<ol><li><strong>Rewrites the harness config</strong> so <code>scopegate</code> is its ONLY MCP server,</li></ol>
+<p>   carrying <code>SCOPEGATE_AGENT_ID</code> equal to <code>scopegate.yaml</code>&#39;s <code>agentId</code>:</p>
+<p>   ``<code>json    { &quot;mcpServers&quot;: { &quot;scopegate&quot;: {        &quot;command&quot;: &quot;scopegate&quot;, &quot;args&quot;: [&quot;start&quot;],        &quot;env&quot;: { &quot;SCOPEGATE_AGENT_ID&quot;: &quot;agent-…&quot; } } } }    </code>``</p>
+<p>   (OpenCode: one <code>mcp.scopegate</code> entry of <code>type: &quot;local&quot;</code>, <code>command:    [&quot;scopegate&quot;, &quot;start&quot;]</code>.) The rewrite is re-parsed and validated; on    failure the backup is restored (or the incomplete file removed) and init    aborts with an actionable error.</p>
+<ol><li><strong>Prints the outcome</strong>: <code>DONE. Upstreams behind the gateway: [...]</code>, any</li></ol>
+<p>   WARNs needing a human, and <code>Next: restart your agent session.</code></p>
+<p>Flags: <code>--dry-run</code> (report only); <code>--harness &lt;id&gt;</code> (restrict to <code>claude-code | kimi-code | cursor | opencode</code>). A pre-existing entry NAMED <code>scopegate</code> not written by init is a hard error — rename/remove, re-run.</p>
+<h2 id="4-when-a-secret-is-needed-the-one-human-action">4. When a secret is needed — the ONE human action</h2>
+<p>Migration may end with <code>PENDING auth (oauth2)</code> warnings, or a service may need credentials later. The ONLY thing a human ever does is deposit the secret in THEIR OWN TERMINAL. Never ask for a secret in chat, never accept one, never route one through argv or env vars you control.</p>
+<p>Tell the human EXACTLY this (copy-paste, substituting the ref):</p>
+<blockquote>Run in your terminal — the value never enters this chat: <code>scopegate secret add &lt;ref&gt;</code></blockquote>
+<ul><li>Interactive: hidden prompt (<code>Value for &#39;&lt;ref&gt;&#39; (input hidden):</code>). Piped:</li></ul>
+<p>  <code>echo &quot;$TOKEN&quot; | scopegate secret add &lt;ref&gt;</code>.</p>
+<ul><li>Ref names: letters, digits, <code>_</code>, <code>-</code>, <code>.</code>, <code>:</code> (e.g. <code>github_token</code>,</li></ul>
+<p>  <code>oauth2:notion</code>).</p>
+<ul><li>Verify afterwards (names only, never values): <code>scopegate secret ls</code>, or</li></ul>
+<p>  the <code>scopegate_vault_status</code> MCP tool once the gateway is live.</p>
+<h3 id="decision-tree-secrets">Decision tree — secrets</h3>
+<pre class="code" data-lang="text"><code>IF init warned &quot;PENDING auth (oauth2) … scopegate secret add &lt;ref&gt;&quot;
+    → hand the human that exact command; wait for confirmation; re-verify
+IF a call later fails over a missing secretRef
+    → call scopegate_diagnose and relay its action_required verbatim
+IF the human offers to paste the key in chat
+    → REFUSE. `scopegate secret add &lt;ref&gt;` in their terminal. No exceptions</code></pre>
+<h2 id="5-post-install-verification">5. Post-install verification</h2>
+<ol><li><strong>Config + vault + upstream health</strong> (works before any restart):</li></ol>
+<p>   ``<code>bash    scopegate status    </code>``</p>
+<p>   Expect your <code>agentId</code>, upstream names, vault ref names, and one line per    upstream: <code>✓ &lt;name&gt; (N tools)</code> / <code>✗ &lt;name&gt; — &lt;error&gt;</code> (<code>✗</code> = unreachable    UPSTREAM, not a failed install — §7).</p>
+<ol><li><strong>Restart the agent session.</strong> The harness only re-reads its MCP config</li></ol>
+<p>   on startup — tell the human: &quot;restart this session so the gateway    connects.&quot; (You never run <code>scopegate start</code>; the harness launches it.)</p>
+<ol><li><strong>First tool call</strong> (after restart, via the <code>scopegate_*</code> MCP tools):</li></ol>
+<p>   ``<code>json    scopegate_request_capability({      &quot;capability&quot;: &quot;&lt;upstream&gt;:call:&lt;tool&gt;&quot;,      &quot;ttl&quot;: &quot;15m&quot;,      &quot;reason&quot;: &quot;first post-install check&quot;    })    → { &quot;granted&quot;: true, … }    </code>``</p>
+<p>   Then call the proxied tool <code>&lt;upstream&gt;__&lt;tool&gt;</code>;    <code>scopegate_list_capabilities</code> shows active grants and TTL. If the    response is <code>status: &quot;pending_human_approval&quot;</code> with an <code>approval_id</code>:    STOP and hand the human <code>scopegate approve &lt;approval_id&gt;</code> — the second    and last human-only action; see    <a href="/docs/agents/03-tools-reference">03 — Tools reference</a>.</p>
+<h2 id="6-rollback-and-re-running-init">6. Rollback and re-running init</h2>
+<ul><li><strong>Re-running <code>scopegate init</code> is a verifiable no-op</strong>: SHA-256 migration</li></ul>
+<p>  fingerprints (persisted in <code>scopegate.yaml</code>) detect unchanged servers;   rewritten configs are byte-compared (<code>already up to date — no changes</code>);   backups, identity and config are keep-first. Re-run freely — e.g. after a   new MCP server appears in a harness config.</p>
+<ul><li><strong>Undo the harness side:</strong></li></ul>
+<p>  ``<code>bash   scopegate rollback                   # all harnesses   scopegate rollback --harness cursor  # just one   </code>``</p>
+<p>  Restores each config from its <code>.pre-scopegate.bak</code>, byte-verified by hash.   Conservative: <code>scopegate.yaml</code> upstreams and vault secrets stay untouched   (remove manually if permanent). No backups → <code>No backups found — nothing   to restore.</code></p>
+<h2 id="7-troubleshooting">7. Troubleshooting</h2>
+<table><thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead><tbody><tr><td><code>node not found</code> / <code>too old</code></td><td>Node &lt; 20</td><td>Install Node &gt;= 20 (nvm/volta/brew), re-run</td></tr><tr><td><code>npm install -g</code> fails (EACCES)</td><td>Global prefix not writable</td><td>User prefix + PATH export (§2) — never sudo</td></tr><tr><td>init: <code>no harness config found</code></td><td>No config file, no harness CLI on PATH</td><td>init wrote a project <code>.mcp.json</code>; or pass <code>--harness &lt;id&gt;</code></td></tr><tr><td>init error: <code>already defines an MCP server named &#39;scopegate&#39;</code></td><td>Name clash not created by init</td><td>Rename/remove that entry, re-run init</td></tr><tr><td>init WARN: <code>could not parse &lt;path&gt; … skipping</code></td><td>Invalid JSON in that config</td><td>Fix or remove the file, re-run init</td></tr><tr><td>init WARN: <code>PENDING auth (oauth2)</code></td><td>Secret unavailable at init time</td><td>Human: <code>scopegate secret add &lt;ref&gt;</code> (§4), restart</td></tr><tr><td><code>status</code> shows <code>✗ &lt;upstream&gt;</code> (timeout)</td><td>Upstream unreachable (default 10 s; tune <code>SCOPEGATE_CONNECT_TIMEOUT_MS</code>)</td><td>Fix the endpoint; after restart call <code>scopegate_diagnose</code></td></tr><tr><td>Need stack traces</td><td>Errors print one actionable line</td><td>Re-run with <code>SCOPEGATE_LOG_LEVEL=debug</code></td></tr><tr><td>Wrong/empty home dir</td><td><code>SCOPEGATE_HOME</code> unset/different</td><td>Export it BEFORE every scopegate command</td></tr></tbody></table>
+<h2 id="next">Next</h2>
+<ul><li>Day-to-day operation (request_capability, diagnose, propose_policy,</li></ul>
+<p>  register_upstream): <a href="/docs/agents/03-tools-reference">03 — Tools reference</a></p>
+<ul><li>The non-negotiable agent protocol: <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/SKILL.md">SKILL.md</a></li><li>Config and policy formats: <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/scopegate.example.yaml">scopegate.example.yaml</a>,</li></ul>
+<p>  <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/policies.example.yaml">policies.example.yaml</a></p>
+  </article>
+  <nav class="prevnext"><span></span><a class="next" href="/docs/agents/02-protocol">02 — The Agent Protocol: Operating Behind the Gateway →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

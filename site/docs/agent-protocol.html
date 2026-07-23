@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Protocol — ScopeGate Docs</title>
+<meta name="description" content="ScopeGate is operated by the agent itself through MCP tools. The canonical protocol ships as SKILL.md in the npm package — install it as a skill or reference it">
+<link rel="canonical" href="https://scopegate.io/docs/agent-protocol">
+<meta property="og:title" content="Agent Protocol — ScopeGate Docs">
+<meta property="og:description" content="ScopeGate is operated by the agent itself through MCP tools. The canonical protocol ships as SKILL.md in the npm package — install it as a skill or reference it">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agent-protocol">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><span>Agent Protocol</span></nav>
+  <article>
+<h1 id="agent-protocol">Agent Protocol</h1>
+<p>ScopeGate is operated by the agent itself through MCP tools. The canonical protocol ships as <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/SKILL.md"><code>SKILL.md</code></a> in the npm package — install it as a skill or reference it from <code>CLAUDE.md</code> / <code>AGENTS.md</code>:</p>
+<pre class="code" data-lang="markdown"><code>See ./SKILL.md — you operate behind ScopeGate. Never handle secret values;
+request capabilities via scopegate_* tools.</code></pre>
+<h2 id="the-rules-non-negotiable">The rules (non-negotiable)</h2>
+<ol><li><strong>Never ask the user to paste a secret in chat.</strong> Secrets go in via</li></ol>
+<p>   <code>scopegate secret add &lt;ref&gt;</code> from the human&#39;s terminal.</p>
+<ol><li><strong>Minimum scope, shortest TTL.</strong> Call <code>scopegate_request_capability</code> with a</li></ol>
+<p>   one-line reason before privileged work.</p>
+<ol><li><strong>Human approval is a wall, not a delay.</strong> A</li></ol>
+<p>   <code>status: &quot;pending_human_approval&quot;</code> response carries an <code>approval_id</code> and    <code>instructions</code>: inform the human, hand them the exact command    (<code>scopegate approve &lt;approval_id&gt;</code> / <code>scopegate deny &lt;approval_id&gt;</code>), and    do <strong>not</strong> retry with broader scope — once approved, re-request the SAME    capability.</p>
+<ol><li><strong>Self-repair first.</strong> On any upstream error call <code>scopegate_diagnose</code></li></ol>
+<p>   before reporting failure, and follow any <code>action_required</code> field (missing    secret, <code>scopegate auth login &lt;upstream&gt;</code> re-auth — both human steps).</p>
+<ol><li><strong>Agents propose, humans approve.</strong> Policy proposals land in</li></ol>
+<p>   <code>policies.pending.yaml</code>; the agent never edits <code>policies.yaml</code>.</p>
+<h2 id="tools">Tools</h2>
+<table><thead><tr><th>Tool</th><th>Purpose</th></tr></thead><tbody><tr><td><code>scopegate_request_capability</code></td><td>Request <code>{capability, ttl?, reason}</code> → grant with TTL, or <code>pending_human_approval</code></td></tr><tr><td><code>scopegate_list_capabilities</code></td><td>Active grants + remaining TTL</td></tr><tr><td><code>scopegate_register_upstream</code></td><td>Register an MCP/API upstream (<code>http</code> or <code>stdio</code>); secret values are rejected — only <code>secretRef</code> names</td></tr><tr><td><code>scopegate_diagnose</code></td><td>Liveness + tool count per upstream; reconnects are automatic</td></tr><tr><td><code>scopegate_propose_policy</code></td><td>Queue a <code>{match, ttl?, justification}</code> rule for human review</td></tr><tr><td><code>scopegate_vault_status</code></td><td>List secretRef <strong>names</strong> in the vault (never values)</td></tr></tbody></table>
+<p>Capability format: <code>&quot;&lt;upstream&gt;:&lt;action&gt;:&lt;resource&gt;&quot;</code>, e.g. <code>github:write:easyorder/*</code>. Proxied tools appear as <code>&lt;upstream&gt;__&lt;tool&gt;</code>.</p>
+<h2 id="onboarding-a-new-service-worked-example">Onboarding a new service (worked example)</h2>
+<p>Human: &quot;connect our Grafana MCP&quot; →</p>
+<ol><li><code>scopegate_vault_status</code> — is <code>grafana_token</code> already deposited?</li><li><code>scopegate_register_upstream</code>:</li></ol>
+<p>   <code>{ name: &quot;grafana&quot;, transport: { kind: &quot;http&quot;, url: &quot;https://g.example.com/mcp&quot; }, auth: { type: &quot;bearer&quot;, secretRef: &quot;grafana_token&quot; } }</code></p>
+<ol><li>Response <code>waiting_for_secrets</code> → tell the human:</li></ol>
+<p>   &quot;Run in your terminal: <code>scopegate secret add grafana_token</code>&quot;</p>
+<ol><li><code>scopegate_diagnose</code> → <code>grafana__*</code> tools live.</li></ol>
+<h2 id="session-lifecycle-notes">Session lifecycle notes</h2>
+<ul><li>OAuth2 upstreams refresh automatically (daemon renews at ~80% of TTL). If a</li></ul>
+<p>  refresh token dies, the gateway flags re-auth; the human runs   <code>scopegate auth login &lt;upstream&gt;</code> (device-code) — the agent cannot do this.</p>
+<ul><li>Setup itself is agent-executable: <code>npm i -g scopegate &amp;&amp; scopegate init</code></li></ul>
+<p>  migrates existing MCPs and their plaintext secrets behind the gateway.</p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/security-model">← Security Model</a><a class="next" href="/docs/cli-reference">CLI Reference →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

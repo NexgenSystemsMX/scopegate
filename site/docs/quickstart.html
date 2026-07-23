@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quickstart — ScopeGate Docs</title>
+<meta name="description" content="Agent-executable: every step is a command an agent (or you) can run. Target: first proxied tool call in &lt; 90 seconds. Requirements: Node.js ≥ 20.">
+<link rel="canonical" href="https://scopegate.io/docs/quickstart">
+<meta property="og:title" content="Quickstart — ScopeGate Docs">
+<meta property="og:description" content="Agent-executable: every step is a command an agent (or you) can run. Target: first proxied tool call in &lt; 90 seconds. Requirements: Node.js ≥ 20.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/quickstart">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><span>Quickstart</span></nav>
+  <article>
+<h1 id="quickstart">Quickstart</h1>
+<p>Agent-executable: every step is a command an agent (or you) can run. Target: first proxied tool call in &lt; 90 seconds. Requirements: Node.js ≥ 20.</p>
+<h2 id="1-install">1. Install</h2>
+<pre class="code" data-lang="bash"><code>npm install -g scopegate
+# or: curl -sSL https://get.scopegate.dev | sh -s -- --yes</code></pre>
+<h2 id="2-init-idempotent-non-interactive">2. Init (idempotent, non-interactive)</h2>
+<pre class="code" data-lang="bash"><code>scopegate init</code></pre>
+<p><code>init</code> creates <code>~/.scopegate/</code> (encrypted vault, master key, default policies), detects your harness configs, <strong>migrates existing MCP servers behind the gateway</strong> (plaintext env vars and auth headers move into the vault; configs keep only refs), and rewrites the harness config so <code>scopegate</code> is the single MCP entry point. Originals are backed up as <code>*.pre-scopegate.bak</code>.</p>
+<p>Preview without writing anything:</p>
+<pre class="code" data-lang="bash"><code>scopegate init --dry-run</code></pre>
+<h2 id="3-deposit-a-secret-human-out-of-band">3. Deposit a secret (human, out-of-band)</h2>
+<p>Secrets never pass through chat or argv:</p>
+<pre class="code" data-lang="bash"><code>scopegate secret add github_pat        # hidden prompt
+echo &quot;$TOKEN&quot; | scopegate secret add notion_token   # or piped</code></pre>
+<h2 id="4-restart-the-agent-session">4. Restart the agent session</h2>
+<p>The harness now launches <code>scopegate start</code> as its only MCP server. The agent sees upstream tools as <code>&lt;upstream&gt;__&lt;tool&gt;</code> plus the <code>scopegate_*</code> management tools.</p>
+<h2 id="5-first-capability-tool-call-agent-side">5. First capability + tool call (agent side)</h2>
+<p>The agent does this by itself (see <a href="/docs/agent-protocol">Agent Protocol</a>):</p>
+<pre class="code"><code>scopegate_request_capability  { capability: &quot;github:call:list_issues&quot;, reason: &quot;triage issues&quot; }
+→ { granted: true, expires_in_seconds: 900 }
+github__list_issues { ... }   # token injected at the outbound hop, never exposed</code></pre>
+<p>When a rule says <code>require: human_approval</code>, the response is <code>status: &quot;pending_human_approval&quot;</code> with an <code>approval_id</code>; the human runs <code>scopegate approve &lt;approval_id&gt;</code> and the agent retries the SAME capability.</p>
+<h2 id="6-check-health-anytime">6. Check health anytime</h2>
+<pre class="code" data-lang="bash"><code>scopegate status            # config + vault refs + upstream liveness
+scopegate audit verify      # hash chain + Ed25519 signatures intact</code></pre>
+<h2 id="undo">Undo</h2>
+<pre class="code" data-lang="bash"><code>scopegate rollback          # restores *.pre-scopegate.bak harness configs</code></pre>
+<p>The vault, policies and audit log under <code>~/.scopegate/</code> are left untouched; delete the directory manually if you want a full removal.</p>
+  </article>
+  <nav class="prevnext"><span></span><a class="next" href="/docs/security-model">Security Model →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScopeGate — Agent Documentation — ScopeGate Docs</title>
+<meta name="description" content="ScopeGate is an ephemeral-credentials gateway for coding agents. It sits between your agent runtime and every external service (MCP servers, cloud APIs, SaaS to">
+<link rel="canonical" href="https://scopegate.io/docs/agents/">
+<meta property="og:title" content="ScopeGate — Agent Documentation — ScopeGate Docs">
+<meta property="og:description" content="ScopeGate is an ephemeral-credentials gateway for coding agents. It sits between your agent runtime and every external service (MCP servers, cloud APIs, SaaS to">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agents/">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><span>Agent guides</span></nav>
+  <article>
+<h1 id="scopegate-agent-documentation">ScopeGate — Agent Documentation</h1>
+<p>ScopeGate is an <strong>ephemeral-credentials gateway</strong> for coding agents. It sits between your agent runtime and every external service (MCP servers, cloud APIs, SaaS tools). Real secrets live in an AES-256-GCM encrypted local vault and are injected only at the outbound hop — they never enter your context.</p>
+<p><strong>You never hold secrets; you hold capabilities.</strong> A capability is a short-lived, minimum-scope grant minted by the gateway&#39;s policy engine — scoped to one task, expiring in minutes. Capability ≠ credential: what leaks from a model context is nearly worthless; what the vault keeps never touches the context at all.</p>
+<p>Everything you need is exposed as six MCP tools (<code>scopegate_request_capability</code>, <code>scopegate_list_capabilities</code>, <code>scopegate_register_upstream</code>, <code>scopegate_diagnose</code>, <code>scopegate_propose_policy</code>, <code>scopegate_vault_status</code>) plus the <code>scopegate</code> CLI. You install, configure and operate all of it yourself.</p>
+<h2 id="who-this-documentation-is-for">Who this documentation is for</h2>
+<p>Any autonomous coding agent on any MCP-capable harness: <strong>Claude Code, Kimi Code, Cursor, OpenCode</strong>, or any other client that speaks MCP (<code>.mcp.json</code>). No prior knowledge of ScopeGate is assumed. If you have never seen ScopeGate before, read guide 01 first and follow it literally; treat the rest as reference material you pull in on demand.</p>
+<h2 id="how-to-consume-these-docs">How to consume these docs</h2>
+<table><thead><tr><th>Document</th><th>Read it when</th></tr></thead><tbody><tr><td><a href="/docs/agents/01-quickstart-self-install">01 — Quickstart: self-install</a></td><td>First contact. ScopeGate is not installed, or you are not sure it is.</td></tr><tr><td><a href="/docs/agents/02-protocol">02 — Protocol</a></td><td>Before your first privileged action. The operating rules of the capability model.</td></tr><tr><td><a href="/docs/agents/03-tools-reference">03 — Tools reference</a></td><td>Before calling any <code>scopegate_*</code> tool — exact parameters and response shapes.</td></tr><tr><td><a href="/docs/agents/04-connectors">04 — Connectors</a></td><td>When connecting a service: huly, github, railway, cloudflare, google, or any custom MCP upstream.</td></tr><tr><td><a href="/docs/agents/05-policies">05 — Policies</a></td><td>When a capability is denied, or before proposing a policy change.</td></tr><tr><td><a href="/docs/agents/06-self-repair">06 — Self-repair</a></td><td>On any auth or connection error — before telling the human it failed.</td></tr><tr><td><a href="/docs/agents/07-security-rules">07 — Security rules</a></td><td>Always. The non-negotiables. Re-read whenever unsure.</td></tr></tbody></table>
+<h2 id="the-seven-guides">The seven guides</h2>
+<ul><li><strong>01 — Quickstart: self-install</strong> — detect, install and initialize</li></ul>
+<p>  ScopeGate non-interactively (<code>npm i -g scopegate</code>, <code>scopegate init</code>),   verify with <code>scopegate status</code>, and hand off the single human step.</p>
+<ul><li><strong>02 — Protocol</strong> — the capability lifecycle: request → grant → use →</li></ul>
+<p>  expire; how to think in capabilities instead of credentials; what   <code>pending_human_approval</code> means.</p>
+<ul><li><strong>03 — Tools reference</strong> — all six <code>scopegate_*</code> MCP tools: parameters,</li></ul>
+<p>  return shapes, error cases, copy-paste JSON payloads.</p>
+<ul><li><strong>04 — Connectors</strong> — the five native connectors (huly, github, railway,</li></ul>
+<p>  cloudflare, google), the signed registry, and how to register any custom   upstream MCP with <code>scopegate_register_upstream</code>.</p>
+<ul><li><strong>05 — Policies</strong> — how the policy engine decides grants (TTL limits,</li></ul>
+<p>  scopes, <code>auto_approve</code> vs <code>require: human_approval</code>, hard <code>deny</code> globs)   and how to propose changes with <code>scopegate_propose_policy</code>.</p>
+<ul><li><strong>06 — Self-repair</strong> — <code>scopegate_diagnose</code> playbooks: expired OAuth,</li></ul>
+<p>  missing secretRef, unreachable upstream; when and how to escalate to the   human with the exact command.</p>
+<ul><li><strong>07 — Security rules</strong> — the invariants you must never break: no secrets</li></ul>
+<p>  in chat, no self-approval, minimum scope, full audit trail.</p>
+<h2 id="the-self-configuration-manifesto">The self-configuration manifesto</h2>
+<p>You — the agent — can install, configure and operate ScopeGate <strong>100% on your own</strong>. Installation, harness migration, upstream registration, capability requests, policy proposals, diagnosis and self-repair are all agent-executable, non-interactive and idempotent.</p>
+<p>The <strong>only two human actions</strong> in the entire system are:</p>
+<ol><li><strong>Depositing secrets.</strong> The human runs <code>scopegate secret add &lt;ref&gt;</code> in</li></ol>
+<p>   THEIR terminal. The value goes straight into the encrypted vault via a    hidden prompt or piped stdin. It never passes through chat, argv, logs,    or your context. <strong>NEVER ask a human to paste a secret in the chat</strong> —    ask them to run that command instead.</p>
+<ol><li><strong>Approving escalations.</strong> The human runs <code>scopegate approve &lt;id&gt;</code> (for</li></ol>
+<p>   capability requests that return <code>pending_human_approval</code>) or    <code>scopegate policies accept &lt;n&gt;</code> (for policy rules you proposed). You    cannot approve your own escalations — that write asymmetry <em>is</em> the    security model.</p>
+<p>Everything else is yours to do.</p>
+<h2 id="golden-rules-tl-dr">Golden rules (TL;DR)</h2>
+<ul><li>Never ask for, receive, store, or repeat a secret value.</li><li>Request minimum scope and shortest TTL, always with a one-line reason.</li><li><code>pending_human_approval</code> means STOP, not retry — hand the human the exact</li></ul>
+<p>  command from the response.</p>
+<ul><li>Diagnose before reporting failure: call <code>scopegate_diagnose</code> first.</li><li>Never edit <code>policies.yaml</code> yourself. Propose, don&#39;t modify.</li></ul>
+  </article>
+
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

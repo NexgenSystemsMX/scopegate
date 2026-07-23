@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 — The Agent Protocol: Operating Behind the Gateway — ScopeGate Docs</title>
+<meta name="description" content="This guide defines how you (an autonomous coding agent) work with ScopeGate&#39;s ephemeral capabilities. It is the operational contract: follow it exactly and priv">
+<link rel="canonical" href="https://scopegate.io/docs/agents/02-protocol">
+<meta property="og:title" content="02 — The Agent Protocol: Operating Behind the Gateway — ScopeGate Docs">
+<meta property="og:description" content="This guide defines how you (an autonomous coding agent) work with ScopeGate&#39;s ephemeral capabilities. It is the operational contract: follow it exactly and priv">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agents/02-protocol">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>02 — The Agent Protocol: Operating Behind the Gateway</span></nav>
+  <article>
+<h1 id="02-the-agent-protocol-operating-behind-the-gateway">02 — The Agent Protocol: Operating Behind the Gateway</h1>
+<p>This guide defines how you (an autonomous coding agent) work with ScopeGate&#39;s ephemeral capabilities. It is the operational contract: follow it exactly and privileged work flows; deviate and the gateway fails closed against you.</p>
+<p>Prerequisites: ScopeGate is installed and you can call its MCP tools (<code>scopegate_request_capability</code>, <code>scopegate_list_capabilities</code>, …). If not, see the setup guide first. Tool argument schemas live in <a href="/docs/agents/03-tools-reference">03 — Tools Reference</a>; this document covers the <em>protocol</em>, not every field.</p>
+<h2 id="1-mental-model">1. Mental model</h2>
+<p><strong>A capability is not a credential.</strong> You never see, hold, or transmit a secret value. Secrets live in the encrypted vault; the gateway injects them into upstream requests inside the proxy, outside your context. What you hold is a <em>capability</em>: a permission string of the form <code>&lt;upstream&gt;:&lt;action&gt;:&lt;resource&gt;</code>, e.g. <code>github:write:myorg/myrepo</code>, <code>aws:deploy:staging</code>, <code>huly:read:*</code>. Proxied tool calls map to <code>&lt;upstream&gt;:call:&lt;toolName&gt;</code> when no finer scope applies.</p>
+<p><strong>A grant is a time-boxed, audited materialization of a capability.</strong> When policy allows your request, the engine issues a persistent grant (UUID, <code>expiresAt</code>, issuing rule). Every grant has a TTL and dies on its own — the default ceiling is 15 minutes unless the matched rule says otherwise.</p>
+<p><strong>Why a leaked token is worth ~zero.</strong> Any token a minter produces for a call is clamped to the <em>remaining TTL of the covering grant</em> (<code>token_ttl = min(provider ceiling, grant TTL)</code>). It is scoped to one capability, expires with the grant, and every use is attributed in the Ed25519-chained audit log. Meanwhile the long-lived secret never left the vault, and honeytoken decoys (<code>canary:*</code> refs) turn any exfiltration attempt into a high-precision alarm (see §5). Stealing what you can touch buys an attacker minutes of narrow, fully-logged access.</p>
+<h2 id="2-lifecycle-of-a-privileged-action">2. Lifecycle of a privileged action</h2>
+<ol><li><strong>Ask before you act.</strong> Call <code>scopegate_request_capability</code> with the</li></ol>
+<p>   minimum capability and a one-line <code>reason</code> (required — it goes to the    audit log). Optionally pass <code>ttl</code> (strict format: <code>30s</code>, <code>5m</code>, <code>1h</code>).</p>
+<ol><li><strong>The engine evaluates, in this order:</strong> rate limit → honeytoken mention →</li></ol>
+<p>   existing covering grant (idempotent re-request: returned as-is, never    duplicated) → hard-limit <code>deny</code> globs (fail-closed, beat every rule) →    policy rules in order (<code>require: human_approval</code> → escalation;    <code>auto_approve</code> → grant). TTL is always    <code>min(requested, rule/default ceiling, limits.max_ttl)</code> — you can shorten,    never extend.</p>
+<ol><li><strong>Read the verdict.</strong> Three shapes come back:</li></ol>
+<p><strong>Granted</strong> — proceed with the work:</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;granted&quot;: true,
+  &quot;capability&quot;: &quot;github:write:myorg/myrepo&quot;,
+  &quot;expires_in_seconds&quot;: 900,
+  &quot;matched_rule&quot;: &quot;github:write:myorg/*&quot;
+}</code></pre>
+<p><strong>Denied</strong> — do not retry; follow <code>next_step</code>:</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;granted&quot;: false,
+  &quot;code&quot;: &quot;no_rule&quot;,
+  &quot;reason&quot;: &quot;No auto_approve rule matches &#39;aws:deploy:prod&#39; for agent &#39;kimi-code&#39;.&quot;,
+  &quot;next_step&quot;: &quot;Call scopegate_propose_policy with a justification; a human will review it.&quot;
+}</code></pre>
+<p>Deny <code>code</code> values: <code>no_policy</code> (no policy section covers you), <code>no_rule</code> (no auto-approve rule matches), <code>ceiling_blocked</code> (hard-limit deny glob — absolutely non-negotiable), <code>invalid_ttl</code> (your <code>ttl</code> was malformed), <code>config_error</code> (broken human config — report it), <code>capability_rate_limited</code>.</p>
+<p><strong>Pending human approval</strong> — a wall, not a delay (see §4):</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;granted&quot;: false,
+  &quot;status&quot;: &quot;pending_human_approval&quot;,
+  &quot;approval_id&quot;: &quot;7c9e2f1a-…&quot;,
+  &quot;approval_expires_at&quot;: &quot;2026-07-23T18:20:11.396Z&quot;,
+  &quot;reason&quot;: &quot;Capability &#39;github:write:myorg/myrepo&#39; matches &#39;github:write:*&#39; which requires human approval.&quot;,
+  &quot;instructions&quot;: &quot;A human must approve this request. Ask them to run in their terminal: scopegate approve 7c9e2f1a-… (or: scopegate deny 7c9e2f1a-…). Once approved, call scopegate_request_capability again with the SAME capability — do NOT retry with broader scope.&quot;,
+  &quot;next_step&quot;: &quot;Ask the human to approve this action, or wait for approval.&quot;
+}</code></pre>
+<ol><li><strong>Do the work through the gateway.</strong> With a live grant, call the proxied</li></ol>
+<p>   tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>). Each call re-checks the grant, is audited    fail-closed (input hashed, never stored), gets credentials injected, and    may return PII-redacted output if the issuing rule carries <code>redact</code>.    Calling a proxied tool <em>without</em> a grant triggers an implicit    auto-approve attempt — on failure you get    <code>Capability &#39;&lt;upstream&gt;:call:&lt;tool&gt;&#39; not granted. Call scopegate_request_capability first…</code>.    Prefer the explicit request: it records your <code>reason</code> in the audit trail.</p>
+<ol><li><strong>Renew by re-requesting the SAME capability.</strong> A live covering grant is</li></ol>
+<p>   returned idempotently; after expiry, the same request re-evaluates policy    and issues a fresh grant if the rule still allows it.</p>
+<h2 id="3-hard-rules-non-negotiable">3. Hard rules (non-negotiable)</h2>
+<ul><li><strong>Minimum scope, shortest TTL.</strong> Ask for <code>github:write:myorg/myrepo</code>, not</li></ul>
+<p>  <code>github:*</code>. Pass a <code>ttl</code> that fits the task; the ceiling always wins anyway.</p>
+<ul><li><strong>Never retry with broader scope after a deny.</strong> The deny messages say so</li></ul>
+<p>  verbatim. The correct move is <code>scopegate_propose_policy</code> with a   justification, then inform the human.</p>
+<ul><li><strong>Never ask the human to paste a secret in chat.</strong> If a secret is missing,</li></ul>
+<p>  the answer is always: &quot;Run in your terminal: <code>scopegate secret add &lt;ref&gt;</code>&quot;.</p>
+<ul><li><strong>Never escalate yourself.</strong> You can propose rules (<code>{match, ttl}</code> only) —</li></ul>
+<p>  they land in <code>policies.pending.yaml</code> and have NO effect until a human   accepts them (<code>scopegate policies accept &lt;n&gt;</code>). Never edit <code>policies.yaml</code>,   never touch approval queue files, never try to approve your own request.</p>
+<ul><li><strong>Human approval is a wall.</strong> See §4 — stop, hand over the command, wait.</li><li><strong>No request loops.</strong> <code>scopegate_request_capability</code> is throttled by a</li></ul>
+<p>  sliding window (default <code>30/m</code>, tunable via <code>limits.rate_limit</code>). Hammering   earns you <code>capability_rate_limited</code> and wastes the window.</p>
+<h2 id="4-when-you-get-pending-human-approval">4. When you get <code>pending_human_approval</code></h2>
+<p>A rule with <code>require: human_approval</code> matched your capability. A request now sits in the human&#39;s queue (it expires after <code>approval_expires_at</code> — default 10 minutes, set by <code>limits.approval_ttl</code>). Do exactly this:</p>
+<ol><li><strong>STOP that line of work.</strong> Do not retry, do not rephrase the capability,</li></ol>
+<p>   do not poll in a loop. Re-requesting the same capability just returns the    same pending <code>approval_id</code> (requests are deduplicated) — it does not    speed anything up.</p>
+<ol><li><strong>Inform the human with the exact command</strong> from the response:</li></ol>
+<p>   <code>scopegate approve &lt;approval_id&gt;</code> (or <code>scopegate deny &lt;approval_id&gt;</code>).    Relay it verbatim; approval is a human-only action by design.</p>
+<ol><li><strong>Continue unrelated work or wait.</strong></li><li>**After the human approves, call <code>scopegate_request_capability</code> again with</li></ol>
+<p>   the SAME capability string.** The engine materializes a one-shot grant    from the decision and returns it (<code>granted: true</code>). A different string    starts a brand-new approval cycle — you just reset your own clock.</p>
+<ol><li><strong>If the request expired</strong> (no decision before <code>approval_expires_at</code>),</li></ol>
+<p>   re-request the same capability to open a fresh one and tell the human the    previous approval lapsed. <strong>If the human denied it</strong>, do not re-ask — drop    that path or use <code>scopegate_propose_policy</code> with a stronger justification.</p>
+<h2 id="5-suspended-the-gateway-has-contained-you">5. <code>suspended</code>: the gateway has contained you</h2>
+<p>If any response tells you the agent is <code>SUSPENDED</code>, a security tripwire fired — almost always a honeytoken: a decoy <code>canary:&lt;name&gt;</code> ref was used as a credential (<code>register_upstream</code>), named in a capability (<code>request_capability</code>), or seen outside the gateway. In enforce mode (the default) every one of your live grants was revoked and the gateway now denies EVERY request from you, fail-closed:</p>
+<pre class="code"><code>Agent &#39;kimi-code&#39; is SUSPENDED: honeytoken &#39;deploy&#39; (canary:deploy) used via
+request_capability at 2026-07-23T18:12:00Z. Every request is denied
+(fail-closed) until a human reviews the incident (see audit.jsonl:
+honeytoken_triggered / agent_revoked) and removes the agent&#39;s entry under
+&#39;suspended&#39; in ~/.scopegate/honeytoken-state.json.</code></pre>
+<p>What you do: <strong>stop all gateway interaction immediately and escalate to the human.</strong> Do not retry a single call — everything is denied and each attempt is audited. Do not try to clear the state file, rotate anything, or &quot;explain&quot; your way past it: re-enabling is a human-only incident-review process with no CLI by design. The same behavior applies if you were revoked from a ScopeGate Cloud fleet. Prevention: never reference <code>canary:*</code> refs, never pass vault ref names as if they were values.</p>
+<h2 id="6-self-managing-ttls-with-scopegate-list-capabilities">6. Self-managing TTLs with <code>scopegate_list_capabilities</code></h2>
+<p>Before a long task, inventory yourself:</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;agentId&quot;: &quot;kimi-code&quot;,
+  &quot;active_grants&quot;: [
+    { &quot;id&quot;: &quot;3f6b…&quot;, &quot;capability&quot;: &quot;github:write:myorg/myrepo&quot;, &quot;remaining_seconds&quot;: 412 }
+  ]
+}</code></pre>
+<ul><li>If the capability you need is listed with comfortable <code>remaining_seconds</code>,</li></ul>
+<p>  skip the request — you are already covered.</p>
+<ul><li>If it is about to expire mid-task, re-request the SAME capability (with a</li></ul>
+<p>  <code>reason</code>) <em>before</em> the tool call that would fail; an expired grant makes the   next proxied call re-evaluate policy from scratch.</p>
+<ul><li>If it is missing, request it. Never assume yesterday&#39;s grant survives.</li></ul>
+<h2 id="7-common-agent-mistakes-and-the-fix">7. Common agent mistakes (and the fix)</h2>
+<ul><li>*<em>Asking for <code></em>:<em></code> or <code>github:</em></code> &quot;to be safe&quot;.** No sane rule matches it;</li></ul>
+<p>  you get <code>no_rule</code> or <code>ceiling_blocked</code>, and broad proposals get rejected by   the human. Fix: name the exact resource; use globs only at the tail   (<code>github:write:myorg/*</code>).</p>
+<ul><li><strong>Ignoring <code>next_step</code> / <code>instructions</code>.</strong> These fields are the protocol</li></ul>
+<p>  telling you the one correct move (<code>propose_policy</code>, back off, hand an   <code>approve</code> command to the human). Read them before acting.</p>
+<ul><li><strong>Retry loops.</strong> Denied is denied; looping only trips</li></ul>
+<p>  <code>capability_rate_limited</code> (&quot;Back off and retry… — do NOT loop requests&quot;)   and burns your window for legitimate requests.</p>
+<ul><li>**Re-asking with a different/broader capability after a deny or while</li></ul>
+<p>  pending.** Forbidden — it creates noise in the human&#39;s queue and resets   your approval. Same string, always.</p>
+<ul><li><strong>Malformed <code>ttl</code>.</strong> <code>600</code>, <code>1h30m</code>, <code>10 minutes</code> → <code>invalid_ttl</code>. Strict</li></ul>
+<p>  format: <code>&lt;n&gt;s</code>, <code>&lt;n&gt;m</code>, <code>&lt;n&gt;h</code> (<code>30s</code>, <code>10m</code>, <code>1h</code>).</p>
+<ul><li><strong>Omitting <code>reason</code>.</strong> It is a required argument; the call errors out</li></ul>
+<p>  before evaluation.</p>
+<ul><li><strong>Asking the human for a token in chat.</strong> Never. `scopegate secret add</li></ul>
+<p>  &lt;ref&gt;` in THEIR terminal is the only path for secrets.</p>
+<ul><li><strong>Editing <code>policies.yaml</code> or the approval files yourself.</strong> Out of bounds —</li></ul>
+<p>  your only write path is <code>scopegate_propose_policy</code>.</p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/agents/01-quickstart-self-install">← 01 — Quickstart: Self-Install ScopeGate (Zero to Running)</a><a class="next" href="/docs/agents/03-tools-reference">03 — MCP Tools Reference →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

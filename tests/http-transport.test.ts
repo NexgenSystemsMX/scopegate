@@ -87,6 +87,14 @@ describe("gateway http transport", () => {
     expect(healthBody.upstreams).toBe(1);
     expect(typeof healthBody.uptime_s).toBe("number");
 
+    // GET /install.sh: no auth → 200 shell script (public curl|sh installer).
+    const installer = await fetch(`${base}/install.sh`);
+    expect(installer.status).toBe(200);
+    expect(installer.headers.get("content-type")).toContain("text/x-sh");
+    const shBody = await installer.text();
+    expect(shBody.startsWith("#!/bin/sh") || shBody.startsWith("#!/usr/bin/env sh")).toBe(true);
+    expect(shBody).toContain("scopegate");
+
     // MCP without a token → 401 JSON.
     const noAuth = await fetch(`${base}/mcp`, {
       method: "POST",

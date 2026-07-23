@@ -69,7 +69,7 @@ itself through the `scopegate_*` MCP tools (see [SKILL.md](SKILL.md)).
 | `scopegate rollback [--harness <id>]` | Restore harness configs from `*.pre-scopegate.bak` |
 | `scopegate approve <id> [--ttl <t>]` / `deny <id> --reason <r>` | Human-side approval of escalated capability requests (TTY or `SCOPEGATE_APPROVAL_TOKEN`) |
 | `scopegate policies review` / `accept <n>` / `reject <n>` | Human review of agent-proposed policy rules (`policies.pending.yaml`) |
-| `scopegate cloud serve [--port <n>] [--home <dir>]` | Run the ScopeGate Cloud control plane (multi-tenant API + dashboard) |
+| `scopegate cloud serve [--port <n>] [--home <dir>]` | Run the ScopeGate Cloud control plane (landing at `/`, panel at `/panel`, multi-tenant API at `/v1`) |
 
 ## Agent tools (MCP)
 
@@ -168,6 +168,41 @@ The gateway also speaks Streamable HTTP: `scopegate start --http --port <n>
   e2e-prod.mjs` runs the production e2e (8 assertions: health, auth 401s,
   initialize, listTools, grant, authenticated proxied call, diagnose, deny
   path).
+
+## ScopeGate Cloud (management plane)
+
+`scopegate cloud serve` runs the optional multi-tenant control plane —
+metadata-only by design (no secret values ever cross it), and the gateway
+keeps enforcing its local policy + last signed team policy when the cloud is
+down (**local-first**). One process serves three things:
+
+- `GET /` — the public **landing page** (`site/`)
+- `GET /panel` — the **product panel** (vanilla SPA, no build step): Overview
+  (fleet health, security events), Fleet (revocation with explicit
+  blast-radius confirmation, including team-wide), Approvals (the human queue:
+  approve/deny from the browser and the gateway applies it in seconds via the
+  approval-sync loop — no terminal needed), Capabilities (live grants with
+  TTLs), Audit (query + signed JSONL export), Policy (signed, versioned, with
+  line diff), Billing (active-agent metering), Settings (enroll snippets,
+  Slack alerts).
+- `/v1/*` — the management API: enroll, signed policy distribution, audit
+  ingest (hash-chain + per-event Ed25519 verified, `looksLikeSecret` guard),
+  revocation feed, approval decisions feed, billing usage, admin
+  overview/queue/export endpoints. `GET /health` is a public probe.
+
+Gateway side: `scopegate cloud enroll --cloud <url> --token <enrollToken>`
+links a gateway to a team; from there four background loops run — policy-sync
+(signed, restrictive intersection), audit-export, revocation-sync and
+approval-sync (all fail-soft: a dead cloud never blocks a tool call).
+
+Access today: the panel authenticates with the control plane's admin token
+(env `ADMIN_TOKEN`) — dev-grade by design; SSO with per-team roles
+(owner/approver/viewer) plugs into the same API via the `SsoAdapter`
+interface (`src/cloud/server/sso.ts`). Persistence is the dev-grade
+`FileStore` behind the `Store` interface — the swap point for Postgres.
+Verify the whole plane: `node e2e-cloud.mjs` (enroll → sync → central audit →
+panel approval loop → fleet revocation → local-first) and `node
+e2e-landing.mjs` (static routing contract).
 
 ## Security model (summary)
 

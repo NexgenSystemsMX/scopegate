@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security Model — ScopeGate Docs</title>
+<meta name="description" content="ScopeGate&#39;s design goal: a leaked agent context leaks nothing of durable value. Six rules enforce it; each maps to code.">
+<link rel="canonical" href="https://scopegate.io/docs/security-model">
+<meta property="og:title" content="Security Model — ScopeGate Docs">
+<meta property="og:description" content="ScopeGate&#39;s design goal: a leaked agent context leaks nothing of durable value. Six rules enforce it; each maps to code.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/security-model">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><span>Security Model</span></nav>
+  <article>
+<h1 id="security-model">Security Model</h1>
+<p>ScopeGate&#39;s design goal: <strong>a leaked agent context leaks nothing of durable value.</strong> Six rules enforce it; each maps to code.</p>
+<h2 id="1-secrets-never-enter-the-model-s-context">1. Secrets never enter the model&#39;s context</h2>
+<p>Secrets are deposited only via <code>scopegate secret add &lt;ref&gt;</code> (hidden prompt or piped stdin — never argv, never chat). They are stored in <code>~/.scopegate/vault.enc</code> (AES-256-GCM; master key in <code>master.key</code> with mode 0600, or an OS backend: DPAPI / macOS Keychain / libsecret). Config files hold only <code>secretRef</code> <strong>names</strong>. The gateway injects values at the outbound hop only, inside the proxy process.</p>
+<h2 id="2-capability-credential">2. Capability ≠ credential</h2>
+<p>Agents request capabilities — <code>&quot;&lt;upstream&gt;:&lt;action&gt;:&lt;resource&gt;&quot;</code> — and receive TTL grants (minutes, clamped by policy ceilings). Grants are evaluated per call; there is no standing credential in the agent&#39;s environment. The token minter can go further: for <code>jwt</code>, <code>github_app</code> and <code>aws_sts</code> upstreams the value that leaves the machine is itself short-lived, minted per connection and clamped to the grant TTL.</p>
+<h2 id="3-write-asymmetry-agents-propose-humans-approve">3. Write asymmetry: agents propose, humans approve</h2>
+<p><code>scopegate_propose_policy</code> writes to <code>policies.pending.yaml</code> — validated, deduplicated, linted against hard limits — and never touches live policy. Capabilities matching <code>require: human_approval</code> return <code>pending_human_approval</code> with an <code>approval_id</code>; only a human running <code>scopegate approve &lt;id&gt;</code> / <code>scopegate deny &lt;id&gt;</code> unblocks them. Approval requests expire (<code>limits.approval_ttl</code>).</p>
+<h2 id="4-hard-limits-are-fail-closed">4. Hard limits are fail-closed</h2>
+<p><code>policies.yaml</code> → <code>limits</code> are ceilings no rule can beat: <code>max_ttl</code>, <code>deny</code> globs (evaluated before any <code>auto_approve</code>, including a literal <code><em>:</em></code> injection guard) and <code>rate_limit</code> on capability requests. A ceiling hit is audited as <code>ceiling_blocked</code> and the tool response tells the agent not to retry with broader scope. A <code>looksLikeSecret()</code> guard rejects raw secrets smuggled in place of ref names.</p>
+<h2 id="5-data-minimization-on-the-way-out">5. Data minimization on the way out</h2>
+<p>Rules can set <code>redact: [pii]</code> to mask emails, phones, card numbers (Luhn) and AWS key ids in upstream <strong>responses</strong> before they reach the agent — best-effort; the audit log records only redaction counts, never matches.</p>
+<h2 id="6-tamper-evident-audit">6. Tamper-evident audit</h2>
+<p>Every privileged action is appended to <code>~/.scopegate/audit.jsonl</code>: each event carries a sequence number, the previous event&#39;s hash (hash chain) and an Ed25519 signature (key pair generated at init, private key mode 0600). Tool-call inputs are hashed, never stored. <code>scopegate audit verify</code> checks continuity, chain and signatures; <code>query</code>/<code>reindex</code> answer &quot;what did this agent touch in this window&quot; from a derived index.</p>
+<h2 id="process-isolation-optional-hardening">Process isolation (optional hardening)</h2>
+<p><code>scopegate vaultd</code> runs the vault as a separate process behind a unix socket / Windows named pipe (<code>SCOPEGATE_VAULT_MODE=daemon</code>), so the gateway process never holds decrypted secrets at rest. <code>scopegate vault rotate-key</code> re-encrypts with a fresh master key, optionally migrating backends.</p>
+<h2 id="threat-model-boundaries-honest-list">Threat-model boundaries (honest list)</h2>
+<ul><li>A malicious process running <strong>as your user</strong> can call the gateway like the</li></ul>
+<p>  agent does — policy and approvals are the control, not process boundaries   (unless you isolate <code>vaultd</code> further at the OS level).</p>
+<ul><li>PII redaction is best-effort pattern matching, not a DLP product.</li><li>The audit chain proves tampering after the fact; it does not prevent a</li></ul>
+<p>  privileged attacker from deleting the file outright.</p>
+<p>Roadmap hardening (not in this repo yet): honeytoken tripwires (<a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/../docs/Implementacion/EPIC-11-honeytokens-red-team.md">EPIC-11</a>), fleet revocation and SSO in the cloud plane (<a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/../docs/Implementacion/EPIC-10-cloud-management-plane.md">EPIC-10</a>).</p>
+<h2 id="telemetry-opt-in">Telemetry (opt-in)</h2>
+<p>Off by default. When enabled (<code>SCOPEGATE_TELEMETRY=1</code> or <code>{&quot;enabled&quot;: true}</code> in <code>~/.scopegate/telemetry.json</code>) the only events are <code>install</code>, <code>init_completed</code> and <code>first_tool_call</code>, with an allowlisted payload: version, OS/arch, Node version, detected harness ids, latency in ms, and a random anonymous install id. Never agentId, paths, upstream names, args, inputs or config content. The collector defaults to <code>https://telemetry.scopegate.dev/v1/event</code> and is overridable via <code>SCOPEGATE_TELEMETRY_ENDPOINT</code>. Implementation: <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/src/telemetry/telemetry.ts"><code>src/telemetry/telemetry.ts</code></a> — fail-silent, allowlist-enforced.</p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/quickstart">← Quickstart</a><a class="next" href="/docs/agent-protocol">Agent Protocol →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

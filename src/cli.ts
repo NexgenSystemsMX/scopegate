@@ -251,16 +251,23 @@ cloudCmd
     "Run the multi-tenant control plane: /v1 API + dashboard. Prints " +
       "'SCOPEGATE_CLOUD_LISTENING port=<n>' on stdout once listening.",
   )
-  .option("--port <n>", "listen port (0 = ephemeral)", "8787")
+  .option(
+    "--port <n>",
+    "listen port (0 = ephemeral; default: env PORT, else 8787)",
+  )
   .option(
     "--home <dir>",
     "cloud data home (identity + data/)",
     path.join(os.homedir(), ".scopegate-cloud"),
   )
   .action(async (opts) => {
-    const port = Number(opts.port);
+    // PaaS convention (Railway/Fly/Heroku): the platform injects PORT and the
+    // process must bind it — env wins over the built-in default, never over
+    // an explicit --port flag.
+    const portRaw = opts.port ?? process.env.PORT ?? "8787";
+    const port = Number(portRaw);
     if (!Number.isInteger(port) || port < 0 || port > 65535) {
-      throw new Error(`invalid --port: ${opts.port}`);
+      throw new Error(`invalid --port: ${portRaw}`);
     }
     // The listening server keeps the process alive; the parseable
     // SCOPEGATE_CLOUD_* lines are printed by startCloudServer.

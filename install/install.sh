@@ -1,8 +1,11 @@
 #!/bin/sh
-# ScopeGate installer — https://get.scopegate.dev
+# ScopeGate installer — served publicly at GET /install.sh on any deployed
+# gateway, and from the repo at install/install.sh.
 #
-#   curl -sSL https://get.scopegate.dev | sh
-#   curl -sSL https://get.scopegate.dev | sh -s -- --yes --version 0.2.0
+#   curl -sSL https://scopegate-production.up.railway.app/install.sh | sh
+#   curl -sSL https://scopegate-production.up.railway.app/install.sh | sh -s -- --yes --version 0.2.0
+#
+#   Mirror: https://raw.githubusercontent.com/NexgenSystemsMX/scopegate/master/install/install.sh
 #
 # What it does (and nothing more):
 #   1. detects OS/arch (informational; the package is pure JS)

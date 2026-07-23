@@ -23,6 +23,8 @@
  */
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { log, errorMessage } from "./proxy.js";
@@ -139,6 +141,28 @@ export async function startHttpGateway(
         uptime_s: Math.round(process.uptime()),
         upstreams: ctx.connectedUpstreams(),
       });
+      return;
+    }
+
+    // Public curl|sh installer — no secret inside by design (it installs the
+    // public npm package). Served from <pkg>/install/install.sh.
+    if (req.method === "GET" && url.pathname === "/install.sh") {
+      const installerPath = fileURLToPath(
+        new URL("../../install/install.sh", import.meta.url),
+      );
+      try {
+        const body = readFileSync(installerPath, "utf8");
+        res.writeHead(200, {
+          "content-type": "text/x-sh; charset=utf-8",
+          "cache-control": "public, max-age=300",
+        });
+        res.end(body);
+      } catch {
+        sendJson(res, 404, {
+          error: "not_found",
+          message: "Installer not bundled in this build.",
+        });
+      }
       return;
     }
 

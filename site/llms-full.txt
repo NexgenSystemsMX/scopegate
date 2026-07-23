@@ -1,0 +1,91 @@
+# ScopeGate — full context for AI engines
+
+> ScopeGate is an open-source (Apache-2.0) ephemeral-credentials gateway for coding agents — Claude Code, Kimi Code, Cursor, OpenCode, and any MCP-capable harness. The agent never holds secrets; it holds short-lived, minimum-scope capabilities. Real secrets live in an AES-256-GCM encrypted local vault and are injected only at the outbound hop, so a leaked model context leaks nothing of durable value. Think of it as AWS IAM + STS for coding agents, installable by the agent itself in under 90 seconds.
+
+## The contract in one minute
+
+1. **Capability ≠ credential.** Agents request e.g. `github:call:create_pull_request` for 5 minutes; they never see the token that ultimately authorizes the call.
+2. **Secrets enter out-of-band.** `scopegate secret add <ref>` from a human terminal — hidden prompt or piped stdin, never chat, never argv.
+3. **Write asymmetry.** Agents propose policy changes (`policies.pending.yaml`); only humans approve escalations — from a terminal, from Slack, or from the cloud panel.
+4. **Everything is audited.** Append-only, hash-chained, Ed25519-signed JSONL; inputs are hashed, never stored. `scopegate audit verify` detects tampering.
+
+## The two structural failures ScopeGate fixes
+
+1. **Exposure** — coding agents run with real secrets in their context (.env files, MCP configs, shell env). Anything the model reads is potentially leakable (transcripts, logs, prompt injection), forcing constant preventive rotation.
+2. **Expiration** — OAuth tokens for MCP servers die mid-session in long agentic workflows, breaking them and forcing human re-authentication. ScopeGate's refresh daemon renews at 80% of each TTL, transparently.
+
+## How it works
+
+```
+Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)──► GitHub / AWS / your MCPs
+                                      │
+                    vault + policy engine + token minter + refresh daemon + signed audit
+```
+
+1. `scopegate init` — idempotent, non-interactive: creates the encrypted vault, detects the harness (Claude Code, Kimi Code, Cursor, OpenCode, `.mcp.json`), migrates existing MCPs behind the gateway and moves plaintext secrets into the vault (restorable backup kept).
+2. Human deposits secrets once per secret: `scopegate secret add <ref>`.
+3. The agent operates by itself through six MCP tools, holding TTL grants instead of credentials. Time from init to first proxied tool call: under 90 seconds.
+
+## The six agent tools (MCP)
+
+- `scopegate_request_capability` — ask for a scoped, TTL-bound grant before a privileged action; returns the grant, a denial with actionable reason, or `pending_human_approval` with an `approval_id`.
+- `scopegate_list_capabilities` — active grants and remaining TTL.
+- `scopegate_register_upstream` — connect a new service (never accepts secret values, only `secretRef` names; also installs from the signed registry with `from_registry`).
+- `scopegate_diagnose` — health check of every upstream; self-repair hints with `action_required`.
+- `scopegate_propose_policy` — redact a new policy rule when a capability is denied; lands in `policies.pending.yaml` for human review.
+- `scopegate_vault_status` — which secretRef NAMES exist (never values).
+
+## Features
+
+- **Encrypted vault** — AES-256-GCM at rest; optional isolated process (`scopegate vaultd`) over unix socket / Windows named pipe; master key in DPAPI, Keychain or Secret Service.
+- **Policy engine** — declarative YAML: per-agent scopes, TTL ceilings, rate limits, PII redaction; hard limits fail-closed (`deny` globs and `max_ttl` beat any rule).
+- **Token minter** — gateway JWTs (HS256), GitHub App installation tokens, AWS STS session credentials, Google service-account JWT → access tokens, Huly workspace tokens; cache at 80% of TTL; `token_ttl ≤ grant_ttl` clamp; `fallback: injection`.
+- **OAuth refresh daemon** — proactive renewal at 80% of TTL with jitter, transparent 401 retry, RFC 8628 device-code for human re-auth.
+- **Signed audit** — append-only, hash-chained, Ed25519-signed JSONL; `scopegate audit verify/query/reindex`.
+- **Honeytokens** — canary credentials that trigger surgical revocation when touched.
+- **Raw-secret guard** — `looksLikeSecret()` rejects secret-shaped values smuggled as refs, at the gateway and at cloud ingest.
+- **Attestation** — EdDSA JWT (≤ 60 s) so third-party MCPs can tell agents apart.
+
+## Native connectors (signed registry, one command to install)
+
+- `github` — full GitHub MCP via gateway; GitHub App installation tokens minted per task.
+- `aws` — STS-scoped sessions (AssumeRole / GetSessionToken), TTL-clamped.
+- `huly` — 13 tools: issues, projects, documents, channels, contacts; workspace token minted from a vault blob.
+- `railway` — 7 tools: services, deploy, logs, domains; deploys can require human approval.
+- `cloudflare` — 8 tools: zones, DNS, workers, pages, R2; scoped API token in vault.
+- `google` — 7 tools: Drive, Gmail, Calendar; service-account JWT → short-lived access token.
+
+## ScopeGate Cloud (optional management plane)
+
+- Local-first holds structurally: gateways keep enforcing local policy + last signed team policy when the cloud is down; zero tool calls blocked by the control plane.
+- The control plane is metadata-only: it never receives secret values (only refs and hashed inputs), verified by an ingest guard.
+- Panel at https://scopegate.io/panel: fleet health, capabilities with TTLs, human-approval queue (approve/deny from the browser — the gateway applies it in seconds), central signed audit with JSONL export, versioned signed team policies with diff, fleet revocation with blast-radius confirmation (effective < 30 s online), active-agent billing metering.
+- Pricing: OSS free self-hosted forever (Apache-2.0) · Team $20/active agent/month (early access) · Enterprise (SSO/SAML, on-prem, SIEM export, SOC2 controls).
+
+## Documentation map
+
+- Landing — https://scopegate.io/
+- Docs index — https://scopegate.io/docs/
+- Quickstart — https://scopegate.io/docs/quickstart
+- Security model — https://scopegate.io/docs/security-model
+- Agent protocol — https://scopegate.io/docs/agent-protocol
+- CLI reference — https://scopegate.io/docs/cli-reference
+- Configuration — https://scopegate.io/docs/configuration
+- Agent guides index — https://scopegate.io/docs/agents/
+- 01 Quickstart self-install — https://scopegate.io/docs/agents/01-quickstart-self-install
+- 02 Protocol — https://scopegate.io/docs/agents/02-protocol
+- 03 Tools reference — https://scopegate.io/docs/agents/03-tools-reference
+- 04 Connectors — https://scopegate.io/docs/agents/04-connectors
+- 05 Policies — https://scopegate.io/docs/agents/05-policies
+- 06 Self-repair — https://scopegate.io/docs/agents/06-self-repair
+- 07 Security rules — https://scopegate.io/docs/agents/07-security-rules
+
+All docs are also available as raw markdown under the same paths with a `.md`
+suffix (e.g. https://scopegate.io/docs/agents/02-protocol.md), served as
+text/markdown.
+
+## Links
+
+- GitHub — https://github.com/NexgenSystemsMX/scopegate
+- npm — https://www.npmjs.com/package/scopegate
+- License — Apache-2.0 (https://github.com/NexgenSystemsMX/scopegate/blob/main/LICENSE)

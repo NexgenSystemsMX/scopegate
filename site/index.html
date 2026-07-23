@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScopeGate — Ephemeral credentials for coding agents</title>
+<meta name="description" content="ScopeGate is an open-source gateway that gives coding agents short-lived, minimum-scope capabilities instead of long-lived credentials. Secrets never enter the model's context.">
+<link rel="canonical" href="https://scopegate.io/">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#0f1420">
+<meta property="og:title" content="ScopeGate — Ephemeral credentials for coding agents">
+<meta property="og:description" content="The agent never holds secrets — it holds short-lived, minimum-scope capabilities. Open source, Apache-2.0.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://scopegate.io/">
+<meta property="og:site_name" content="ScopeGate">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="ScopeGate — your agents hold capabilities, not credentials">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="ScopeGate — Ephemeral credentials for coding agents">
+<meta name="twitter:description" content="The agent never holds secrets — it holds short-lived, minimum-scope capabilities. Open source, Apache-2.0.">
+<meta name="twitter:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "ScopeGate",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "Windows, macOS, Linux",
+  "description": "ScopeGate is an open-source ephemeral-credentials gateway for coding agents (Claude Code, Kimi Code, Cursor, OpenCode). The agent never holds secrets — it holds short-lived, minimum-scope capabilities. Secrets live in an AES-256-GCM encrypted vault and are injected only at the outbound hop.",
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "codeRepository": "https://github.com/NexgenSystemsMX/scopegate",
+  "downloadUrl": "https://www.npmjs.com/package/scopegate",
+  "url": "https://scopegate.io/",
+  "featureList": "Ephemeral credentials (TTL grants), AES-256-GCM vault, policy engine, token minter (JWT, GitHub App, AWS STS, Google SA, Huly), OAuth refresh daemon, Ed25519-signed audit trail, honeytokens, MCP-native, multi-harness init, cloud management plane with fleet revocation and human approvals",
+  "offers": [
+    { "@type": "Offer", "name": "Open Source", "price": "0", "priceCurrency": "USD", "description": "Full gateway, self-hosted forever, Apache-2.0" },
+    { "@type": "Offer", "name": "Team", "price": "20", "priceCurrency": "USD", "description": "Cloud panel, team policies, central audit, alerts — per active agent per month" },
+    { "@type": "Offer", "name": "Enterprise", "price": "0", "priceCurrency": "USD", "description": "SSO/SAML, on-prem, SIEM export, SOC2 controls — contact" }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "Nexgen Systems",
+  "url": "https://scopegate.io/",
+  "sameAs": ["https://github.com/NexgenSystemsMX/scopegate"]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "Install ScopeGate and make your first proxied tool call",
+  "description": "Agent-executable, non-interactive setup of the ScopeGate credentials gateway — from zero to first tool call in under 90 seconds.",
+  "totalTime": "PT90S",
+  "step": [
+    { "@type": "HowToStep", "position": 1, "name": "Install and init", "text": "Run: npm i -g scopegate && scopegate init. Creates the encrypted vault, detects your harness (Claude Code, Kimi Code, Cursor, OpenCode, .mcp.json) and migrates existing MCPs behind the gateway.", "itemListElement": [{ "@type": "HowToDirection", "text": "npm i -g scopegate && scopegate init" }] },
+    { "@type": "HowToStep", "position": 2, "name": "Deposit secrets", "text": "The one human-only step: scopegate secret add <ref> — hidden prompt or piped stdin, never chat, never argv." },
+    { "@type": "HowToStep", "position": 3, "name": "The agent operates", "text": "Restart the agent session. The agent requests TTL capabilities through the scopegate_* MCP tools and never sees the credentials that authorize its calls." }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Does ScopeGate ever see my secrets?", "acceptedAnswer": { "@type": "Answer", "text": "The local vault does — encrypted at rest, never in the model's context. The Cloud control plane never does: it syncs metadata only (agent identities, policy documents, hashed audit events), and a guard at ingest rejects anything that even looks like a secret." } },
+    { "@type": "Question", "name": "What happens if ScopeGate Cloud goes down?", "acceptedAnswer": { "@type": "Answer", "text": "Nothing, from the agent's point of view. Gateways keep enforcing their local policies.yaml plus the last cloud-signed team policy from cache. Zero tool calls are blocked by the control plane being unreachable." } },
+    { "@type": "Question", "name": "Which agents and harnesses are supported?", "acceptedAnswer": { "@type": "Answer", "text": "Anything that speaks MCP. Init auto-detects Claude Code, Kimi Code, Cursor, OpenCode and generic .mcp.json configs, and migrates existing servers behind the gateway with a restorable backup." } },
+    { "@type": "Question", "name": "How do I revoke a compromised agent?", "acceptedAnswer": { "@type": "Answer", "text": "From the Cloud panel (one click, reason required) or locally with scopegate. Online gateways enforce it in under 30 seconds; offline ones revoke on reconnect — and their outstanding tokens have already expired by TTL anyway." } },
+    { "@type": "Question", "name": "Can I self-host everything?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. The gateway is local-first and the control plane ships in the same package: scopegate cloud serve. Enterprise adds the on-prem packaging, SAML and SIEM export." } },
+    { "@type": "Question", "name": "What does a leaked ScopeGate token buy an attacker?", "acceptedAnswer": { "@type": "Answer", "text": "Minutes, at one scope — and a signed audit record of everything it touched. Compare that with a PAT in a transcript: full account access, forever, silently." } }
+  ]
+}
+</script>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="#how-it-works">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#connectors">Connectors</a>
+      <a href="#cloud">Cloud</a>
+      <a href="#pricing">Pricing</a>
+      <a href="/docs/">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="pill">Open source · Apache-2.0 · MCP-native</p>
+    <h1>Your agents hold <span class="accent">capabilities</span>,<br>not credentials.</h1>
+    <p class="lede">
+      ScopeGate is an open-source gateway for coding agents — Claude Code, Kimi Code,
+      Cursor, OpenCode. Secrets live in an encrypted vault and are injected only at the
+      outbound hop. The agent gets a token that expires in minutes, scoped to one task.
+      A leaked context leaks nothing of durable value.
+    </p>
+    <div class="install" id="get-started">
+      <code id="install-cmd">npm i -g scopegate &amp;&amp; scopegate init</code>
+      <button class="btn" id="copy-btn" type="button">Copy</button>
+    </div>
+    <p class="install-alt">
+      or <code>curl -sSL https://scopegate-production.up.railway.app/install.sh | sh</code> — idempotent, non-interactive,
+      executable by the agent itself.
+    </p>
+    <p class="hero-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a> ·
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a> ·
+      <a href="/docs/">Docs</a> ·
+      <a href="/panel">Cloud panel</a>
+    </p>
+  </div>
+</header>
+
+<main>
+
+<section class="section" id="what-is" style="padding-top:2.5em;padding-bottom:2.5em">
+  <div class="wrap">
+    <h2 style="font-size:1.3em">What is ScopeGate?</h2>
+    <p class="section-lede" style="max-width:52em">
+      <strong>ScopeGate is an open-source (Apache-2.0) ephemeral-credentials gateway for
+      coding agents — Claude Code, Kimi Code, Cursor, OpenCode, and any MCP-capable
+      harness.</strong> The agent never holds secrets; it holds short-lived, minimum-scope
+      capabilities minted per task. Real secrets live in an AES-256-GCM encrypted local
+      vault and are injected only at the outbound hop — so a leaked model context leaks
+      nothing of durable value. Think of it as AWS IAM + STS for coding agents,
+      installable by the agent itself in under 90 seconds.
+    </p>
+    <div class="facts-row">
+      <div class="fact"><span class="fact-num">&lt;90s</span><span class="fact-lbl">install → first tool call</span></div>
+      <div class="fact"><span class="fact-num">&lt;30s</span><span class="fact-lbl">fleet revocation, online</span></div>
+      <div class="fact"><span class="fact-num">0</span><span class="fact-lbl">secrets in the model's context</span></div>
+      <div class="fact"><span class="fact-num">6</span><span class="fact-lbl">MCP tools for the agent</span></div>
+      <div class="fact"><span class="fact-num">5</span><span class="fact-lbl">native connectors</span></div>
+      <div class="fact"><span class="fact-num">Apache-2.0</span><span class="fact-lbl">open source, self-hosted</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="problem">
+  <div class="wrap">
+    <h2>Long-lived credentials don't survive contact with agents</h2>
+    <p class="section-lede">
+      Coding agents today run with your real secrets sitting in their context —
+      <code>.env</code> files, MCP configs, shell environment. That creates two structural failures:
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h3><span class="num">01</span> Exposure</h3>
+        <p>
+          Every secret the model reads is potentially leakable — transcripts, logs,
+          prompt injection. So you rotate constantly, just in case, and audit by hand
+          when something slips.
+        </p>
+      </div>
+      <div class="card">
+        <h3><span class="num">02</span> Expiration</h3>
+        <p>
+          OAuth tokens for MCP servers die in the middle of four-hour agentic sessions.
+          The workflow breaks, the agent stalls, a human has to re-authenticate.
+        </p>
+      </div>
+    </div>
+
+    <div id="before-after" class="ba">
+      <div class="ba-switch" role="tablist" aria-label="Before / after ScopeGate">
+        <button class="ba-btn active" data-ba="before" role="tab" aria-selected="true">Without ScopeGate</button>
+        <button class="ba-btn" data-ba="after" role="tab" aria-selected="false">With ScopeGate</button>
+      </div>
+      <div class="ba-panel" data-ba-panel="before">
+        <p class="ba-line"><span class="ba-tag bad">exposed</span> The agent reads <code>.env</code> with <code>AWS_SECRET_ACCESS_KEY</code> — the key is now in the transcript.</p>
+        <p class="ba-line"><span class="ba-tag bad">broken</span> Two hours into a four-hour refactor, the Notion OAuth token dies. The workflow stalls until a human re-authenticates.</p>
+        <p class="ba-line"><span class="ba-tag bad">blast radius</span> That transcript gets synced, logged and indexed. You rotate everything and audit by hand.</p>
+      </div>
+      <div class="ba-panel hidden" data-ba-panel="after">
+        <p class="ba-line"><span class="ba-tag good">scoped</span> The agent holds a 10-minute STS token for <code>deploy:staging</code> — the vault's keys never enter the context.</p>
+        <p class="ba-line"><span class="ba-tag good">alive</span> The refresh daemon renews upstream OAuth at 80% of its TTL. Four-hour sessions just run.</p>
+        <p class="ba-line"><span class="ba-tag good">contained</span> A leaked token expired minutes ago; the signed audit shows exactly what it touched.</p>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Scenario</th><th>Without ScopeGate</th><th>With ScopeGate</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Agent deploys to staging</td>
+            <td>AWS keys in <code>.env</code>, visible to the model</td>
+            <td>STS token, 10 min TTL, scope <code>deploy:staging</code></td>
+          </tr>
+          <tr>
+            <td>4-hour session with an MCP</td>
+            <td>OAuth expires at hour 2, workflow broken</td>
+            <td>Refresh daemon renews before expiry, transparently</td>
+          </tr>
+          <tr>
+            <td>Key leaked in a transcript</td>
+            <td>Rotate everything, audit manually</td>
+            <td>Token already expired; the signed audit shows exactly what it touched</td>
+          </tr>
+          <tr>
+            <td>Onboarding a new service</td>
+            <td>A human copies keys into configs</td>
+            <td>The agent calls <code>scopegate_register_upstream</code> and it's done</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="section section-alt" id="how-it-works">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="section-lede">Three steps. The only human moments: depositing secrets and approving escalations.</p>
+    <div class="grid-3">
+      <div class="card">
+        <h3><span class="num">1</span> Init</h3>
+        <p>
+          <code>scopegate init</code> creates the encrypted vault, detects your harness
+          (Claude Code, Kimi Code, Cursor, OpenCode, <code>.mcp.json</code>) and migrates
+          existing MCPs behind the gateway — plaintext secrets move into the vault.
+        </p>
+      </div>
+      <div class="card">
+        <h3><span class="num">2</span> Deposit secrets</h3>
+        <p>
+          <code>scopegate secret add github_pat</code> — hidden prompt or piped stdin,
+          never through chat, never via argv. This is the one human-only path, once per secret.
+        </p>
+      </div>
+      <div class="card">
+        <h3><span class="num">3</span> Agent operates</h3>
+        <p>
+          The agent requests capabilities (<code>github:write:repo/*</code>, 15 min),
+          gets TTL grants from the policy engine, and never sees the credential that
+          authorizes the call.
+        </p>
+      </div>
+    </div>
+    <pre class="arch">Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)──► GitHub / AWS / your MCPs
+                                        │
+                      vault + policy engine + token minter + refresh daemon + signed audit</pre>
+  </div>
+</section>
+
+<section class="section" id="features">
+  <div class="wrap">
+    <h2>Everything between the agent and your secrets</h2>
+    <div class="grid-3">
+      <div class="card">
+        <h3>Encrypted vault</h3>
+        <p>
+          AES-256-GCM at rest. Optional process isolation (<code>scopegate vaultd</code>)
+          over unix socket / named pipe, master key in DPAPI, Keychain or Secret Service.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Policy engine</h3>
+        <p>
+          Declarative YAML: per-agent scopes, TTL ceilings, rate limits, PII redaction.
+          Hard limits are fail-closed — <code>deny</code> globs beat any rule.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Token minter</h3>
+        <p>
+          Real ephemeral credentials: gateway JWTs, GitHub App installation tokens,
+          AWS STS session credentials, Google service-account tokens, Huly workspace tokens.
+        </p>
+      </div>
+      <div class="card">
+        <h3>OAuth refresh daemon</h3>
+        <p>
+          Renews upstream tokens proactively at 80% of their TTL, retries transparently
+          on 401, and uses RFC 8628 device-code for human re-auth. Zero broken sessions.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Signed audit trail</h3>
+        <p>
+          Append-only, hash-chained, Ed25519-signed JSONL. Inputs are hashed, never stored.
+          <code>scopegate audit verify</code> detects tampering in seconds.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Honeytokens</h3>
+        <p>
+          Canary credentials that trigger surgical revocation the moment an agent
+          touches them — exfiltration attempts contain themselves.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-alt" id="differentiator">
+  <div class="wrap">
+    <h2>The agent installs, configures and operates it — by itself</h2>
+    <p class="section-lede">
+      ScopeGate is designed so the agent is the installer and the operator.
+      Time from <code>init</code> to first proxied tool call: under 90 seconds, no human in the loop.
+    </p>
+    <div class="grid-2">
+      <div class="card">
+        <h3>Self-onboarding protocol</h3>
+        <p>
+          A published <code>SKILL.md</code> teaches the agent the rules: never ask the user
+          for an API key in chat — ask them to run <code>scopegate secret add</code>.
+          Missing a tool? Call <code>scopegate_request_capability</code>.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Write asymmetry, by design</h3>
+        <p>
+          Agents can <em>propose</em> new policy rules; only humans approve privilege
+          escalations — from their terminal, from Slack, or from the Cloud panel.
+          That asymmetry is the heart of the security model.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="connectors">
+  <div class="wrap">
+    <h2>Native connectors &amp; signed registry</h2>
+    <p class="section-lede">
+      Ready-to-run MCP bridges, each installable from the signed registry with
+      <code>scopegate_register_upstream {from_registry}</code>.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Connector</th><th>Tools</th><th>Auth</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">github</td>
+            <td>Full GitHub MCP via gateway</td>
+            <td>GitHub App installation tokens, minted per task</td>
+          </tr>
+          <tr>
+            <td class="mono">aws</td>
+            <td>STS-scoped sessions</td>
+            <td>AssumeRole / GetSessionToken, TTL-clamped</td>
+          </tr>
+          <tr>
+            <td class="mono">huly</td>
+            <td>13 tools — issues, projects, documents, channels, contacts</td>
+            <td>Workspace token minted from a vault blob</td>
+          </tr>
+          <tr>
+            <td class="mono">railway</td>
+            <td>7 tools — services, deploy, logs, domains</td>
+            <td>Account token in vault; deploys can require human approval</td>
+          </tr>
+          <tr>
+            <td class="mono">cloudflare</td>
+            <td>8 tools — zones, DNS, workers, pages, R2</td>
+            <td>Scoped API token in vault</td>
+          </tr>
+          <tr>
+            <td class="mono">google</td>
+            <td>7 tools — Drive, Gmail, Calendar</td>
+            <td>Service-account JWT → short-lived access token</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="dim">
+      Plus any MCP server over stdio or HTTP behind the proxy, and agent-to-agent
+      attestation (EdDSA JWT, ≤ 60 s) so third-party MCPs can tell agents apart.
+    </p>
+  </div>
+</section>
+
+<section class="section section-alt" id="cloud">
+  <div class="wrap">
+    <h2>ScopeGate Cloud — the management plane</h2>
+    <p class="section-lede">
+      Optional, multi-tenant, and structurally unable to hold your secrets: it syncs
+      metadata only. If Cloud is down, your gateways keep enforcing the last signed
+      policy — local-first is the design, not a fallback.
+    </p>
+    <div class="grid-3">
+      <div class="card">
+        <h3>Fleet &amp; capabilities</h3>
+        <p>Every enrolled agent, its active grants and remaining TTLs, in one view.</p>
+      </div>
+      <div class="card">
+        <h3>Team policies</h3>
+        <p>Versioned, cloud-signed YAML distributed to gateways. The effective policy is never more permissive than the local one.</p>
+      </div>
+      <div class="card">
+        <h3>Human approvals</h3>
+        <p>Escalated capability requests land in a queue. Approve or deny from the panel or Slack — the gateway applies the decision in seconds.</p>
+      </div>
+      <div class="card">
+        <h3>Fleet revocation</h3>
+        <p>Revoke one agent or the whole team with explicit blast-radius confirmation. Effective in under 30 seconds on online gateways.</p>
+      </div>
+      <div class="card">
+        <h3>Central audit</h3>
+        <p>Hash-chain-verified ingest per gateway. Query by agent, kind, or window; export signed JSONL to your SIEM.</p>
+      </div>
+      <div class="card">
+        <h3>Active-agent billing</h3>
+        <p>You pay for agents that actually did something in the month — not for installations.</p>
+      </div>
+    </div>
+    <p class="cta-row"><a class="btn" href="/panel">Open the panel</a></p>
+  </div>
+</section>
+
+<section class="section" id="pricing">
+  <div class="wrap">
+    <h2>Pricing</h2>
+    <div class="grid-3 pricing">
+      <div class="card">
+        <h3>Open Source</h3>
+        <p class="price">$0</p>
+        <ul>
+          <li>Full gateway, vault, policy engine, minter</li>
+          <li>OAuth refresh daemon &amp; multi-harness init</li>
+          <li>Signed audit, honeytokens, red-team suite</li>
+          <li>Apache-2.0, self-hosted forever</li>
+        </ul>
+        <p><a class="btn btn-secondary" href="#get-started">Install</a></p>
+      </div>
+      <div class="card card-featured">
+        <h3>Team</h3>
+        <p class="price">$20 <span class="price-unit">/ active agent / mo</span></p>
+        <ul>
+          <li>Cloud panel: fleet, capabilities, approvals</li>
+          <li>Team policies, signed &amp; versioned</li>
+          <li>Central audit (90-day retention) &amp; Slack alerts</li>
+          <li>Fleet revocation &lt; 30 s</li>
+        </ul>
+        <p><span class="pill pill-dim">Early access</span></p>
+      </div>
+      <div class="card">
+        <h3>Enterprise</h3>
+        <p class="price">Contact</p>
+        <ul>
+          <li>SSO / SAML, on-prem control plane</li>
+          <li>SIEM export (CEF/syslog, signed webhooks)</li>
+          <li>Unlimited audit retention</li>
+          <li>SOC2 controls &amp; evidence pack</li>
+        </ul>
+        <p><a class="btn btn-secondary" href="https://github.com/NexgenSystemsMX/scopegate/issues" rel="noopener">Talk to us</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section section-alt" id="security">
+  <div class="wrap">
+    <h2>Security model</h2>
+    <ol class="security-list">
+      <li><strong>Secrets never enter the model's context.</strong> They arrive via CLI/stdin, live encrypted, and leave only on the upstream hop.</li>
+      <li><strong>Capability ≠ credential.</strong> Grants expire in minutes and are scoped to one task; what the vault keeps never enters the context.</li>
+      <li><strong>Write asymmetry.</strong> Agents propose policies; only humans approve escalations.</li>
+      <li><strong>Raw-secret smuggling is rejected.</strong> A <code>looksLikeSecret()</code> guard refuses secret-shaped values passed as refs — at the gateway and at cloud ingest.</li>
+      <li><strong>Fail-closed hard limits.</strong> <code>deny</code> globs and <code>max_ttl</code> beat any rule, any agent, any time.</li>
+      <li><strong>Blast radius per agent.</strong> Revoking one agent touches nobody else — and everything it did is attributable in the signed audit.</li>
+    </ol>
+  </div>
+</section>
+
+<section class="section" id="faq">
+  <div class="wrap">
+    <h2>FAQ</h2>
+    <details>
+      <summary>Does ScopeGate ever see my secrets?</summary>
+      <p>
+        The local vault does — encrypted at rest, never in the model's context. The Cloud
+        control plane never does: it syncs metadata only (agent identities, policy
+        documents, hashed audit events), and a guard at ingest rejects anything that
+        even looks like a secret.
+      </p>
+    </details>
+    <details>
+      <summary>What happens if ScopeGate Cloud goes down?</summary>
+      <p>
+        Nothing, from the agent's point of view. Gateways keep enforcing their local
+        <code>policies.yaml</code> plus the last cloud-signed team policy from cache.
+        Zero tool calls are blocked by the control plane being unreachable.
+      </p>
+    </details>
+    <details>
+      <summary>Which agents and harnesses are supported?</summary>
+      <p>
+        Anything that speaks MCP. Init auto-detects Claude Code, Kimi Code, Cursor,
+        OpenCode and generic <code>.mcp.json</code> configs, and migrates existing
+        servers behind the gateway with a restorable backup.
+      </p>
+    </details>
+    <details>
+      <summary>How do I revoke a compromised agent?</summary>
+      <p>
+        From the Cloud panel (one click, reason required) or locally with
+        <code>scopegate</code>. Online gateways enforce it in under 30 seconds;
+        offline ones revoke on reconnect — and their outstanding tokens have already
+        expired by TTL anyway.
+      </p>
+    </details>
+    <details>
+      <summary>Can I self-host everything?</summary>
+      <p>
+        Yes. The gateway is local-first and the control plane ships in the same package:
+        <code>scopegate cloud serve</code>. Enterprise adds the on-prem packaging,
+        SAML and SIEM export.
+      </p>
+    </details>
+    <details>
+      <summary>What does a leaked ScopeGate token buy an attacker?</summary>
+      <p>
+        Minutes, at one scope — and a signed audit record of everything it touched.
+        Compare that with a PAT in a transcript: full account access, forever, silently.
+      </p>
+    </details>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/tree/master/docs/agents" rel="noopener">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  document.getElementById("copy-btn").addEventListener("click", async (e) => {
+    const cmd = "npm i -g scopegate && scopegate init";
+    const btn = e.currentTarget;
+    try {
+      await navigator.clipboard.writeText(cmd);
+      btn.textContent = "Copied";
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = cmd;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      btn.textContent = "Copied";
+    }
+    setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+  });
+</script>
+
+</body>
+</html>

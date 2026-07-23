@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration Reference — ScopeGate Docs</title>
+<meta name="description" content="Everything lives under ~/.scopegate/ (override with SCOPEGATE_HOME). No config file ever contains a secret value — only secretRef names that point into the encr">
+<link rel="canonical" href="https://scopegate.io/docs/configuration">
+<meta property="og:title" content="Configuration Reference — ScopeGate Docs">
+<meta property="og:description" content="Everything lives under ~/.scopegate/ (override with SCOPEGATE_HOME). No config file ever contains a secret value — only secretRef names that point into the encr">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/configuration">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><span>Configuration Reference</span></nav>
+  <article>
+<h1 id="configuration-reference">Configuration Reference</h1>
+<p>Everything lives under <code>~/.scopegate/</code> (override with <code>SCOPEGATE_HOME</code>). <strong>No config file ever contains a secret value</strong> — only <code>secretRef</code> names that point into the encrypted vault.</p>
+<h2 id="scopegate-yaml-upstream-registry"><code>scopegate.yaml</code> — upstream registry</h2>
+<pre class="code" data-lang="yaml"><code>version: 1
+agentId: agent-luis-nexgen        # default identity for policy + audit
+upstreams:
+  - name: notion                  # tools exposed as notion__*
+    transport: { kind: http, url: &quot;https://mcp.notion.com/mcp&quot; }
+    auth: { type: bearer, secretRef: notion_token }</code></pre>
+<p>Full annotated file: <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/scopegate.example.yaml"><code>scopegate.example.yaml</code></a>.</p>
+<h3 id="transport"><code>transport</code></h3>
+<ul><li><code>{ kind: http, url }</code> — remote MCP over HTTP</li><li><code>{ kind: stdio, command, args?, env? }</code> — local MCP spawned per session</li></ul>
+<h3 id="auth-types"><code>auth</code> types</h3>
+<table><thead><tr><th>type</th><th>shape</th><th>what reaches the upstream</th></tr></thead><tbody><tr><td><code>none</code></td><td><code>{type:&quot;none&quot;}</code></td><td>nothing</td></tr><tr><td><code>bearer</code></td><td><code>{type:&quot;bearer&quot;, secretRef, header?, scheme?}</code></td><td>header (default <code>Authorization: Bearer &lt;secret&gt;</code>)</td></tr><tr><td><code>env</code></td><td><code>{type:&quot;env&quot;, env:{ENV_VAR: secretRef}}</code></td><td>env vars into the spawned stdio server</td></tr><tr><td><code>oauth2</code></td><td><code>{type:&quot;oauth2&quot;, secretRef, header?, scheme?, authErrorPattern?}</code></td><td>access token; refresh handled by the daemon</td></tr><tr><td><code>jwt</code></td><td><code>{type:&quot;jwt&quot;, secretRef, ttl?, claims?}</code></td><td>gateway-minted HS256 token (vault holds the HMAC key)</td></tr><tr><td><code>github_app</code></td><td><code>{type:&quot;github_app&quot;, appId, installationId, secretRef, apiUrl?, permissions?, repositories?}</code></td><td>installation token (~1h), minted from the App PEM</td></tr><tr><td><code>aws_sts</code></td><td><code>{type:&quot;aws_sts&quot;, secretRef, roleArn?, region?, durationSeconds?}</code></td><td>session credentials; <code>secretRef</code> is a base name for <code>&lt;ref&gt;_ACCESS_KEY_ID</code> / <code>&lt;ref&gt;_SECRET_ACCESS_KEY</code></td></tr></tbody></table>
+<p>Optional per-upstream: <code>exposeTools: [...]</code> (allowlist) and <code>enabled: false</code>.</p>
+<h2 id="policies-yaml-policy-engine"><code>policies.yaml</code> — policy engine</h2>
+<p>Only humans edit this file. Agents propose changes via <code>scopegate_propose_policy</code> → <code>policies.pending.yaml</code>.</p>
+<pre class="code" data-lang="yaml"><code>version: 1
+limits:                    # global hard ceilings — fail-closed, beat any rule
+  max_ttl: 1h              #   no grant ever exceeds this
+  deny: [&quot;aws:*:production&quot;, &quot;\\*:*&quot;]   # checked before auto_approve
+  rate_limit: 30/m         #   capability requests per agent
+  approval_ttl: 10m        #   human-approval request expiry
+agents:
+  agent-luis-nexgen:
+    default_ttl: 15m
+    limits: { max_ttl: 30m, deny: [&quot;stripe:write:*&quot;] }   # per-agent, wins over global
+    capabilities:
+      - match: &quot;github:call:{get_*,list_*,search_*}&quot;
+        auto_approve: true
+      - match: &quot;github:call:*&quot;
+        auto_approve: true
+        ttl: 5m
+      - match: &quot;support:call:get_customer&quot;
+        auto_approve: true
+        redact: [pii]      # mask PII in upstream responses (best-effort)
+      - match: &quot;aws:*:production&quot;
+        require: human_approval   # → pending_human_approval + approvals.pending.jsonl
+  &quot;*&quot;:                     # fallback for unknown agents
+    default_ttl: 5m
+    capabilities:
+      - match: &quot;*:call:{get_*,list_*,search_*,read_*}&quot;
+        auto_approve: true</code></pre>
+<p>Annotated copy: <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/policies.example.yaml"><code>policies.example.yaml</code></a>.</p>
+<h2 id="environment-variables">Environment variables</h2>
+<table><thead><tr><th>Variable</th><th>Values</th><th>Purpose</th></tr></thead><tbody><tr><td><code>SCOPEGATE_HOME</code></td><td>path</td><td>Base dir instead of <code>~/.scopegate</code></td></tr><tr><td><code>SCOPEGATE_LOG_LEVEL</code></td><td><code>debug</code></td><td>Stack traces + gateway debug logs</td></tr><tr><td><code>SCOPEGATE_CONNECT_TIMEOUT_MS</code></td><td>ms (default 10000)</td><td>Upstream connect timeout</td></tr><tr><td><code>SCOPEGATE_VAULT_MODE</code></td><td><code>auto</code> (default) · <code>local</code> · <code>daemon</code></td><td>Vault access: in-process vs via <code>vaultd</code> IPC</td></tr><tr><td><code>SCOPEGATE_VAULT_SOCKET</code></td><td>path</td><td>Override the vaultd socket/pipe path</td></tr><tr><td><code>SCOPEGATE_MASTER_KEY_BACKEND</code></td><td><code>auto</code> · <code>file</code> · <code>dpapi</code> · <code>keychain</code> · <code>secret-service</code></td><td>Master-key storage</td></tr><tr><td><code>SCOPEGATE_AGENT_ID</code></td><td>string</td><td>Agent identity for policy/audit (the harness sets this per entry)</td></tr><tr><td><code>SCOPEGATE_APPROVAL_TOKEN</code></td><td>string</td><td>Non-interactive <code>approve</code>/<code>deny</code>/`policies accept\</td><td>reject` (human-held, out of the agent&#39;s reach)</td></tr><tr><td><code>SCOPEGATE_HONEYTOKEN_MODE</code></td><td><code>enforce</code> (default) · <code>alert</code></td><td>Canary response: revoke vs alert-only</td></tr><tr><td><code>SCOPEGATE_TELEMETRY</code></td><td><code>1</code></td><td>Opt in to anonymous telemetry (default off)</td></tr><tr><td><code>SCOPEGATE_TELEMETRY_ENDPOINT</code></td><td>URL</td><td>Override the telemetry collector</td></tr></tbody></table>
+<h2 id="files-in-scopegate">Files in <code>~/.scopegate/</code></h2>
+<p><code>scopegate.yaml</code> · <code>policies.yaml</code> · <code>policies.pending.yaml</code> (agent proposals) · <code>approvals.pending.jsonl</code> (human-approval queue) · <code>vault.enc</code> (AES-256-GCM) · <code>master.key</code> (mode 0600, unless an OS backend is used) · <code>audit.jsonl</code> + <code>audit-index.json</code> (derived) · <code>reauth-required.json</code> (oauth2 re-auth signal) · <code>telemetry.json</code> (opt-in state).</p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/cli-reference">← CLI Reference</a><span></span></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

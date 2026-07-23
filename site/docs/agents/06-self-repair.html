@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 — Self-Repair Playbook — ScopeGate Docs</title>
+<meta name="description" content="How to recover from any ScopeGate failure on your own. The loop is always the same: symptom → scopegate_diagnose → action. Escalate to the human ONLY in the cas">
+<link rel="canonical" href="https://scopegate.io/docs/agents/06-self-repair">
+<meta property="og:title" content="06 — Self-Repair Playbook — ScopeGate Docs">
+<meta property="og:description" content="How to recover from any ScopeGate failure on your own. The loop is always the same: symptom → scopegate_diagnose → action. Escalate to the human ONLY in the cas">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agents/06-self-repair">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>06 — Self-Repair Playbook</span></nav>
+  <article>
+<h1 id="06-self-repair-playbook">06 — Self-Repair Playbook</h1>
+<p>How to recover from any ScopeGate failure on your own. The loop is always the same: <strong>symptom → <code>scopegate_diagnose</code> → action</strong>. Escalate to the human ONLY in the cases documented below — everything else heals by itself or by you.</p>
+<p>The only two things a human ever does in this system:</p>
+<ol><li>Deposit secrets: <code>scopegate secret add &lt;ref&gt;</code> (in THEIR terminal).</li><li>Decide escalations: <code>scopegate approve &lt;id&gt;</code> / <code>scopegate deny &lt;id&gt;</code> /</li></ol>
+<p>   <code>scopegate policies accept &lt;n&gt;</code>.</p>
+<p>OAuth re-authorization (<code>scopegate auth login &lt;upstream&gt;</code>) is also human-only: it is a device-code flow that needs their browser.</p>
+<h2 id="1-the-rule-diagnose-first">1. The rule: diagnose FIRST</h2>
+<p>On ANY tool or upstream error — a failed call, an auth error, a timeout, an empty tool list — call <code>scopegate_diagnose</code> before doing anything else. It takes no arguments.</p>
+<p>What it does for you (all automatic, it never rejects):</p>
+<ul><li>Probes every enabled upstream with a bounded liveness check (<code>listTools</code>,</li></ul>
+<p>  10 s timeout).</p>
+<ul><li><strong>Drops broken connections</strong>, so your next call reconnects with</li></ul>
+<p>  freshly-injected credentials (self-heal).</p>
+<ul><li>For <code>oauth2</code> upstreams, reports the refresh daemon&#39;s health and, when the</li></ul>
+<p>  grant is dead, the literal human instruction in <code>action_required</code>.</p>
+<p>Response shape (per upstream):</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;upstreams&quot;: {
+    &quot;github&quot;: { &quot;ok&quot;: true, &quot;tools&quot;: 42, &quot;mode&quot;: &quot;minted:github_app&quot; },
+    &quot;huly&quot;: {
+      &quot;ok&quot;: true,
+      &quot;tools&quot;: 8,
+      &quot;mode&quot;: &quot;fallback:injection&quot;,
+      &quot;oauth&quot;: {
+        &quot;state&quot;: &quot;needs_reauth&quot;,
+        &quot;token_expires_in_s&quot;: 0,
+        &quot;consecutive_failures&quot;: 0
+      },
+      &quot;action_required&quot;: &quot;run in your terminal: scopegate auth login huly&quot;
+    }
+  }
+}</code></pre>
+<p>Fields: <code>ok</code> / <code>error</code> (liveness), <code>tools</code> (count), <code>mode</code> (<code>none</code> | <code>minted:&lt;provider&gt;</code> | <code>fallback:injection</code>), <code>oauth.state</code> (<code>ok</code> | <code>backoff</code> | <code>circuit_open</code> | <code>needs_reauth</code> | <code>unknown_expiry</code>), <code>action_required</code> (present ONLY when a human must act — relay it verbatim).</p>
+<h2 id="2-what-already-heals-without-you">2. What already heals without you</h2>
+<p>Do not reinvent these — they are built into the gateway:</p>
+<ul><li><strong>Transparent retry.</strong> Every tool call gets up to 3 total attempts with</li></ul>
+<p>  linear backoff (250 ms, 500 ms). On failure the connection is dropped and   re-established with fresh credentials. In-band upstream errors (MCP   <code>isError</code> results) are returned, NOT retried.</p>
+<ul><li><strong>Tolerant startup.</strong> One dead upstream never blocks the gateway; the rest</li></ul>
+<p>  come up normally.</p>
+<ul><li><strong>Bounded connect.</strong> A hung upstream times out after 10 s</li></ul>
+<p>  (<code>SCOPEGATE_CONNECT_TIMEOUT_MS</code>), it cannot stall anything.</p>
+<ul><li><strong>OAuth renewal.</strong> The daemon renews tokens proactively (at ~80% of TTL)</li></ul>
+<p>  and does ONE synchronous refresh on a 401 mid-call. Retryable failures back   off exponentially (5 s → 15 min); 5 consecutive failures open a circuit.</p>
+<h2 id="3-decision-tree-by-symptom">3. Decision tree by symptom</h2>
+<h3 id="3-1-a-call-failed-once-then-worked-transient-upstream-failure">3.1 A call failed once, then worked — transient upstream failure</h3>
+<p>Diagnose shows <code>&quot;ok&quot;: true</code>. <strong>Action: nothing.</strong> The proxy already reconnected and retried for you. Continue your work.</p>
+<h3 id="3-2-oauth-401-expired-token">3.2 OAuth 401 / expired token</h3>
+<p>Diagnose shows the upstream&#39;s <code>oauth.state</code>:</p>
+<ul><li><code>ok</code>, <code>backoff</code>, <code>circuit_open</code>, <code>unknown_expiry</code> → the daemon owns it.</li></ul>
+<p>  <strong>Retry your call once</strong> with the same arguments.</p>
+<ul><li><code>needs_reauth</code> (with <code>action_required</code>) → the grant is dead; only a human</li></ul>
+<p>  can re-authorize. Calls fail fast with:   <code>upstream &#39;&lt;name&gt;&#39; requires human re-authorization — run in your terminal: scopegate auth login &lt;name&gt; (then call scopegate_diagnose)</code></p>
+<p>Tell the human exactly:</p>
+<blockquote>The OAuth session for <code>&lt;upstream&gt;</code> expired and needs re-authorization. Run in your terminal: <code>scopegate auth login &lt;upstream&gt;</code> (a device-code flow opens in your browser). Tell me when done.</blockquote>
+<p>After they confirm: <code>scopegate_diagnose</code> (state should be back to <code>ok</code>), then retry the SAME call. If you see <code>... — OAuth call still failing after a token refresh + single retry. Call scopegate_diagnose.</code> the gateway already refreshed and retried once — diagnose, and if it persists, report it (§5).</p>
+<h3 id="3-3-waiting-for-secrets-from-scopegate-register-upstream">3.3 <code>waiting_for_secrets</code> (from <code>scopegate_register_upstream</code>)</h3>
+<p>The upstream is registered but its secretRef is not in the vault yet. The response carries the exact instruction:</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;registered&quot;: &quot;grafana&quot;,
+  &quot;status&quot;: &quot;waiting_for_secrets&quot;,
+  &quot;action_required&quot;: &quot;Ask the human to run in their terminal: scopegate secret add grafana_token  — then call scopegate_diagnose.&quot;
+}</code></pre>
+<p>Tell the human: <strong>&quot;Run in your terminal: <code>scopegate secret add &lt;ref&gt;</code>&quot;</strong> — one line per missing ref. NEVER ask them to paste the value in chat: the command stores it in the encrypted vault, outside your context. After they confirm, <code>scopegate_diagnose</code> → the <code>&lt;name&gt;__*</code> tools are live.</p>
+<h3 id="3-4-capability-denied">3.4 Capability denied</h3>
+<ul><li>Error <code>Capability &#39;&lt;upstream&gt;:call:&lt;tool&gt;&#39; not granted. Call scopegate_request_capability first ...</code></li></ul>
+<p>  → call <code>scopegate_request_capability</code> with that SAME capability and a   one-line <code>reason</code>.</p>
+<ul><li><code>{ &quot;granted&quot;: false, &quot;code&quot;: ..., &quot;next_step&quot;: &quot;Call scopegate_propose_policy ...&quot; }</code></li></ul>
+<p>  → no rule covers it. Call <code>scopegate_propose_policy</code> with <code>match</code> +   <code>justification</code>, and tell the human a proposal awaits   <code>scopegate policies review</code> / <code>scopegate policies accept &lt;n&gt;</code>.</p>
+<ul><li><code>code: &quot;ceiling_blocked&quot;</code> → hard limit. Do NOT retry with broader scope.</li></ul>
+<p>  Ask a human to review <code>policies.yaml</code>.</p>
+<ul><li><code>{ &quot;status&quot;: &quot;pending_human_approval&quot;, &quot;approval_id&quot;: &quot;...&quot; }</code> → **STOP that</li></ul>
+<p>  line of work** (approval is a wall, not a delay). Tell the human:   <code>scopegate approve &lt;approval_id&gt;</code> (or <code>scopegate deny &lt;approval_id&gt;</code>).   Do NOT poll, do NOT retry with a different capability or broader scope.   Once approved, call <code>scopegate_request_capability</code> again with the SAME   capability.</p>
+<h3 id="3-5-rate-limited">3.5 Rate limited</h3>
+<pre class="code" data-lang="json"><code>{ &quot;granted&quot;: false, &quot;code&quot;: &quot;capability_rate_limited&quot;,
+  &quot;reason&quot;: &quot;... Back off and retry in ~42s — do NOT loop requests.&quot; }</code></pre>
+<p>The sliding window (default <code>30/m</code> for <code>scopegate_request_capability</code>, tunable via <code>limits.rate_limit</code>) is full. <strong>Wait the <code>~Ns</code> from <code>reason</code>, then retry once.</strong> This is not an error — plan fewer capability requests.</p>
+<h3 id="3-6-suspended-or-revoked-security-containment">3.6 Suspended or revoked — security containment</h3>
+<p>Every request denied with <code>Agent &#39;&lt;id&gt;&#39; is SUSPENDED: ...</code> or <code>Agent &#39;&lt;id&gt;&#39; was REVOKED from ScopeGate Cloud ...</code>. This is fail-closed containment (honeytoken trip or fleet revocation), not a malfunction.</p>
+<p><strong>STOP. Do not retry a single call. Do not work around it.</strong> Report to the human immediately (§5): they investigate <code>audit.jsonl</code> (<code>honeytoken_triggered</code> / <code>agent_revoked</code>), rotate the exposed credential if any, and only then clear the state — remove the agent&#39;s entry under <code>suspended</code> in <code>~/.scopegate/honeytoken-state.json</code>, or remove <code>~/.scopegate/cloud-revoked.json</code>. No restart is needed; the next request picks it up.</p>
+<h3 id="3-7-connection-timeout">3.7 Connection timeout</h3>
+<p><code>connect to upstream &#39;&lt;name&gt;&#39; timed out after 10000 ms</code> — the upstream is slow or down. <code>scopegate_diagnose</code>: if it now shows <code>&quot;ok&quot;: true</code>, retry your call once. If it still shows <code>&quot;ok&quot;: false</code> with a connect error, the problem is on the upstream&#39;s side — nothing local to fix. Report it (§5) and move on to work that does not need that upstream.</p>
+<h3 id="3-8-the-gateway-itself-does-not-respond">3.8 The gateway itself does not respond</h3>
+<p>Your ScopeGate tool calls fail at the transport level (server unreachable).</p>
+<ul><li>Run <code>scopegate status</code> in the shell: it prints the config, vault refs, and</li></ul>
+<p>  a fresh per-upstream health probe (<code>✓ name (N tools)</code> / <code>✗ name — error</code>).   This validates config and credentials end-to-end from a new process.</p>
+<ul><li><strong>stdio mode</strong> (default): the harness owns the gateway as a child process.</li></ul>
+<p>  You cannot restart it yourself — tell the human: &quot;The ScopeGate gateway   process is down. Please restart this agent session (it relaunches the   gateway), after checking <code>scopegate status</code>.&quot;</p>
+<ul><li><strong>http mode</strong> (<code>scopegate start --http</code>): probe it directly —</li></ul>
+<p>  <code>curl -s http://&lt;host&gt;:&lt;port&gt;/health</code> is unauthenticated and returns   <code>{ &quot;status&quot;: &quot;ok&quot;, &quot;uptime_s&quot;: ..., &quot;upstreams&quot;: &lt;connected count&gt; }</code>.   A <code>401</code> on <code>/mcp</code> means you are missing   <code>Authorization: Bearer &lt;SCOPEGATE_HTTP_TOKEN&gt;</code>. If nothing listens, ask the   human to restart: <code>scopegate start --http --port &lt;port&gt; --host &lt;host&gt;</code>   (with <code>SCOPEGATE_HTTP_TOKEN</code> set in the environment).</p>
+<ul><li>Stack traces never reach you — they go to the gateway&#39;s <strong>stderr</strong>, for the</li></ul>
+<p>  human operator. Mention that when escalating.</p>
+<h2 id="4-what-you-must-never-do">4. What you must NEVER do</h2>
+<ul><li><strong>No retry loops.</strong> Calls are already bounded (3 attempts); the rate</li></ul>
+<p>  limiter explicitly forbids looping. One diagnose + one retry, then act or   report.</p>
+<ul><li><strong>No scope escalation.</strong> A denied or pending capability is never a reason</li></ul>
+<p>  to ask for a broader one or a differently-worded one.</p>
+<ul><li><strong>No secrets in chat.</strong> Never ask for, accept, or forward a secret value.</li></ul>
+<p>  The only path is the human running <code>scopegate secret add &lt;ref&gt;</code>.</p>
+<ul><li><strong>No hand-edits.</strong> Never edit <code>policies.yaml</code>, <code>config.json</code>, or any file</li></ul>
+<p>  under <code>~/.scopegate/</code> yourself. Proposals go through   <code>scopegate_propose_policy</code>; only <code>scopegate policies accept &lt;n&gt;</code> writes   <code>policies.yaml</code>. You cannot approve your own escalations, by design.</p>
+<ul><li><strong>No retries while suspended/revoked.</strong> Containment is deliberate.</li><li><strong>No killing/restarting the gateway on your own</strong> in stdio mode — that</li></ul>
+<p>  process belongs to the harness.</p>
+<h2 id="5-reporting-to-the-human-when-all-else-fails">5. Reporting to the human when all else fails</h2>
+<p>Escalate only after: <code>scopegate_diagnose</code> ran, one bounded retry happened, and no <code>action_required</code> path remains. Use this format:</p>
+<pre class="code" data-lang="text"><code>SCOPEGATE FAILURE REPORT
+- Goal blocked:      &lt;what you were trying to do, one line&gt;
+- Failing tool:      &lt;upstream&gt;__&lt;tool&gt;
+- Error (verbatim):  &lt;exact error message&gt;
+- Diagnose output:   &lt;paste the FULL scopegate_diagnose JSON&gt;
+- Self-repair done:  &lt;e.g. &quot;diagnose ×2, retried once after reconnect&quot;&gt;
+- Needs from you:    &lt;e.g. &quot;run scopegate auth login huly&quot; /
+                     &quot;run scopegate secret add &lt;ref&gt;&quot; /
+                     &quot;upstream X appears down — check the service&quot; /
+                     &quot;restart the agent session / scopegate start&quot;&gt;</code></pre>
+<p>Attach, never summarize away, the diagnose JSON — it is the operator&#39;s ground truth (they can cross-check with <code>scopegate status</code> and <code>scopegate audit query --kind tool_call</code>).</p>
+<h2 id="see-also">See also</h2>
+<ul><li><code>./03-tools-reference.md</code> — full argument/response reference for</li></ul>
+<p>  <code>scopegate_diagnose</code> and the other management tools.</p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/agents/05-policies">← 05 — Policies: how to request well and propose new rules</a><a class="next" href="/docs/agents/07-security-rules">07 — Security Rules (Non-Negotiable) →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

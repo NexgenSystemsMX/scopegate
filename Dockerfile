@@ -47,6 +47,13 @@ COPY fake-upstream.mjs ./
 # Bundled signed registry (scopegate_register_upstream from_registry).
 COPY registry ./registry
 COPY docker ./docker
+# The curl|sh installer, served publicly at GET /install.sh.
+COPY install ./install
+# Cloud control plane assets: the landing site (served at /) and the product
+# panel (served at /panel) — read from the source tree at runtime by
+# src/cloud/server/index.ts (tsc does not copy non-TS assets).
+COPY site ./site
+COPY src/cloud/dashboard ./src/cloud/dashboard
 
 # Entrypoint must be executable even when the build context lost the bit
 # (Windows checkouts). NOTE: runs as root on purpose — the Railway volume at

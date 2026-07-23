@@ -25,6 +25,9 @@
  *   (a) a restrictive team policy is applied (team denies / is silent on
  *       what local allows → denied; TTL = min) — signature-verified sync;
  *   (b) gateway audit events show up in GET /v1/admin/audit;
+ *   (e) the panel-approval loop: team rule require:human_approval escalates →
+ *       request visible in GET /v1/admin/approvals → POST .../resolve →
+ *       approval-sync applies → the next request materializes the grant;
  *   (c) a fleet revocation denies the NEXT gateway call in < 30 s;
  *   (d) with the cloud process KILLED the gateway keeps serving (local-first,
  *       local policy + signed cache) and re-engages when the cloud returns.
@@ -293,6 +296,7 @@ async function main() {
     SCOPEGATE_CLOUD_SYNC_INTERVAL_MS: "300",
     SCOPEGATE_CLOUD_AUDIT_INTERVAL_MS: "300",
     SCOPEGATE_CLOUD_REVOCATION_INTERVAL_MS: "300",
+    SCOPEGATE_CLOUD_APPROVAL_INTERVAL_MS: "300",
   };
   console.log(`e2e-cloud home: ${home}`);
 
@@ -517,6 +521,85 @@ async function main() {
       `expected policy-decision events in the cloud store, got kinds: ${[...kinds].join(", ")}`,
     );
     pass(`(b) gateway audit events exported and visible in the cloud (${auditSeen.length} events, batch signature verified server-side)`);
+
+    /* --------- (e) panel approval closes the loop (F3) ------------------- */
+    // The local policy auto-approves pii_echo; a NEW team policy version keeps
+    // allowing it but wraps it in require: human_approval → escalation.
+    const teamPolicyApprovals = {
+      version: 1,
+      limits: { deny: ["fakegit:call:danger"] },
+      agents: {
+        "e2e-agent": {
+          capabilities: [
+            { match: "fakegit:call:whoami", auto_approve: true, ttl: "5m" },
+            { match: "fakegit:call:pii_echo", require: "human_approval", ttl: "10m" },
+          ],
+        },
+      },
+    };
+    await adminFetch(cloudBase, "PUT", "/v1/admin/policy", {
+      teamId,
+      yaml: JSON.stringify(teamPolicyApprovals),
+    });
+    const escalation = await waitFor("team require-rule sync (pii_echo escalates)", async () => {
+      const r = await requestCap("fakegit:call:pii_echo", "10m");
+      return r.granted === false && r.status === "pending_human_approval" ? r : null;
+    });
+    const approvalId = escalation.approval_id;
+    assert.ok(approvalId, `escalation must carry approval_id: ${JSON.stringify(escalation)}`);
+    pass("(e) escalation: team rule require:human_approval turns local auto-approve into a pending request");
+
+    // The request lands in the panel queue (audit export → central store).
+    const queued = await waitFor("approval visible in GET /v1/admin/approvals", async () => {
+      const res = await fetch(
+        `${cloudBase}/v1/admin/approvals?teamId=${encodeURIComponent(teamId)}&status=pending`,
+        { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } },
+      ).catch(() => null);
+      if (!res || !res.ok) return null;
+      const body = await res.json();
+      return (body.approvals ?? []).find((a) => a.approvalId === approvalId) ?? null;
+    });
+    assert.equal(queued.status, "pending");
+    assert.equal(queued.capability, "fakegit:call:pii_echo");
+    pass("(e) the pending request is visible in the panel queue (derived from central audit)");
+
+    // The human approves FROM THE PANEL — no CLI involved.
+    const resolved = await adminFetch(cloudBase, "POST", "/v1/admin/approvals/resolve", {
+      teamId,
+      approvalId,
+      decision: "approve",
+    });
+    assert.equal(resolved.decision.decision, "approved");
+    assert.equal(resolved.decision.decidedBy, "human:cloud:panel");
+    pass("(e) decision issued from the panel (POST /v1/admin/approvals/resolve)");
+
+    // The gateway's approval-sync applies it; the agent's next request
+    // materializes the one-shot grant — zero human-terminal steps.
+    const panelGranted = await waitFor(
+      "panel approval to materialize the grant",
+      async () => {
+        const r = await requestCap("fakegit:call:pii_echo", "10m");
+        return r.granted === true ? r : null;
+      },
+      15_000,
+      300,
+    );
+    assert.equal(panelGranted.granted, true);
+    pass("(e) approval-sync closed the loop: one-shot grant materialized without the CLI");
+
+    // The queue now reflects the resolution with cloud provenance.
+    const decidedQueue = await waitFor("queue reflects the panel decision", async () => {
+      const res = await fetch(
+        `${cloudBase}/v1/admin/approvals?teamId=${encodeURIComponent(teamId)}`,
+        { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } },
+      ).catch(() => null);
+      if (!res || !res.ok) return null;
+      const body = await res.json();
+      const found = (body.approvals ?? []).find((a) => a.approvalId === approvalId);
+      return found && found.status === "approved" && found.resolution === "cloud" ? found : null;
+    });
+    assert.equal(decidedQueue.decidedBy, "human:cloud:panel");
+    pass("(e) queue shows approved, resolution=cloud, decidedBy=human:cloud:panel");
 
     /* ---------------- (c) fleet revocation < 30 s ------------------------ */
     const revokeStart = Date.now();

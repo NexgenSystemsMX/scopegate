@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLI Reference — ScopeGate Docs</title>
+<meta name="description" content="Binary: scopegate (Node ≥ 20). Global flags: --version, --help. Errors print one actionable line to stderr and exit non-zero; stack traces only at SCOPEGATE_LOG">
+<link rel="canonical" href="https://scopegate.io/docs/cli-reference">
+<meta property="og:title" content="CLI Reference — ScopeGate Docs">
+<meta property="og:description" content="Binary: scopegate (Node ≥ 20). Global flags: --version, --help. Errors print one actionable line to stderr and exit non-zero; stack traces only at SCOPEGATE_LOG">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/cli-reference">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><span>CLI Reference</span></nav>
+  <article>
+<h1 id="cli-reference">CLI Reference</h1>
+<p>Binary: <code>scopegate</code> (Node ≥ 20). Global flags: <code>--version</code>, <code>--help</code>. Errors print one actionable line to stderr and exit non-zero; stack traces only at <code>SCOPEGATE_LOG_LEVEL=debug</code>.</p>
+<h2 id="scopegate-init-dry-run-harness-id"><code>scopegate init [--dry-run] [--harness &lt;id&gt;]</code></h2>
+<p>Idempotent setup, safe to re-run:</p>
+<ul><li>creates <code>~/.scopegate/</code> (vault, master key, default <code>policies.yaml</code>)</li><li>detects harnesses: <code>claude-code</code>, <code>kimi-code</code>, <code>cursor</code>, <code>opencode</code>,</li></ul>
+<p>  <code>mcp-json</code></p>
+<ul><li>migrates each detected MCP behind the gateway, moving plaintext secrets</li></ul>
+<p>  (env vars, auth headers) into the vault and rewriting the harness config to   a single <code>scopegate start</code> entry (backup: <code>*.pre-scopegate.bak</code>)</p>
+<ul><li><code>--dry-run</code>: print the plan without writing harness configs</li><li><code>--harness &lt;id&gt;</code>: restrict detection/migration to one harness</li></ul>
+<h2 id="scopegate-start"><code>scopegate start</code></h2>
+<p>Run the gateway MCP server on stdio. Launched by the harness, not by hand.</p>
+<h2 id="scopegate-secret-add-ref-ls-rm-ref"><code>scopegate secret add &lt;ref&gt;</code> · <code>ls</code> · <code>rm &lt;ref&gt;</code></h2>
+<p>Vault management — the human-only path. <code>add</code> reads the value from a hidden prompt or piped stdin, never argv. <code>ls</code> prints ref names only.</p>
+<h2 id="scopegate-status"><code>scopegate status</code></h2>
+<p>Prints agentId, upstreams, vault ref names and per-upstream health (<code>✓ name (N tools)</code> / <code>✗ name — error</code>).</p>
+<h2 id="scopegate-audit-verify"><code>scopegate audit verify</code></h2>
+<p>Verifies sequence continuity, the hash chain and the Ed25519 signature of every event in <code>audit.jsonl</code>. Exit 1 names the first invalid event&#39;s seq.</p>
+<h2 id="scopegate-audit-query-agent-id-kind-k-since-iso-until-iso-limit-n"><code>scopegate audit query [--agent &lt;id&gt;] [--kind &lt;k&gt;] [--since &lt;iso&gt;] [--until &lt;iso&gt;] [--limit &lt;n&gt;]</code></h2>
+<p>Answers &quot;what did this agent/token touch in this window&quot;; matching events as JSONL on stdout (e.g. <code>--kind tool_call</code>, <code>--kind secret_ref_used</code>).</p>
+<h2 id="scopegate-audit-reindex"><code>scopegate audit reindex</code></h2>
+<p>Rebuilds the derived <code>audit-index.json</code> snapshot from <code>audit.jsonl</code> (verifies the trail first).</p>
+<h2 id="scopegate-auth-login-upstream"><code>scopegate auth login &lt;upstream&gt;</code></h2>
+<p>OAuth device-code re-authorization for an <code>oauth2</code> upstream — human, out-of-band. The daemon refreshes tokens automatically afterwards.</p>
+<h2 id="scopegate-vaultd-socket-path"><code>scopegate vaultd [--socket &lt;path&gt;]</code></h2>
+<p>Run the vault as an isolated process (unix socket / Windows named pipe). Use with <code>SCOPEGATE_VAULT_MODE=daemon</code> (or <code>auto</code>, which prefers the daemon when reachable).</p>
+<h2 id="scopegate-vault-rotate-key-backend-name"><code>scopegate vault rotate-key [--backend &lt;name&gt;]</code></h2>
+<p>Re-encrypt the vault with a fresh master key. <code>--backend</code>: <code>file | dpapi | keychain | secret-service</code> — migrates the master-key storage backend when given.</p>
+<h2 id="scopegate-rollback-harness-id"><code>scopegate rollback [--harness &lt;id&gt;]</code></h2>
+<p>Restore harness configs from their <code>*.pre-scopegate.bak</code> backups.</p>
+<h2 id="scopegate-cloud-serve-port-n-home-dir"><code>scopegate cloud serve [--port &lt;n&gt;] [--home &lt;dir&gt;]</code></h2>
+<p>Run the ScopeGate Cloud control plane (EPIC-10): multi-tenant API under <code>/v1</code> (team enroll, signed team policies, central audit ingest with per-event signature verification, fleet revocation feed, billing usage) plus a minimal web dashboard at <code>/</code>. State lives under <code>--home</code> (default <code>~/.scopegate-cloud</code>); admin endpoints take <code>Authorization: Bearer $ADMIN_TOKEN</code> (default <code>dev-admin-token</code> — set it in any real deployment). Prints <code>SCOPEGATE_CLOUD_LISTENING port=&lt;n&gt;</code> when ready.</p>
+<h2 id="approvals-scopegate-approve-id-deny-id-policies">Approvals: <code>scopegate approve &lt;id&gt;</code> · <code>deny &lt;id&gt;</code> · <code>policies</code></h2>
+<p>Human-side commands for the approval flow: when <code>request_capability</code> returns <code>pending_human_approval</code>, the response text points the human at <code>scopegate approve &lt;approval_id&gt;</code> (or <code>deny</code>). Pending human-approval requests live in <code>approvals.pending.jsonl</code>, agent policy proposals in <code>policies.pending.yaml</code>. (These subcommands ship with the approval-channel work — see <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/../docs/Implementacion/EPIC-08-human-approval-channels.md">EPIC-08</a>; the gateway-side <code>pending_human_approval</code> contract is already live.)</p>
+<h2 id="exit-codes">Exit codes</h2>
+<p><code>0</code> success · <code>1</code> error (e.g. audit tamper, vaultd unreachable) · e2e scripts use <code>2</code> for timeouts.</p>
+  </article>
+  <nav class="prevnext"><a class="prev" href="/docs/agent-protocol">← Agent Protocol</a><a class="next" href="/docs/configuration">Configuration Reference →</a></nav>
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
