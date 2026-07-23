@@ -49,12 +49,11 @@ COPY registry ./registry
 COPY docker ./docker
 
 # Entrypoint must be executable even when the build context lost the bit
-# (Windows checkouts). /data belongs to the runtime user.
-RUN chmod +x docker/entrypoint.sh \
-    && mkdir -p /data \
-    && chown -R node:node /data /app
+# (Windows checkouts). NOTE: runs as root on purpose — the Railway volume at
+# /data was created by earlier root containers (root-owned files, 0600), and
+# the bootstrap seeds secrets with vault semantics (0600) anyway.
+RUN chmod +x docker/entrypoint.sh && mkdir -p /data
 
-USER node
 VOLUME /data
 EXPOSE 8080
 
