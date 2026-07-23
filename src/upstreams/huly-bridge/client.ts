@@ -409,10 +409,17 @@ export class RealHulyClient implements HulyBridgeClient {
 
   private async resolveIssue(issueId: string): Promise<Record<string, unknown> & DocLike> {
     const p = this.requirePlatform();
-    const byIdentifier = await p.findOne(CLASS_ISSUE, { identifier: issueId.trim().toUpperCase() });
-    if (byIdentifier !== undefined) return byIdentifier as Record<string, unknown> & DocLike;
-    const byId = await p.findOne(CLASS_ISSUE, { _id: issueId });
-    if (byId !== undefined) return byId as Record<string, unknown> & DocLike;
+    // Read-after-write: a just-created issue can take a moment to become
+    // visible to a fresh findOne through the tx pipeline. A couple of quick
+    // retries make create→comment/update flows deterministic for callers.
+    const attempts = 3;
+    for (let i = 0; i < attempts; i++) {
+      const byIdentifier = await p.findOne(CLASS_ISSUE, { identifier: issueId.trim().toUpperCase() });
+      if (byIdentifier !== undefined) return byIdentifier as Record<string, unknown> & DocLike;
+      const byId = await p.findOne(CLASS_ISSUE, { _id: issueId });
+      if (byId !== undefined) return byId as Record<string, unknown> & DocLike;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 350 * (i + 1)));
+    }
     throw new Error(
       `Issue not found: "${issueId}" — pass an identifier (e.g. DEMO-1) or id; use tracker_search_issues to locate it`,
     );
