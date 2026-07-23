@@ -298,6 +298,11 @@ describe("markup conversion", () => {
     expect(normalizeEndpoint("wss://huly2.nexgen.systems")).toBe("https://huly2.nexgen.systems");
     expect(normalizeEndpoint("ws://internal:3333/")).toBe("http://internal:3333");
     expect(normalizeEndpoint("https://huly2.nexgen.systems/")).toBe("https://huly2.nexgen.systems");
+    // The endpoint returned by selectWorkspace carries the transactor path —
+    // connect() must fetch config.json from the origin, not under it.
+    expect(normalizeEndpoint("wss://huly2.nexgen.systems/_transactor")).toBe(
+      "https://huly2.nexgen.systems",
+    );
   });
 });
 

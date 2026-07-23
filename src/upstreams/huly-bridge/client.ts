@@ -314,11 +314,18 @@ function toPlatformClientLike(platform: any): PlatformClientLike {
   };
 }
 
-/** wss://transactor → https://base (loadServerConfig fetches <url>/config.json). */
+/**
+ * wss://host/_transactor → https://host (the api-client `connect()` flow
+ * fetches `<base>/config.json`, which Huly serves at the ORIGIN root, not
+ * under the transactor path — hitting `<endpoint>/config.json` 404s as
+ * "Failed to fetch config"). Only the transactor path is stripped; any other
+ * path (proxied/subpath installs) is preserved.
+ */
 export function normalizeEndpoint(endpoint: string): string {
   let url = endpoint.trim().replace(/\/+$/, "");
   if (url.startsWith("wss://")) url = "https://" + url.slice("wss://".length);
   else if (url.startsWith("ws://")) url = "http://" + url.slice("ws://".length);
+  url = url.replace(/\/_transactor$/, "");
   return url;
 }
 
