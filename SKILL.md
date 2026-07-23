@@ -87,3 +87,11 @@ to the human with the exact command:
 | `scopegate_diagnose` | Any auth/connection error (self-repair; check `action_required`) |
 | `scopegate_propose_policy` | A needed capability was denied |
 | `scopegate_vault_status` | To see which secretRef NAMES exist (never values) |
+
+## Full documentation
+
+Deep guides for every topic live in [`docs/agents/`](docs/agents/README.md):
+quickstart self-install, the operating protocol, exact tool schemas, the
+native connectors (huly, github, railway, cloudflare, google), policies,
+self-repair playbooks, and the security rules. Read them when this file is
+not enough — start at `docs/agents/README.md`.
