@@ -119,6 +119,42 @@ function unreachableError(accountsUrl: string, err: unknown): Error {
   );
 }
 
+/**
+ * Resolves the account-service URL from a Huly base URL, mirroring the real
+ * client flow (`loadServerConfig(HULY_URL).ACCOUNTS_URL` in kimi-tag): fetch
+ * `<base>/config.json` and read ACCOUNTS_URL. If the URL already points at an
+ * `/_accounts` endpoint it is used as-is; if the discovery fetch fails, fall
+ * back to the standard `<base>/_accounts` layout. Cached per URL so mints
+ * don't re-discover. Never throws — discovery always yields a URL.
+ */
+const discoveredAccountsUrlCache = new Map<string, string>();
+
+export async function resolveAccountsUrl(
+  rawUrl: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const trimmed = rawUrl.replace(/\/+$/, "");
+  if (trimmed.endsWith("/_accounts")) return trimmed;
+  const cached = discoveredAccountsUrlCache.get(trimmed);
+  if (cached) return cached;
+  let resolved = `${trimmed}/_accounts`;
+  try {
+    const res = await fetchImpl(`${trimmed}/config.json`, {
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (res.ok) {
+      const cfg = (await res.json()) as { ACCOUNTS_URL?: unknown };
+      if (typeof cfg.ACCOUNTS_URL === "string" && cfg.ACCOUNTS_URL.length > 0) {
+        resolved = cfg.ACCOUNTS_URL;
+      }
+    }
+  } catch {
+    // Discovery failed — keep the conventional `/_accounts` fallback.
+  }
+  discoveredAccountsUrlCache.set(trimmed, resolved);
+  return resolved;
+}
+
 /** Parses and validates the vault blob — never echoes blob contents in errors. */
 function parseBlob(raw: string, ref: string): HulySecretBlob {
   let parsed: unknown;
@@ -155,7 +191,10 @@ function parseBlob(raw: string, ref: string): HulySecretBlob {
 export class HulyProvider implements CredentialProvider {
   readonly type = "huly";
 
-  constructor(private clientFactory: HulyAccountClientFactory = defaultFactory) {}
+  constructor(
+    private clientFactory: HulyAccountClientFactory = defaultFactory,
+    private discover: (url: string) => Promise<string> = resolveAccountsUrl,
+  ) {}
 
   supports(auth: UpstreamAuth): boolean {
     return auth.type === "huly";
@@ -176,7 +215,10 @@ export class HulyProvider implements CredentialProvider {
     }
     const nowMs = opts.nowMs ?? Date.now();
     const blob = parseBlob(vault.get(auth.secretRef), auth.secretRef);
-    const accountsUrl = auth.accountsUrl ?? blob.accountsUrl ?? DEFAULT_ACCOUNTS_URL;
+    const rawUrl = auth.accountsUrl ?? blob.accountsUrl ?? DEFAULT_ACCOUNTS_URL;
+    // The blob holds the Huly BASE URL (e.g. https://huly2.nexgen.systems);
+    // the account service lives behind it — discover it via /config.json.
+    const accountsUrl = await this.discover(rawUrl);
 
     // 1. login(email, password) against the account service. The password
     //    never leaves this frame; errors never echo it (PlatformError

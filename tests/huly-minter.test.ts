@@ -89,7 +89,9 @@ async function setup(factory: HulyAccountClientFactory, blob: unknown) {
 
   const vault = Vault.open();
   vault.set("huly_nexgen", typeof blob === "string" ? blob : JSON.stringify(blob));
-  const minter = new Minter(vault, [new HulyProvider(factory)]);
+  const minter = new Minter(vault, [
+    new HulyProvider(factory, (url) => Promise.resolve(url)),
+  ]);
   return { minter };
 }
 
@@ -294,5 +296,42 @@ describe("huly provider", () => {
     expect(errDown!.message).toContain("https://huly2.nexgen.systems");
     expect(errDown!.message).not.toContain(PASSWORD);
     expect(errDown!.message).not.toContain(EMAIL);
+  });
+});
+
+describe("resolveAccountsUrl (config.json discovery)", () => {
+  it("returns the URL unchanged when it already points at /_accounts", async () => {
+    const { resolveAccountsUrl } = await import("../src/minter/providers/huly.js");
+    const fetchImpl = vi.fn();
+    await expect(
+      resolveAccountsUrl("https://huly2.nexgen.systems/_accounts", fetchImpl as never),
+    ).resolves.toBe("https://huly2.nexgen.systems/_accounts");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("discovers ACCOUNTS_URL from <base>/config.json on a bare base URL", async () => {
+    const { resolveAccountsUrl } = await import("../src/minter/providers/huly.js");
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ ACCOUNTS_URL: "https://huly2.nexgen.systems/_accounts" }), {
+        status: 200,
+      }),
+    );
+    await expect(
+      resolveAccountsUrl("https://huly2.nexgen.systems", fetchImpl as never),
+    ).resolves.toBe("https://huly2.nexgen.systems/_accounts");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://huly2.nexgen.systems/config.json",
+      expect.anything(),
+    );
+  });
+
+  it("falls back to <base>/_accounts when discovery fails", async () => {
+    const { resolveAccountsUrl } = await import("../src/minter/providers/huly.js");
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(
+      resolveAccountsUrl("https://huly.example", fetchImpl as never),
+    ).resolves.toBe("https://huly.example/_accounts");
   });
 });
