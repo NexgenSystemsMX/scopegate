@@ -65,6 +65,27 @@ export interface Revocation {
 }
 
 /**
+ * A human approval decision issued FROM THE PANEL (EPIC-10 H10.6, cloud
+ * resolution channel). Gateways poll these (mirroring the revocations feed)
+ * and apply them to their local pending queue via `resolveApproval` — the
+ * policy engine then materializes the one-shot grant and audits exactly once.
+ * Idempotent per `approvalId`: a re-resolve returns the existing decision.
+ */
+export interface ApprovalDecision {
+  approvalId: string;
+  teamId: string;
+  agentId: string;
+  decision: "approved" | "denied";
+  /** Mandatory for denials; optional note on approvals. */
+  reason?: string;
+  /** Optional TTL SHORTEN (approved only) — same rule as the CLI: never extends. */
+  ttl?: string;
+  /** Origin marker, e.g. "human:cloud:panel" — lands in the gateway's audit. */
+  decidedBy: string;
+  ts: string; // ISO 8601
+}
+
+/**
  * Audit event as stored by the cloud: the gateway's signed event verbatim
  * (schema from src/audit/log.ts) plus cloud-side ingest metadata.
  */

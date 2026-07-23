@@ -11,6 +11,7 @@
  *   - policy-sync    (default 60 s, SCOPEGATE_CLOUD_SYNC_INTERVAL_MS)
  *   - audit-export   (default 10 s, SCOPEGATE_CLOUD_AUDIT_INTERVAL_MS)
  *   - revocation-sync(default 15 s, SCOPEGATE_CLOUD_REVOCATION_INTERVAL_MS)
+ *   - approval-sync  (default 15 s, SCOPEGATE_CLOUD_APPROVAL_INTERVAL_MS)
  *
  * Each loop: immediate first tick (async, never blocking gateway startup),
  * chained unref'd setTimeout, in-flight guard, exponential backoff on
@@ -34,11 +35,16 @@ import {
   syncRevocationsOnce,
   DEFAULT_REVOCATION_SYNC_INTERVAL_MS,
 } from "./revocation-sync.js";
+import {
+  syncApprovalsOnce,
+  DEFAULT_APPROVAL_SYNC_INTERVAL_MS,
+} from "./approval-sync.js";
 
 export interface CloudSyncIntervals {
   policyMs: number;
   auditMs: number;
   revocationMs: number;
+  approvalMs: number;
 }
 
 export interface CloudSyncDeps {
@@ -151,10 +157,14 @@ export function startCloudSync(deps: CloudSyncDeps): CloudSyncHandle | null {
     revocationMs:
       deps.intervals?.revocationMs ??
       envMs("SCOPEGATE_CLOUD_REVOCATION_INTERVAL_MS", DEFAULT_REVOCATION_SYNC_INTERVAL_MS),
+    approvalMs:
+      deps.intervals?.approvalMs ??
+      envMs("SCOPEGATE_CLOUD_APPROVAL_INTERVAL_MS", DEFAULT_APPROVAL_SYNC_INTERVAL_MS),
   };
   const fetchImpl = deps.fetchImpl;
 
   let revocationCursor: string | null = null;
+  let approvalCursor: string | null = null;
   const loops = [
     startLoop("policy-sync", intervals.policyMs, () =>
       syncTeamPolicyOnce(cfg, deps.policy, { fetchImpl }),
@@ -168,11 +178,15 @@ export function startCloudSync(deps: CloudSyncDeps): CloudSyncHandle | null {
       });
       revocationCursor = r.lastSeen;
     }),
+    startLoop("approval-sync", intervals.approvalMs, async () => {
+      const r = await syncApprovalsOnce(cfg, deps.agentId, approvalCursor, { fetchImpl });
+      approvalCursor = r.lastSeen;
+    }),
   ];
 
   console.error(
     `[scopegate cloud] info: sync started — team=${cfg.teamId} agent=${cfg.agentId} ` +
-      `(policy ${intervals.policyMs}ms, audit ${intervals.auditMs}ms, revocations ${intervals.revocationMs}ms)`,
+      `(policy ${intervals.policyMs}ms, audit ${intervals.auditMs}ms, revocations ${intervals.revocationMs}ms, approvals ${intervals.approvalMs}ms)`,
   );
 
   return {

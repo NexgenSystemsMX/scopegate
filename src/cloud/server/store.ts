@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type {
   Agent,
+  ApprovalDecision,
   AuditQuery,
   PolicyVersion,
   Revocation,
@@ -65,6 +66,14 @@ export interface Store {
   // revocations
   addRevocation(revocation: Revocation): void;
   listRevocations(teamId: string, since?: string): Revocation[];
+
+  // approval decisions (panel → gateway feed; idempotent per approvalId)
+  addApprovalDecision(decision: ApprovalDecision): void;
+  approvalDecision(teamId: string, approvalId: string): ApprovalDecision | undefined;
+  approvalDecisions(teamId: string, since?: string): ApprovalDecision[];
+
+  /** All stored events for a team in chronological (file) order — audit export. */
+  allAuditEvents(teamId: string): StoredAuditEvent[];
 }
 
 function readJsonFile<T>(file: string, fallback: T): T {
@@ -84,6 +93,7 @@ export class FileStore implements Store {
   private agents: Agent[];
   private policies: PolicyVersion[];
   private revocations: Revocation[];
+  private decisions: ApprovalDecision[];
 
   constructor(home: string) {
     this.dataDir = path.join(home, "data");
@@ -94,6 +104,9 @@ export class FileStore implements Store {
     this.revocations = readJsonFile(this.file("revocations.json"), {
       revocations: [],
     }).revocations;
+    this.decisions = readJsonFile(this.file("approvals.json"), {
+      decisions: [],
+    }).decisions;
   }
 
   private file(name: string): string {
@@ -244,5 +257,33 @@ export class FileStore implements Store {
     return this.revocations.filter(
       (r) => r.teamId === teamId && (since === undefined || r.ts > since),
     );
+  }
+
+  // ------------------------------------------------- approval decisions
+  addApprovalDecision(decision: ApprovalDecision): void {
+    // Idempotent per approvalId — a re-resolve never duplicates the record.
+    const existing = this.approvalDecision(decision.teamId, decision.approvalId);
+    if (existing) return;
+    this.decisions.push(decision);
+    writeJsonFileAtomic(this.file("approvals.json"), {
+      decisions: this.decisions,
+    });
+  }
+
+  approvalDecision(teamId: string, approvalId: string): ApprovalDecision | undefined {
+    return this.decisions.find(
+      (d) => d.teamId === teamId && d.approvalId === approvalId,
+    );
+  }
+
+  approvalDecisions(teamId: string, since?: string): ApprovalDecision[] {
+    return this.decisions.filter(
+      (d) => d.teamId === teamId && (since === undefined || d.ts > since),
+    );
+  }
+
+  // --------------------------------------------------------- audit export
+  allAuditEvents(teamId: string): StoredAuditEvent[] {
+    return this.readAuditEvents(teamId);
   }
 }

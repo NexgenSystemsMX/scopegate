@@ -660,18 +660,40 @@ describe("cloud server (EPIC-10)", () => {
     expect(viaSso.status).toBe(200);
   });
 
-  it("serves the dashboard assets (vanilla, same-origin)", async () => {
-    const index = await fetch(ctx.base + "/");
-    expect(index.status).toBe(200);
-    expect(index.headers.get("content-type")).toContain("text/html");
-    const html = await index.text();
-    expect(html).toContain("ScopeGate Cloud");
-    expect(html).toContain("/app.js");
+  it("serves the landing at / and the panel at /panel (vanilla, same-origin)", async () => {
+    // Landing page at the root.
+    const landing = await fetch(ctx.base + "/");
+    expect(landing.status).toBe(200);
+    expect(landing.headers.get("content-type")).toContain("text/html");
+    const landingHtml = await landing.text();
+    expect(landingHtml).toContain("ScopeGate");
+    expect(landingHtml).toContain("/styles.css");
 
-    const js = await fetch(ctx.base + "/app.js");
+    // The product panel lives at /panel.
+    const panel = await fetch(ctx.base + "/panel");
+    expect(panel.status).toBe(200);
+    expect(panel.headers.get("content-type")).toContain("text/html");
+    const html = await panel.text();
+    expect(html).toContain("ScopeGate Cloud");
+    expect(html).toContain("/panel/app.js");
+
+    const js = await fetch(ctx.base + "/panel/app.js");
     expect(js.status).toBe(200);
     const jsText = await js.text();
     expect(jsText).toContain("/v1/admin/teams");
+
+    // Backward-compat redirects from the panel's old location at /.
+    const oldIndex = await fetch(ctx.base + "/index.html", { redirect: "manual" });
+    expect(oldIndex.status).toBe(302);
+    expect(oldIndex.headers.get("location")).toBe("/panel");
+    const oldJs = await fetch(ctx.base + "/app.js", { redirect: "manual" });
+    expect(oldJs.status).toBe(302);
+    expect(oldJs.headers.get("location")).toBe("/panel/app.js");
+
+    // Public health probe.
+    const health = await fetch(ctx.base + "/health");
+    expect(health.status).toBe(200);
+    expect((await health.json() as { status: string }).status).toBe("ok");
   });
 
   it("keeps looksLikeSecret in sync with the gateway original", async () => {

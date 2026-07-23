@@ -305,3 +305,43 @@ export function updatePendingStatuses(
   );
   caches.delete(APPROVALS_PENDING_PATH);
 }
+
+/**
+ * Shorten the TTL of a pending request IN PLACE (atomic, line-level merge:
+ * foreign/corrupt lines preserved byte-for-byte). Callers must enforce the
+ * shorten-only rule themselves (the CLI and the cloud approval-sync both
+ * validate before calling). The engine's ceilings clamp on top when the
+ * grant materializes.
+ */
+export function shortenApprovalRequestTtl(id: string, newTtl: string): void {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(APPROVALS_PENDING_PATH, "utf8");
+  } catch {
+    throw new Error(`approval '${id}' not found — no pending requests file`);
+  }
+  let found = false;
+  const out = raw
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      try {
+        const obj = JSON.parse(trimmed) as Record<string, unknown>;
+        if (obj && obj.id === id) {
+          found = true;
+          return JSON.stringify({ ...obj, ttl: newTtl });
+        }
+        return line;
+      } catch {
+        return line; // half-written/foreign line: preserved byte-for-byte
+      }
+    })
+    .join("\n");
+  if (!found) {
+    throw new Error(`approval '${id}' vanished from the pending file — nothing to shorten`);
+  }
+  ensureDir();
+  atomicWriteFileSync(APPROVALS_PENDING_PATH, out);
+  caches.delete(APPROVALS_PENDING_PATH);
+}

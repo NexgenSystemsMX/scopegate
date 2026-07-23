@@ -129,7 +129,7 @@ describe("google_sa provider — token exchange", () => {
     expect(url).toBe("https://oauth2.googleapis.com/token");
     expect((init as { method: string }).method).toBe("POST");
     const params = new URLSearchParams((init as { body: string }).body);
-    expect(params.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type-jwt-bearer");
+    expect(params.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:jwt-bearer");
     const assertion = params.get("assertion")!;
     expect(decodeJwt(assertion).payload.scope).toContain("drive.readonly");
     // Only the access token leaves the gateway — never the private key.

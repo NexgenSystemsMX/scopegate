@@ -36,8 +36,6 @@ export function addRevocation(store: Store, body: unknown): Revocation {
     );
   }
   if (!store.getTeam(teamId)) throw notFound(`no such team: ${teamId}`);
-  const agent = store.getAgent(teamId, agentId);
-  if (!agent) throw notFound(`agent ${agentId} is not enrolled in team ${teamId}`);
 
   const revocation: Revocation = {
     teamId,
@@ -45,6 +43,23 @@ export function addRevocation(store: Store, body: unknown): Revocation {
     reason,
     ts: new Date().toISOString(),
   };
+
+  // Team-wide revocation ("*"): the feed entry matches every gateway (the
+  // revocation-sync client treats "*" as its own agentId) and every enrolled
+  // agent is marked revoked — the blast-radius action, always with a reason.
+  if (agentId === "*") {
+    store.addRevocation(revocation);
+    for (const a of store.listAgents(teamId)) {
+      if (!a.revoked) {
+        store.updateAgent(teamId, a.agentId, { revoked: true, revokedAt: revocation.ts });
+      }
+    }
+    return revocation;
+  }
+
+  const agent = store.getAgent(teamId, agentId);
+  if (!agent) throw notFound(`agent ${agentId} is not enrolled in team ${teamId}`);
+
   store.addRevocation(revocation);
   store.updateAgent(teamId, agentId, {
     revoked: true,

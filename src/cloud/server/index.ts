@@ -63,28 +63,59 @@ export function resolveAdminToken(option?: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/* Dashboard static files (vanilla HTML/JS, no build step).            */
+/* Static files: landing site + panel (vanilla HTML/JS, no build step).*/
 /*                                                                     */
-/* tsc only compiles *.ts, so the dashboard assets are read from the   */
-/* SOURCE tree at runtime. Candidates cover both layouts:              */
-/*   src/cloud/server → ../dashboard          (vitest / tsx on src)    */
-/*   dist/cloud/server → <pkg>/src/cloud/dashboard  (built cli in repo)*/
+/* Routing contract:                                                   */
+/*   /                     → site/index.html      (public landing)     */
+/*   /styles.css           → site/styles.css                           */
+/*   /favicon.svg          → site/favicon.svg                          */
+/*   /panel[/index.html]   → dashboard/index.html (the product panel)  */
+/*   /panel/app.js         → dashboard/app.js                          */
+/*   /index.html, /app.js  → 302 redirects to /panel (backward-compat: */
+/*                           the panel used to live at /)              */
+/*   /health               → 200 JSON (public, for uptime checks)      */
+/*                                                                     */
+/* tsc only compiles *.ts, so the assets are read from the SOURCE tree */
+/* at runtime. Candidates cover both layouts:                          */
+/*   src/cloud/server → ../dashboard | ../../site   (vitest / tsx)     */
+/*   dist/cloud/server → <pkg>/src/cloud/...        (built cli in repo)*/
 /* A packaged install that prunes src/ serves a small inline fallback  */
 /* page explaining the situation instead of crashing (documented).     */
 /* ------------------------------------------------------------------ */
 
-const STATIC_FILES: Record<string, { file: string; contentType: string }> = {
+interface StaticEntry {
+  file: string;
+  contentType: string;
+}
+
+const LANDING_FILES: Record<string, StaticEntry> = {
   "/": { file: "index.html", contentType: "text/html; charset=utf-8" },
-  "/index.html": { file: "index.html", contentType: "text/html; charset=utf-8" },
-  "/app.js": { file: "app.js", contentType: "text/javascript; charset=utf-8" },
+  "/styles.css": { file: "styles.css", contentType: "text/css; charset=utf-8" },
+  "/favicon.svg": { file: "favicon.svg", contentType: "image/svg+xml" },
 };
 
-function resolveDashboardDir(): string | null {
+const PANEL_FILES: Record<string, StaticEntry> = {
+  "/panel": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/panel/": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/panel/index.html": { file: "index.html", contentType: "text/html; charset=utf-8" },
+  "/panel/app.js": { file: "app.js", contentType: "text/javascript; charset=utf-8" },
+};
+
+const REDIRECTS: Record<string, string> = {
+  "/index.html": "/panel",
+  "/app.js": "/panel/app.js",
+  "/dashboard": "/panel",
+};
+
+function resolveStaticDir(relFromServerDir: string, pkgRel: string): string | null {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.join(moduleDir, "..", "dashboard"),
-    path.join(moduleDir, "..", "..", "..", "src", "cloud", "dashboard"),
-    path.join(process.cwd(), "src", "cloud", "dashboard"),
+    // Running on the source tree (vitest / tsx): sibling of src/cloud/server.
+    path.join(moduleDir, relFromServerDir),
+    // Running the built CLI from the repo: <pkg>/<pkgRel>.
+    path.join(moduleDir, "..", "..", "..", pkgRel),
+    // Repo root as cwd.
+    path.join(process.cwd(), pkgRel),
   ];
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, "index.html"))) return dir;
@@ -94,15 +125,43 @@ function resolveDashboardDir(): string | null {
 
 const FALLBACK_HTML = `<!doctype html><html><body style="font-family:sans-serif;max-width:40em;margin:4em auto">
 <h1>ScopeGate Cloud</h1>
-<p>The dashboard assets (<code>src/cloud/dashboard/</code>) are not present in
-this installation — the management API under <code>/v1</code> is fully
-functional regardless. Reinstall from a full checkout to get the dashboard.</p>
+<p>The static assets (<code>site/</code> and <code>src/cloud/dashboard/</code>) are
+not present in this installation — the management API under <code>/v1</code> is
+fully functional regardless. Reinstall from a full checkout to get the landing
+page and the panel.</p>
 </body></html>`;
 
-function serveDashboard(res: http.ServerResponse, pathname: string): boolean {
-  const entry = STATIC_FILES[pathname];
-  if (!entry) return false;
-  const dir = resolveDashboardDir();
+function serveStatic(
+  res: http.ServerResponse,
+  pathname: string,
+): boolean {
+  // Public health probe — no auth, no store access.
+  if (pathname === "/health") {
+    const body = JSON.stringify({ status: "ok", service: "scopegate-cloud" });
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": Buffer.byteLength(body),
+      "cache-control": "no-store",
+    });
+    res.end(body);
+    return true;
+  }
+
+  const redirect = REDIRECTS[pathname];
+  if (redirect) {
+    res.writeHead(302, { location: redirect, "content-length": 0 });
+    res.end();
+    return true;
+  }
+
+  const landing = LANDING_FILES[pathname];
+  const panel = PANEL_FILES[pathname];
+  if (!landing && !panel) return false;
+
+  const dir = landing
+    ? resolveStaticDir(path.join("..", "..", "site"), "site")
+    : resolveStaticDir(path.join("..", "dashboard"), path.join("src", "cloud", "dashboard"));
+  const entry = (landing ?? panel)!;
   const body =
     dir !== null
       ? fs.readFileSync(path.join(dir, entry.file))
@@ -147,7 +206,7 @@ export async function startCloudServer(
       try {
         if (await handleApiRequest(req, res, url, deps)) return;
         if ((req.method === "GET" || req.method === "HEAD") &&
-            serveDashboard(res, url.pathname)) {
+            serveStatic(res, url.pathname)) {
           return;
         }
         res.writeHead(404, { "content-type": "application/json" });
@@ -184,7 +243,7 @@ export async function startCloudServer(
     console.log(`SCOPEGATE_CLOUD_FINGERPRINT ${cloudIdentity.fingerprint}`);
   }
   console.error(
-    `[scopegate-cloud] dashboard at http://127.0.0.1:${port}/ — data home: ${home}`,
+    `[scopegate-cloud] landing at http://127.0.0.1:${port}/ · panel at /panel — data home: ${home}`,
   );
 
   return {

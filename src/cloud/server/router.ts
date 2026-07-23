@@ -20,7 +20,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { timingSafeEqual, createHash, randomBytes } from "node:crypto";
 import type { Alerter } from "./alerts.js";
+import { listApprovals, listDecisions, resolveApproval } from "./approvals.js";
 import { billingUsage } from "./billing.js";
+import { listActiveCapabilities } from "./capabilities.js";
 import { enrollAgent, hashAgentSecret } from "./enroll.js";
 import { ingestBatch, type IngestHooks } from "./ingest.js";
 import type { CloudIdentity } from "./keys.js";
@@ -35,6 +37,7 @@ import {
   type Agent,
   type Team,
 } from "./model.js";
+import { getOverview } from "./overview.js";
 import { getPolicy, putPolicy } from "./policies.js";
 import { addRevocation, listRevocations } from "./revocations.js";
 import type { SsoAdapter } from "./sso.js";
@@ -239,6 +242,19 @@ export async function handleApiRequest(
     return true;
   }
 
+  // -- agent-scope: approval decisions feed (panel → gateway) -----------------
+  if (method === "GET" && path === "/v1/approvals/decisions") {
+    const teamId = asNonEmptyString(url.searchParams.get("teamId"));
+    if (!teamId) throw badRequest("teamId query param is required");
+    const agent = requireTeamAccess(auth, teamId);
+    const since = asNonEmptyString(url.searchParams.get("since")) ?? undefined;
+    // An agent credential sees only its own decisions; team/admin see all.
+    sendJson(res, 200, {
+      decisions: listDecisions(store, teamId, since, agent?.agentId),
+    });
+    return true;
+  }
+
   // -- agent-scope: billing usage --------------------------------------------
   if (method === "GET" && path === "/v1/billing/usage") {
     const teamId = asNonEmptyString(url.searchParams.get("teamId"));
@@ -332,6 +348,71 @@ export async function handleApiRequest(
       if (!store.getTeam(teamId)) throw notFound(`no such team: ${teamId}`);
       store.updateTeam(teamId, { slackWebhookUrl: webhookUrl });
       sendJson(res, 200, { ok: true, teamId, slackWebhookConfigured: true });
+      return true;
+    }
+
+    if (method === "GET" && path === "/v1/admin/overview") {
+      const teamId = asNonEmptyString(url.searchParams.get("teamId"));
+      if (!teamId) throw badRequest("teamId query param is required");
+      if (!store.getTeam(teamId)) throw notFound(`no such team: ${teamId}`);
+      sendJson(res, 200, getOverview(store, teamId));
+      return true;
+    }
+
+    if (method === "GET" && path === "/v1/admin/approvals") {
+      const teamId = asNonEmptyString(url.searchParams.get("teamId"));
+      if (!teamId) throw badRequest("teamId query param is required");
+      if (!store.getTeam(teamId)) throw notFound(`no such team: ${teamId}`);
+      const statusParam = asNonEmptyString(url.searchParams.get("status")) ?? "all";
+      if (!["pending", "resolved", "all"].includes(statusParam)) {
+        throw badRequest("status must be pending|resolved|all");
+      }
+      sendJson(res, 200, {
+        approvals: listApprovals(store, teamId, statusParam as "pending" | "resolved" | "all"),
+      });
+      return true;
+    }
+
+    if (method === "POST" && path === "/v1/admin/approvals/resolve") {
+      sendJson(res, 200, resolveApproval(store, await readJsonBody(req)));
+      return true;
+    }
+
+    if (method === "GET" && path === "/v1/admin/capabilities") {
+      const teamId = asNonEmptyString(url.searchParams.get("teamId"));
+      if (!teamId) throw badRequest("teamId query param is required");
+      if (!store.getTeam(teamId)) throw notFound(`no such team: ${teamId}`);
+      const agentId = asNonEmptyString(url.searchParams.get("agentId")) ?? undefined;
+      sendJson(res, 200, {
+        capabilities: listActiveCapabilities(store, teamId, agentId),
+      });
+      return true;
+    }
+
+    if (method === "GET" && path === "/v1/admin/policy/versions") {
+      const teamId = asNonEmptyString(url.searchParams.get("teamId"));
+      if (!teamId) throw badRequest("teamId query param is required");
+      if (!store.getTeam(teamId)) throw notFound(`no such team: ${teamId}`);
+      sendJson(res, 200, { versions: store.policyVersions(teamId) });
+      return true;
+    }
+
+    if (method === "GET" && path === "/v1/admin/audit/export") {
+      const teamId = asNonEmptyString(url.searchParams.get("teamId"));
+      if (!teamId) throw badRequest("teamId query param is required");
+      if (!store.getTeam(teamId)) throw notFound(`no such team: ${teamId}`);
+      // Signed events verbatim, chronological — SIEM/offline verification.
+      const body = store
+        .allAuditEvents(teamId)
+        .map((e) => JSON.stringify(e))
+        .join("\n");
+      res.writeHead(200, {
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "content-disposition": `attachment; filename="scopegate-audit-${teamId}.jsonl"`,
+        "content-length": Buffer.byteLength(body ? body + "\n" : ""),
+        "cache-control": "no-store",
+      });
+      res.end(body ? body + "\n" : "");
       return true;
     }
 

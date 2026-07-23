@@ -3,18 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ScopeGate Cloud</title>
+<title>ScopeGate Cloud — Panel</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
-  :root { --bg:#0f1420; --panel:#171e2e; --border:#28324a; --fg:#dbe2f1; --dim:#8b96b0; --accent:#5b9dff; --danger:#ff6b6b; --ok:#51cf8a; }
+  :root { --bg:#0f1420; --panel:#171e2e; --border:#28324a; --fg:#dbe2f1; --dim:#8b96b0; --accent:#5b9dff; --danger:#ff6b6b; --ok:#51cf8a; --warn:#ffd166; }
   * { box-sizing: border-box; }
   body { margin:0; font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--fg); }
-  header { display:flex; align-items:center; gap:1em; padding:.7em 1.2em; background:var(--panel); border-bottom:1px solid var(--border); }
+  header { display:flex; align-items:center; gap:1em; padding:.7em 1.2em; background:var(--panel); border-bottom:1px solid var(--border); flex-wrap:wrap; }
   header h1 { font-size:1.05em; margin:0; }
+  header h1 a { color:var(--fg); text-decoration:none; }
   header .spacer { flex:1; }
-  main { padding:1.2em; max-width:1100px; margin:0 auto; }
+  main { padding:1.2em; max-width:1180px; margin:0 auto; }
   button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:.45em .9em; cursor:pointer; font:inherit; }
   button.secondary { background:transparent; border:1px solid var(--border); color:var(--fg); }
   button.danger { background:var(--danger); }
+  button.small { padding:.25em .6em; font-size:.88em; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   input, select, textarea { background:#0b0f1a; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45em .6em; font:inherit; }
   textarea { width:100%; font-family:ui-monospace,Consolas,monospace; }
@@ -23,23 +26,54 @@
   th { color:var(--dim); font-weight:600; }
   code, .mono { font-family:ui-monospace,Consolas,monospace; font-size:.92em; }
   .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:1em 1.2em; margin-bottom:1em; }
-  .tabs { display:flex; gap:.4em; margin:1em 0; }
-  .tabs button { background:transparent; border:1px solid var(--border); color:var(--dim); }
+  .tabs { display:flex; gap:.4em; margin:1em 0; flex-wrap:wrap; }
+  .tabs button { background:transparent; border:1px solid var(--border); color:var(--dim); position:relative; }
   .tabs button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .tabs button .badge { position:absolute; top:-7px; right:-7px; background:var(--danger); color:#fff; border-radius:999px; font-size:.7em; padding:.1em .45em; font-weight:700; }
   .dim { color:var(--dim); }
   .ok { color:var(--ok); }
+  .warn { color:var(--warn); }
   .danger-text { color:var(--danger); }
   .row { display:flex; gap:.6em; align-items:center; flex-wrap:wrap; }
   .error-box { background:#3a1720; border:1px solid var(--danger); border-radius:8px; padding:.6em .9em; margin:.8em 0; white-space:pre-wrap; }
-  .hidden { display:none; }
+  .hidden { display:none !important; }
   .kv { margin:.2em 0; word-break:break-all; }
   #login { max-width:420px; margin:6em auto; }
   pre.snippet { background:#0b0f1a; border:1px solid var(--border); border-radius:8px; padding:.8em; overflow-x:auto; }
+
+  /* overview cards */
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.8em; margin-bottom:1em; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:.9em 1em; }
+  .card .num { font-size:1.7em; font-weight:700; }
+  .card .lbl { color:var(--dim); font-size:.85em; }
+
+  /* status pills */
+  .pill { display:inline-block; border-radius:999px; padding:.1em .6em; font-size:.8em; font-weight:600; }
+  .pill-ok { background:rgba(81,207,138,.15); color:var(--ok); border:1px solid rgba(81,207,138,.4); }
+  .pill-bad { background:rgba(255,107,107,.15); color:var(--danger); border:1px solid rgba(255,107,107,.4); }
+  .pill-warn { background:rgba(255,209,102,.12); color:var(--warn); border:1px solid rgba(255,209,102,.4); }
+  .pill-dim { background:#0b0f1a; color:var(--dim); border:1px solid var(--border); }
+
+  /* modal */
+  .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:50; }
+  .modal { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:1.2em 1.4em; max-width:520px; width:92%; }
+  .modal h3 { margin-top:0; }
+  .modal .blast { background:#3a1720; border:1px solid var(--danger); border-radius:8px; padding:.6em .9em; margin:.8em 0; }
+
+  /* diff */
+  .diff { font-family:ui-monospace,Consolas,monospace; font-size:.85em; white-space:pre-wrap; }
+  .diff .add { background:rgba(81,207,138,.12); color:var(--ok); display:block; }
+  .diff .del { background:rgba(255,107,107,.12); color:var(--danger); display:block; }
+  .diff .ctx { color:var(--dim); display:block; }
+
+  .wizard-step { border-left:3px solid var(--accent); padding:.4em 0 .4em 1em; margin:1em 0; }
+  .wizard-step h3 { margin:.2em 0; }
+  .countdown { font-family:ui-monospace,Consolas,monospace; }
 </style>
 </head>
 <body>
 <header class="hidden" id="topbar">
-  <h1>ScopeGate Cloud</h1>
+  <h1><a href="/">ScopeGate</a> Cloud</h1>
   <select id="team-select" title="Team"></select>
   <button id="new-team" class="secondary" title="Create team">+ Team</button>
   <span class="spacer"></span>
@@ -59,46 +93,137 @@
     <div id="login-error" class="error-box hidden"></div>
   </div>
 
+  <!-- Onboarding wizard (no teams yet) -->
+  <div id="onboarding" class="hidden">
+    <div class="panel">
+      <h2 style="margin-top:0">Welcome to ScopeGate Cloud</h2>
+      <p class="dim">Get your first gateway enrolled in under two minutes. Three steps:</p>
+      <div class="wizard-step">
+        <h3>1 · Create a team</h3>
+        <p class="dim">A team groups agents, policies and audit. The enroll token is shown once — it is the team root credential.</p>
+        <div class="row">
+          <input id="onboard-team-name" placeholder="team name (e.g. nexgen)">
+          <button id="onboard-create-team">Create team</button>
+        </div>
+      </div>
+      <div class="wizard-step">
+        <h3>2 · Enroll a gateway</h3>
+        <p class="dim">Run this on the machine where the gateway lives (appears after step 1):</p>
+        <pre class="snippet mono" id="onboard-enroll-snippet"># create a team first</pre>
+      </div>
+      <div class="wizard-step">
+        <h3>3 · Watch it appear</h3>
+        <p class="dim" id="onboard-waiting">Waiting for the first agent to enroll… this page updates automatically.</p>
+      </div>
+    </div>
+  </div>
+
   <!-- App -->
   <div id="app" class="hidden">
     <div class="tabs">
-      <button data-tab="agents" class="active">Agents</button>
-      <button data-tab="policy">Policy</button>
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="fleet">Fleet</button>
+      <button data-tab="approvals">Approvals<span class="badge hidden" id="approvals-badge"></span></button>
+      <button data-tab="capabilities">Capabilities</button>
       <button data-tab="audit">Audit</button>
+      <button data-tab="policy">Policy</button>
       <button data-tab="billing">Billing</button>
       <button data-tab="settings">Settings</button>
     </div>
     <div id="global-error" class="error-box hidden"></div>
 
-    <section id="tab-agents">
+    <!-- OVERVIEW -->
+    <section id="tab-overview">
+      <div class="cards" id="overview-cards"></div>
       <div class="panel">
-        <div class="row"><h2 style="margin:0;flex:1">Fleet</h2><button id="reload-agents" class="secondary">Reload</button></div>
+        <div class="row"><h2 style="margin:0;flex:1">Agent health</h2><button id="reload-overview" class="secondary small">Reload</button></div>
+        <table id="health-table">
+          <thead><tr><th>Agent</th><th>Last seen</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="dim" id="health-empty">No agents enrolled yet — see Settings for the enroll command.</p>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">Recent security events</h2>
+        <table id="security-table">
+          <thead><tr><th>ts</th><th>agent</th><th>kind</th><th>detail</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="dim" id="security-empty">No security-relevant events. That is the good state.</p>
+      </div>
+    </section>
+
+    <!-- FLEET -->
+    <section id="tab-fleet" class="hidden">
+      <div class="panel">
+        <div class="row">
+          <h2 style="margin:0;flex:1">Fleet</h2>
+          <button id="reload-agents" class="secondary small">Reload</button>
+          <button id="revoke-team" class="danger small">Revoke team…</button>
+        </div>
         <table id="agents-table">
           <thead><tr><th>Agent</th><th>Fingerprint</th><th>Enrolled</th><th>Last seen</th><th>Status</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
-        <p class="dim" id="agents-empty">No agents enrolled yet — see Settings for the enroll command.</p>
-      </div>
-    </section>
-
-    <section id="tab-policy" class="hidden">
-      <div class="panel">
-        <h2 style="margin-top:0">Team policy</h2>
-        <p class="dim">Published versions are signed with the cloud key; gateways verify the signature before applying. Current: <span id="policy-version" class="mono">none</span></p>
-        <textarea id="policy-yaml" rows="16" spellcheck="false" placeholder="# team policy YAML — see policies.example.yaml"></textarea>
-        <div class="row" style="margin-top:.6em">
-          <button id="policy-save">Publish signed version</button>
-          <span id="policy-status" class="dim"></span>
+        <div id="agents-empty" class="hidden">
+          <p class="dim">No agents enrolled yet. Enroll your first gateway:</p>
+          <pre class="snippet mono" id="fleet-enroll-snippet"></pre>
         </div>
       </div>
     </section>
 
+    <!-- APPROVALS -->
+    <section id="tab-approvals" class="hidden">
+      <div class="panel">
+        <div class="row"><h2 style="margin:0;flex:1">Pending requests</h2><button id="reload-approvals" class="secondary small">Reload</button></div>
+        <p class="dim">Escalated capability requests from agents. Approving or denying here reaches the gateway in seconds — no terminal needed.</p>
+        <table id="approvals-table">
+          <thead><tr><th>Requested</th><th>Agent</th><th>Capability</th><th>TTL asked</th><th>Reason</th><th>Expires</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="dim" id="approvals-empty">No pending requests — the queue is clear.</p>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">Resolved</h2>
+        <table id="approvals-resolved-table">
+          <thead><tr><th>Requested</th><th>Agent</th><th>Capability</th><th>Status</th><th>Decided by</th><th>Via</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="dim" id="approvals-resolved-empty">Nothing resolved yet.</p>
+      </div>
+    </section>
+
+    <!-- CAPABILITIES -->
+    <section id="tab-capabilities" class="hidden">
+      <div class="panel">
+        <div class="row"><h2 style="margin:0;flex:1">Active capabilities</h2><button id="reload-capabilities" class="secondary small">Reload</button></div>
+        <p class="dim">Live grants across the fleet, soonest to expire first. Grants are TTL-bound by construction — an expired one is gone for good.</p>
+        <table id="capabilities-table">
+          <thead><tr><th>Agent</th><th>Capability</th><th>Issued</th><th>Remaining</th><th>Rule</th><th>Origin</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="dim" id="capabilities-empty">No active grants right now.</p>
+      </div>
+    </section>
+
+    <!-- AUDIT -->
     <section id="tab-audit" class="hidden">
       <div class="panel">
-        <h2 style="margin-top:0">Audit</h2>
+        <div class="row"><h2 style="margin:0;flex:1">Audit</h2><button id="audit-export" class="secondary small">Export JSONL</button></div>
         <div class="row">
           <input id="audit-agent" placeholder="agentId">
-          <input id="audit-kind" placeholder="kind (e.g. tool_call)">
+          <select id="audit-kind">
+            <option value="">(all kinds)</option>
+            <option value="tool_call">tool_call</option>
+            <option value="grant_issued">grant_issued</option>
+            <option value="capability_denied">capability_denied</option>
+            <option value="approval_requested">approval_requested</option>
+            <option value="approval_approved">approval_approved</option>
+            <option value="approval_denied">approval_denied</option>
+            <option value="approval_expired">approval_expired</option>
+            <option value="agent_revoked">agent_revoked</option>
+            <option value="honeytoken_triggered">honeytoken_triggered</option>
+          </select>
           <input id="audit-since" type="datetime-local" title="since">
           <button id="audit-run">Query</button>
         </div>
@@ -110,9 +235,33 @@
       </div>
     </section>
 
+    <!-- POLICY -->
+    <section id="tab-policy" class="hidden">
+      <div class="panel">
+        <h2 style="margin-top:0">Team policy</h2>
+        <p class="dim">Published versions are signed with the cloud key; gateways verify the signature before applying. Current: <span id="policy-version" class="mono">none</span></p>
+        <textarea id="policy-yaml" rows="16" spellcheck="false" placeholder="# team policy YAML — see policies.example.yaml"></textarea>
+        <div class="row" style="margin-top:.6em">
+          <button id="policy-save">Publish signed version</button>
+          <span id="policy-status" class="dim"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">Version history</h2>
+        <div class="row">
+          <select id="policy-version-select"></select>
+          <span class="dim" id="policy-version-meta"></span>
+        </div>
+        <div id="policy-diff" class="diff" style="margin-top:.8em"></div>
+        <p class="dim" id="policy-versions-empty">No versions published yet.</p>
+      </div>
+    </section>
+
+    <!-- BILLING -->
     <section id="tab-billing" class="hidden">
       <div class="panel">
         <h2 style="margin-top:0">Billing usage</h2>
+        <p class="dim">You pay for agents that actually did something in the month — not for installations.</p>
         <div class="row">
           <input id="billing-month" type="month">
           <button id="billing-run">Report</button>
@@ -121,6 +270,7 @@
       </div>
     </section>
 
+    <!-- SETTINGS -->
     <section id="tab-settings" class="hidden">
       <div class="panel">
         <h2 style="margin-top:0">Settings</h2>
@@ -135,11 +285,38 @@
           <button id="webhook-save">Save webhook</button>
         </div>
         <p class="dim" id="webhook-status"></p>
+        <h3>Panel access</h3>
+        <p class="dim">
+          This panel authenticates with the control plane's admin token
+          (env <code>ADMIN_TOKEN</code>). That is the dev-grade access model:
+          one token, full access, no per-user roles. SSO with per-team roles
+          (owner / approver / viewer) plugs into the same API through the
+          <code>SsoAdapter</code> interface in <code>src/cloud/server/sso.ts</code> —
+          swap the adapter, keep every endpoint.
+        </p>
       </div>
     </section>
   </div>
 </main>
 
-<script src="/app.js"></script>
+<!-- Revocation modal -->
+<div id="revoke-modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3 id="revoke-title">Revoke</h3>
+    <div class="blast" id="revoke-blast"></div>
+    <p class="dim">Online gateways enforce this within ~30 seconds; offline ones on reconnect (their outstanding tokens expire by TTL anyway). The reason is mandatory — it lands in the audit feed.</p>
+    <div class="kv" id="revoke-confirm-wrap" style="display:none">
+      <span class="dim">Type <strong class="mono" id="revoke-confirm-word"></strong> to confirm:</span>
+      <input id="revoke-confirm-input" style="width:100%;margin-top:.3em">
+    </div>
+    <textarea id="revoke-reason" rows="2" placeholder="reason (mandatory)" style="margin-top:.6em"></textarea>
+    <div class="row" style="margin-top:.8em;justify-content:flex-end">
+      <button class="secondary" id="revoke-cancel">Cancel</button>
+      <button class="danger" id="revoke-confirm" disabled>Revoke</button>
+    </div>
+  </div>
+</div>
+
+<script src="/panel/app.js"></script>
 </body>
 </html>
