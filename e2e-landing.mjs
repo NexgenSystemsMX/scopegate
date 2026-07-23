@@ -122,6 +122,122 @@ async function main() {
     assert.equal(missing.status, 404, "GET /nope status");
     pass("GET /health public probe + 404 for unknown paths");
 
+    /* ---------------- SEO / GEO (PLAN-SEO-GEO) ------------------------------ */
+
+    // robots.txt: crawlable landing, panel + API disallowed, sitemap declared.
+    const robots = await fetch(base + "/robots.txt");
+    assert.equal(robots.status, 200, "GET /robots.txt status");
+    assert.match(robots.headers.get("content-type") ?? "", /text\/plain/, "robots content-type");
+    const robotsTxt = await robots.text();
+    assert.ok(robotsTxt.includes("User-agent: *"), "robots user-agent");
+    assert.ok(robotsTxt.includes("Disallow: /panel"), "robots disallows /panel");
+    assert.ok(robotsTxt.includes("Disallow: /v1"), "robots disallows /v1");
+    assert.ok(robotsTxt.includes("Sitemap: https://scopegate.io/sitemap.xml"), "robots sitemap line");
+    pass("GET /robots.txt — panel/API disallowed, sitemap declared");
+
+    // sitemap.xml: well-formed, lists public pages, excludes panel/API.
+    const sitemap = await fetch(base + "/sitemap.xml");
+    assert.equal(sitemap.status, 200, "GET /sitemap.xml status");
+    assert.match(sitemap.headers.get("content-type") ?? "", /application\/xml/, "sitemap content-type");
+    const sitemapTxt = await sitemap.text();
+    assert.ok(sitemapTxt.includes("<urlset"), "sitemap urlset");
+    for (const u of ["/", "/docs/", "/docs/quickstart", "/docs/agents/", "/docs/agents/02-protocol"]) {
+      const loc = u === "/" ? "https://scopegate.io/</loc>" : `https://scopegate.io${u}</loc>`;
+      assert.ok(sitemapTxt.includes(loc), `sitemap contains ${u}`);
+    }
+    assert.ok(!sitemapTxt.includes("/panel"), "sitemap excludes /panel");
+    assert.ok(!sitemapTxt.includes("/v1"), "sitemap excludes /v1");
+    pass("GET /sitemap.xml — public pages listed, panel/API excluded");
+
+    // llms.txt / llms-full.txt for AI engines.
+    const llms = await fetch(base + "/llms.txt");
+    assert.equal(llms.status, 200, "GET /llms.txt status");
+    assert.match(llms.headers.get("content-type") ?? "", /text\/plain/, "llms content-type");
+    const llmsTxt = await llms.text();
+    assert.ok(llmsTxt.includes("# ScopeGate"), "llms title");
+    assert.ok(llmsTxt.includes("ephemeral-credentials gateway"), "llms definition");
+    assert.ok(llmsTxt.includes("/docs/agents/02-protocol"), "llms links to guides");
+    const llmsFull = await fetch(base + "/llms-full.txt");
+    assert.equal(llmsFull.status, 200, "GET /llms-full.txt status");
+    assert.ok((await llmsFull.text()).includes("scopegate_request_capability"), "llms-full lists the tools");
+    pass("GET /llms.txt + /llms-full.txt — GEO entry points");
+
+    // OG image present and really a PNG.
+    const og = await fetch(base + "/og.png");
+    assert.equal(og.status, 200, "GET /og.png status");
+    assert.match(og.headers.get("content-type") ?? "", /image\/png/, "og content-type");
+    const ogBuf = Buffer.from(await og.arrayBuffer());
+    assert.ok(ogBuf.length > 10_000, "og.png is a real image (>10KB)");
+    assert.deepEqual([...ogBuf.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47], "og.png PNG signature");
+    pass("GET /og.png — valid PNG social card");
+
+    // Landing head: canonical, OG/Twitter, and 4 valid JSON-LD blocks.
+    assert.ok(html.includes('<link rel="canonical" href="https://scopegate.io/">'), "canonical");
+    assert.ok(html.includes('property="og:image"'), "og:image meta");
+    assert.ok(html.includes('name="twitter:card" content="summary_large_image"'), "twitter card");
+    const ldBlocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)]
+      .map((m) => JSON.parse(m[1]));
+    const ldTypes = ldBlocks.map((b) => b["@type"]).sort();
+    assert.deepEqual(ldTypes, ["FAQPage", "HowTo", "Organization", "SoftwareApplication"], "JSON-LD @types");
+    const faq = ldBlocks.find((b) => b["@type"] === "FAQPage");
+    assert.ok(faq.mainEntity.length >= 5, "FAQPage has the questions");
+    pass("landing head — canonical, OG/Twitter, 4 valid JSON-LD blocks");
+
+    // Citable definition + hard facts on-page.
+    for (const marker of [
+      'id="what-is"',
+      "ephemeral-credentials gateway for",
+      "install → first tool call",
+      "fleet revocation, online",
+    ]) {
+      assert.ok(html.includes(marker), `landing citable section contains ${JSON.stringify(marker)}`);
+    }
+    pass("landing — citable definition + hard facts row");
+
+    // Interactive containers present (content readable without JS).
+    for (const marker of [
+      'id="flow-diagram"',
+      'id="ttl-demo"',
+      'id="before-after"',
+      'id="terminal-demo"',
+      'id="health-badge"',
+      '<script src="/main.js" defer></script>',
+      'href="/docs/"', // nav points to on-site docs
+    ]) {
+      assert.ok(html.includes(marker), `landing interactive contains ${JSON.stringify(marker)}`);
+    }
+    const mainJs = await fetch(base + "/main.js");
+    assert.equal(mainJs.status, 200, "GET /main.js status");
+    assert.match(mainJs.headers.get("content-type") ?? "", /javascript/, "main.js content-type");
+    pass("landing — interactive pieces + main.js");
+
+    // Docs served as crawlable HTML + raw markdown.
+    for (const route of ["/docs/", "/docs/quickstart", "/docs/agents/", "/docs/agents/02-protocol"]) {
+      const r = await fetch(base + route);
+      assert.equal(r.status, 200, `GET ${route} status`);
+      assert.match(r.headers.get("content-type") ?? "", /text\/html/, `${route} content-type`);
+    }
+    const guide = await (await fetch(base + "/docs/agents/02-protocol")).text();
+    for (const marker of [
+      "The Agent Protocol",
+      'class="breadcrumb"',
+      'rel="canonical" href="https://scopegate.io/docs/agents/02-protocol"',
+      'data-lang="json"', // fenced code keeps the language tag
+    ]) {
+      assert.ok(guide.includes(marker), `guide 02 contains ${JSON.stringify(marker)}`);
+    }
+    const guide3 = await (await fetch(base + "/docs/agents/03-tools-reference")).text();
+    assert.ok(guide3.includes("<table>"), "guide 03 renders markdown tables as HTML");
+    assert.ok(guide3.includes("<th>"), "guide 03 table has a header row");
+    const rawMd = await fetch(base + "/docs/agents/02-protocol.md");
+    assert.equal(rawMd.status, 200, "GET raw .md status");
+    assert.match(rawMd.headers.get("content-type") ?? "", /text\/markdown/, "raw .md content-type");
+    assert.ok((await rawMd.text()).startsWith("# 02"), "raw .md is the source");
+    // Traversal is refused.
+    const trav = await fetch(base + "/docs/..%2f..%2fpackage.json");
+    assert.notEqual(trav.status, 200, "docs traversal refused");
+    pass("docs — HTML pages + raw markdown + traversal guard");
+
     console.log("\ne2e-landing: ALL ASSERTIONS PASSED");
   } finally {
     child.kill("SIGTERM");

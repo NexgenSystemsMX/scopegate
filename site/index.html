@@ -108,6 +108,7 @@
 <header class="hero">
   <div class="wrap">
     <p class="pill">Open source · Apache-2.0 · MCP-native</p>
+    <p class="pill pill-health" id="health-badge" title="Live status of the ScopeGate Cloud control plane behind this site"><span class="health-dot" id="health-dot"></span><span id="health-text">control plane: checking…</span></p>
     <h1>Your agents hold <span class="accent">capabilities</span>,<br>not credentials.</h1>
     <p class="lede">
       ScopeGate is an open-source gateway for coding agents — Claude Code, Kimi Code,
@@ -260,9 +261,88 @@
         </p>
       </div>
     </div>
-    <pre class="arch">Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)──► GitHub / AWS / your MCPs
+    <div id="flow-diagram" class="flow">
+      <svg viewBox="0 0 900 300" role="img" aria-label="Flow: the agent sends secret-free requests to ScopeGate; credentials are injected only on the upstream hop">
+        <!-- zones -->
+        <rect x="20" y="30" width="180" height="240" rx="12" class="fz fz-agent"/>
+        <text x="110" y="55" class="fz-title" text-anchor="middle">Agent</text>
+        <text x="110" y="73" class="fz-sub" text-anchor="middle">Claude Code · Kimi Code</text>
+        <text x="110" y="88" class="fz-sub" text-anchor="middle">Cursor · OpenCode</text>
+
+        <rect x="350" y="30" width="200" height="240" rx="12" class="fz fz-gate"/>
+        <text x="450" y="55" class="fz-title" text-anchor="middle">ScopeGate</text>
+        <rect x="370" y="70" width="160" height="46" rx="8" class="vault"/>
+        <text x="450" y="90" class="vault-txt" text-anchor="middle">vault (AES-256-GCM)</text>
+        <text x="450" y="106" class="vault-sub" text-anchor="middle">real secrets live here</text>
+        <text x="450" y="140" class="fz-sub" text-anchor="middle">policy engine · minter</text>
+        <text x="450" y="156" class="fz-sub" text-anchor="middle">refresh daemon · audit</text>
+
+        <rect x="700" y="30" width="180" height="240" rx="12" class="fz fz-up"/>
+        <text x="790" y="55" class="fz-title" text-anchor="middle">Upstreams</text>
+        <text x="790" y="78" class="fz-sub" text-anchor="middle">GitHub · AWS</text>
+        <text x="790" y="94" class="fz-sub" text-anchor="middle">Huly · Railway</text>
+        <text x="790" y="110" class="fz-sub" text-anchor="middle">Cloudflare · Google</text>
+
+        <!-- lanes -->
+        <line x1="200" y1="200" x2="350" y2="200" class="lane"/>
+        <text x="275" y="188" class="lane-lbl" text-anchor="middle">MCP, zero secrets</text>
+        <line x1="550" y1="200" x2="700" y2="200" class="lane"/>
+        <text x="625" y="188" class="lane-lbl" text-anchor="middle">creds injected here</text>
+
+        <!-- moving packets (CSS-animated) -->
+        <circle r="7" class="pkt pkt-req" cx="210" cy="200"/>
+        <circle r="7" class="pkt pkt-cred" cx="560" cy="200"/>
+
+        <!-- blocked secret -->
+        <g class="pkt-blocked">
+          <circle r="7" cx="390" cy="93" class="pkt pkt-secret"/>
+          <text x="212" y="97" class="blocked-lbl">never crosses left ✕</text>
+        </g>
+      </svg>
+      <p class="flow-caption dim">Requests leave the agent with no secrets; the credential is injected only on the outbound hop.</p>
+    </div>
+    <details class="arch-details">
+      <summary>The same flow, as text</summary>
+      <pre class="arch">Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)──► GitHub / AWS / your MCPs
                                         │
                       vault + policy engine + token minter + refresh daemon + signed audit</pre>
+    </details>
+
+    <div class="grid-2" style="margin-top:1.5em">
+      <div class="term" id="terminal-demo">
+        <div class="term-bar">
+          <span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+          <span class="term-title">agent self-install — 87 seconds</span>
+          <button class="term-replay" id="term-replay" type="button">↻ replay</button>
+        </div>
+        <pre class="term-body" id="term-body">$ npm i -g scopegate && scopegate init
+✓ vault created (~/.scopegate, AES-256-GCM)
+✓ harness detected: claude-code — 3 MCPs migrated, 2 plaintext secrets vaulted
+✓ gateway registered as the single MCP entry point (backup: .mcp.json.pre-scopegate.bak)
+
+$ scopegate secret add github_pat
+( hidden prompt — the value never touches the transcript )
+✓ github_pat stored in the vault
+
+# from here, the agent operates alone —
+&gt; scopegate_request_capability { capability: "github:write:scopegate/*", ttl: "15m" }
+✓ granted · expires in 14m59s
+
+first tool call at 87s — zero secrets in context</pre>
+      </div>
+
+      <div class="ttl-demo card" id="ttl-demo">
+        <h3>Watch a grant live</h3>
+        <p class="dim">A capability the agent might hold right now:</p>
+        <div class="ttl-grant mono">github:write:scopegate/*</div>
+        <div class="ttl-bar"><div class="ttl-bar-fill" id="ttl-fill" style="width:100%"></div></div>
+        <div class="ttl-meta">
+          <span class="countdown" id="ttl-count">60s</span>
+          <span class="dim" id="ttl-state">granted · minted by the policy engine</span>
+        </div>
+        <p class="ttl-note dim">When it hits zero it is gone for good — a leaked token is worth ~zero in ~60 seconds. The agent simply requests a fresh one.</p>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -582,6 +662,7 @@
     setTimeout(() => { btn.textContent = "Copy"; }, 1500);
   });
 </script>
+<script src="/main.js" defer></script>
 
 </body>
 </html>
