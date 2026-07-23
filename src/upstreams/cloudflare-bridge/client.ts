@@ -191,9 +191,22 @@ export class RealCloudflareClient implements CloudflareBridgeClient {
     this.baseUrl = (opts.apiUrl ?? DEFAULT_API_URL).trim().replace(/\/+$/, "");
   }
 
-  /** Startup check: verifies the token once (GET /user/tokens/verify works with any API token). */
+  /**
+   * Startup check: verifies the token once. Two token kinds exist and they
+   * verify at DIFFERENT endpoints: user tokens at `/user/tokens/verify`,
+   * account tokens (created in an account's API Tokens section) at
+   * `/accounts/<id>/tokens/verify` — the former 401s the latter. Try the
+   * user endpoint first, then accept any token that can list accounts.
+   */
   async connect(): Promise<void> {
-    await this.request<unknown>("GET", "/user/tokens/verify");
+    try {
+      await this.request<unknown>("GET", "/user/tokens/verify");
+      return;
+    } catch (err) {
+      // Fall through to the account-token probe.
+      if (!(err instanceof Error) || !/rejected|under-scoped/i.test(err.message)) throw err;
+    }
+    await this.request<unknown>("GET", "/accounts?per_page=1");
   }
 
   async close(): Promise<void> {}
