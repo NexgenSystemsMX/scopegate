@@ -1,0 +1,19 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+version: registry/v1
+name: stripe
+description: Stripe remote MCP — payments, customers, invoices, subscriptions and disputes.
+transport:
+  kind: http
+  url: https://mcp.stripe.com
+auth:
+  type: bearer
+  secretRef: stripe_key
+docs: https://docs.stripe.com/mcp
+setup:
+  secrets:
+    - ref: stripe_key
+      hint: >-
+        Prefer a RESTRICTED API key (rk_...) from
+        https://dashboard.stripe.com/apikeys with only the permissions the
+        agent needs (read-only when possible), then run in your terminal:
+        scopegate secret add stripe_key

@@ -1,0 +1,23 @@
+# Keep the build context small and the image reproducible (dist is rebuilt
+# inside stage 1 — never copied from the host).
+.git
+.github
+node_modules
+dist
+coverage
+
+# Test/dev assets: not part of the runtime image.
+tests
+e2e-*.mjs
+redteam
+docs-site
+install
+
+# Markdown docs: keep only the files that make sense inside the image.
+*.md
+!README.md
+
+# Local env/OS noise
+.env
+.env.*
+.DS_Store

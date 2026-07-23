@@ -1,0 +1,24 @@
+# TEST FIXTURE — NOT a real upstream.
+# Points at this repo's fake-upstream.mjs, the stdio MCP double used by the
+# e2e suites. `node fake-upstream.mjs` resolves relative to the gateway's
+# working directory, so this manifest only connects when the gateway is
+# launched from the scopegate/ package root (e2e-registry.mjs does exactly
+# that via process.chdir). It is signed like every other manifest so the
+# registry e2e exercises the real verification path end to end.
+version: registry/v1
+name: fakegit
+description: "TEST FIXTURE: stdio fake upstream used by e2e-registry.mjs — not a real service."
+transport:
+  kind: stdio
+  command: node
+  args: ["fake-upstream.mjs"]
+auth:
+  type: env
+  env:
+    FAKE_TOKEN: fake_token
+setup:
+  secrets:
+    - ref: fake_token
+      hint: >-
+        Test fixture: any value works. Run in your terminal:
+        scopegate secret add fake_token

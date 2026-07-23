@@ -1,0 +1,197 @@
+# ScopeGate
+
+**Ephemeral credentials & persistent MCP connections for coding agents — Claude Code, Kimi Code, Cursor, OpenCode.**
+
+[![npm](https://img.shields.io/npm/v/scopegate)](https://www.npmjs.com/package/scopegate)
+[![CI](https://github.com/nexgen/scopegate/actions/workflows/release.yml/badge.svg)](https://github.com/nexgen/scopegate/actions)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
+The agent never holds credentials — it holds short-lived, minimum-scope
+**capabilities**. Secrets live in an AES-256-GCM encrypted local vault and are
+injected only at the outbound hop. A leaked context leaks nothing of durable
+value.
+
+```
+Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)──► GitHub / AWS / your MCPs
+                                      │
+                    vault + policy engine + token minter + signed audit
+```
+
+**Capability ≠ credential.** What the agent gets expires in minutes and is
+scoped to one task; what the vault keeps never enters the model's context.
+
+## Quickstart (agent-executable, non-interactive)
+
+```bash
+npm i -g scopegate
+scopegate init
+```
+
+or via the installer:
+
+```bash
+curl -sSL https://get.scopegate.dev | sh
+```
+
+`init` is idempotent and does everything:
+
+- creates `~/.scopegate/` (encrypted vault, master key, default policies)
+- detects harness configs (Claude Code, Kimi Code, Cursor, OpenCode, `.mcp.json`)
+- **migrates existing MCPs behind the gateway, moving plaintext secrets
+  (env vars, auth headers) into the encrypted vault** and leaving only refs
+- rewrites the harness config so `scopegate` is the single MCP entry point
+  (backup kept as `*.pre-scopegate.bak`; `scopegate rollback` restores it)
+
+Deposit secrets — human-only path, never through chat, never via argv:
+
+```bash
+scopegate secret add github_pat                      # hidden prompt
+echo "$TOKEN" | scopegate secret add notion_token    # or piped
+```
+
+Then restart the agent session. From there, the agent operates ScopeGate by
+itself through the `scopegate_*` MCP tools (see [SKILL.md](SKILL.md)).
+
+## CLI
+
+| Command | What it does |
+|---|---|
+| `scopegate init [--dry-run] [--harness <id>]` | Idempotent setup: vault, policies, harness detection & secret migration |
+| `scopegate start` | Run the gateway MCP server on stdio (launched by the harness) |
+| `scopegate secret add <ref>` / `ls` / `rm <ref>` | Vault secrets. Value via hidden prompt or piped stdin — never argv |
+| `scopegate status` | Config, vault ref names and upstream health |
+| `scopegate audit verify` | Verify seq continuity, hash chain and Ed25519 signatures (exit 1 on tamper) |
+| `scopegate audit query [--agent --kind --since --until --limit]` | What did an agent/token touch in a window (JSONL) |
+| `scopegate audit reindex` | Rebuild the derived `audit-index.json` snapshot |
+| `scopegate auth login <upstream>` | OAuth device-code re-authorization (human, out-of-band) |
+| `scopegate vaultd [--socket <path>]` | Run the vault as an isolated process (unix socket / Windows named pipe) |
+| `scopegate vault rotate-key [--backend file\|dpapi\|keychain\|secret-service]` | Re-encrypt the vault with a fresh master key |
+| `scopegate rollback [--harness <id>]` | Restore harness configs from `*.pre-scopegate.bak` |
+| `scopegate approve <id> [--ttl <t>]` / `deny <id> --reason <r>` | Human-side approval of escalated capability requests (TTY or `SCOPEGATE_APPROVAL_TOKEN`) |
+| `scopegate policies review` / `accept <n>` / `reject <n>` | Human review of agent-proposed policy rules (`policies.pending.yaml`) |
+| `scopegate cloud serve [--port <n>] [--home <dir>]` | Run the ScopeGate Cloud control plane (multi-tenant API + dashboard) |
+
+## Agent tools (MCP)
+
+Exposed by `scopegate start`; the agent self-manages through them.
+
+| Tool | Use when |
+|---|---|
+| `scopegate_request_capability` | Before privileged actions — returns a TTL grant, or `pending_human_approval` with an `approval_id` when a human must approve |
+| `scopegate_list_capabilities` | Active grants and remaining TTL |
+| `scopegate_register_upstream` | Connect a new service (never accepts secret values, only `secretRef` names) |
+| `scopegate_diagnose` | Any auth/connection error — self-repair with `action_required` hints |
+| `scopegate_propose_policy` | A needed capability was denied — lands in `policies.pending.yaml` for human review |
+| `scopegate_vault_status` | Which secretRef **names** exist (never values) |
+
+## Configuration
+
+Two files in `~/.scopegate/` (both secret-free; secrets live only in the vault):
+
+- `scopegate.yaml` — upstream registry ([example](scopegate.example.yaml))
+- `policies.yaml` — policy engine rules ([example](policies.example.yaml)):
+  `limits` (`max_ttl`, `deny` globs, `rate_limit`, `approval_ttl`),
+  `auto_approve`, `require: human_approval`, `redact: [pii]`
+
+Auth types per upstream:
+
+```yaml
+upstreams:
+  - name: notion
+    transport: { kind: http, url: "https://mcp.notion.com/mcp" }
+    auth: { type: bearer, secretRef: notion_token }
+
+  - name: github
+    transport: { kind: stdio, command: npx, args: ["-y", "@modelcontextprotocol/server-github"] }
+    auth:
+      type: env
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: github_pat }
+```
+
+All auth types: `bearer` (header injection), `env` (env vars into spawned
+stdio servers), `oauth2` (refresh daemon + device-code re-auth), `jwt`
+(gateway-minted HS256), `github_app` (installation tokens minted from the App
+key), `aws_sts` (session credentials via AssumeRole/GetSessionToken), `none`.
+See [scopegate.example.yaml](scopegate.example.yaml) for commented examples of each.
+
+Environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `SCOPEGATE_HOME` | Base dir instead of `~/.scopegate` (tests, portable installs) |
+| `SCOPEGATE_LOG_LEVEL` | `debug` for stack traces and gateway debug logs |
+| `SCOPEGATE_CONNECT_TIMEOUT_MS` | Upstream connect timeout (default 10000) |
+| `SCOPEGATE_VAULT_MODE` | `auto` (default) \| `local` \| `daemon` |
+| `SCOPEGATE_VAULT_SOCKET` | Override the vaultd IPC socket/pipe path |
+| `SCOPEGATE_MASTER_KEY_BACKEND` | `auto` \| `file` \| `dpapi` \| `keychain` \| `secret-service` |
+| `SCOPEGATE_AGENT_ID` | Agent identity for policy/audit (set per harness entry) |
+| `SCOPEGATE_APPROVAL_TOKEN` | Lets `approve`/`deny`/`policies accept|reject` run non-interactively (keep it out of the agent's reach) |
+| `SCOPEGATE_HONEYTOKEN_MODE` | `enforce` (default) \| `alert` — canary response mode |
+| `SCOPEGATE_TELEMETRY` | `1` opts in to anonymous telemetry (default **off**) |
+| `SCOPEGATE_TELEMETRY_ENDPOINT` | Override the telemetry collector URL |
+| `SCOPEGATE_HTTP_TOKEN` | Bearer token — **required** in `--http` mode |
+
+## Production deployment (Railway)
+
+The gateway also speaks Streamable HTTP: `scopegate start --http --port <n>
+--host <h>` (bearer `SCOPEGATE_HTTP_TOKEN` on every request except a public
+`GET /health`). This repo deploys as-is to Railway:
+
+- `railway.toml` pins the build (Nixpacks: `npm run build`) and the start
+  command (`seed-demo` idempotente + `start --http`), with `/health` as the
+  healthcheck. A root `Dockerfile` (multi-stage, non-root) is kept for plain
+  Docker builds outside Railway.
+- Persistent state lives on a volume mounted at `/data`
+  (`SCOPEGATE_HOME=/data`): vault, identity, policies, config.
+- With `SCOPEGATE_SEED_DEMO=1` and an empty home, a clearly-marked **demo**
+  seed provisions a fake upstream + fake secret so the deployment is
+  self-contained (zero real credentials).
+- Live proof: `SCOPEGATE_PROD_URL=<url> SCOPEGATE_HTTP_TOKEN=<token> node
+  e2e-prod.mjs` runs the production e2e (8 assertions: health, auth 401s,
+  initialize, listTools, grant, authenticated proxied call, diagnose, deny
+  path).
+
+## Security model (summary)
+
+1. Secrets never enter the model's context (CLI/stdin only, encrypted at rest).
+2. Capability ≠ credential: grants expire in minutes, scoped per task.
+3. Write asymmetry: agents propose policy, humans approve
+   (`policies.pending.yaml` → human review).
+4. `looksLikeSecret()` guard rejects raw secrets smuggled as refs by agents.
+5. Hard limits are fail-closed: `deny` globs and `max_ttl` beat any rule.
+6. Every action lands in `audit.jsonl` — append-only, hash-chained, signed
+   Ed25519; inputs are hashed, never stored. Verify with `scopegate audit verify`.
+
+Full detail: [docs-site/security-model.md](docs-site/security-model.md).
+
+## Telemetry (opt-in, anonymous)
+
+ScopeGate collects **nothing** by default. If you explicitly opt in
+(`SCOPEGATE_TELEMETRY=1` or `{"enabled": true}` in `~/.scopegate/telemetry.json`),
+it sends a minimal anonymous event on install, init completion and first tool
+call: version, OS/arch, Node version, detected harness ids, a random anonymous
+install id. **Never** agentId, paths, upstream names, tool args, inputs, or
+anything derived from your config. Fail-silent by design — telemetry can never
+break a run. Endpoint: `https://telemetry.scopegate.dev/v1/event`
+(override with `SCOPEGATE_TELEMETRY_ENDPOINT` for self-hosting). The full
+payload contract lives in [src/telemetry/telemetry.ts](src/telemetry/telemetry.ts).
+
+## Documentation
+
+- [docs-site/quickstart.md](docs-site/quickstart.md) — agent-executable quickstart
+- [docs-site/security-model.md](docs-site/security-model.md) — enforcement model
+- [docs-site/agent-protocol.md](docs-site/agent-protocol.md) — the SKILL protocol
+- [docs-site/cli-reference.md](docs-site/cli-reference.md) — every command
+- [docs-site/configuration.md](docs-site/configuration.md) — config reference
+- [SKILL.md](SKILL.md) — drop-in agent protocol (skills dir or `CLAUDE.md`/`AGENTS.md`)
+
+## Contributing & license
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, tests and e2e.
+
+Licensed under **Apache-2.0** ([LICENSE](LICENSE)). Deliberate choice: the
+gateway core is open and permissive because adoption by agents and enterprises
+demands zero legal friction — the future commercial moat is the cloud
+management plane, not the proxy. Dependency licenses (`@modelcontextprotocol/sdk`,
+commander, picomatch, yaml, `@aws-sdk/client-sts`) are all permissive
+(MIT/Apache-2.0) and compatible.

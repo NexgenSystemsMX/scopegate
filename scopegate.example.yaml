@@ -1,0 +1,155 @@
+# ~/.scopegate/scopegate.yaml — upstream registry. NEVER contains secret values.
+version: 1
+agentId: agent-luis-nexgen
+upstreams:
+  # MCP remoto por HTTP con Bearer inyectado desde el vault
+  - name: notion
+    transport: { kind: http, url: "https://mcp.notion.com/mcp" }
+    auth: { type: bearer, secretRef: notion_token }
+
+  # MCP local por stdio con secreto inyectado como env var al hacer spawn
+  - name: github
+    transport:
+      kind: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-github"]
+    auth:
+      type: env
+      env:
+        GITHUB_PERSONAL_ACCESS_TOKEN: github_pat
+
+  # API key en header custom
+  - name: roasify
+    transport: { kind: http, url: "https://api.roasify.ai/mcp" }
+    auth: { type: bearer, secretRef: roasify_key, header: X-Api-Key, scheme: "" }
+
+  # ---------------------------------------------------------------------------
+  # Credenciales EFIMERAS (Token Minter, EPIC-02): lo que viaja al upstream
+  # nunca es el secreto largo del vault. token_ttl = min(techo del provider,
+  # TTL restante del grant). Modo visible en `scopegate_diagnose`:
+  # "minted:<provider>" vs "fallback:injection" (bearer/env/oauth2 de arriba).
+  # ---------------------------------------------------------------------------
+
+  # JWT propio (HS256): el gateway firma tokens cortos con una clave HMAC del
+  # vault. Para APIs internas/MCPs que acepten tokens firmados por nosotros.
+  #   scopegate secret add internal_jwt_key     # valor: clave HMAC (hex/base64)
+  # - name: internal-api
+  #   transport: { kind: http, url: "https://internal.example.com/mcp" }
+  #   auth:
+  #     type: jwt
+  #     secretRef: internal_jwt_key   # clave de firma HMAC en el vault
+  #     ttl: "5m"                     # techo del token (default 15m); se clampea al grant
+  #     claims: { sub: "agent-luis", scope: "read" }   # claims extra opcionales
+
+  # GitHub App: el gateway firma un App JWT (RS256) con la private key del
+  # vault y lo cambia por un installation token (~1h) con permisos recortados.
+  # Solo el installation token sale hacia el upstream.
+  #   scopegate secret add github_app_key       # valor: private key PEM de la App
+  # - name: github-mcp
+  #   transport: { kind: http, url: "https://api.githubcopilot.com/mcp" }
+  #   auth:
+  #     type: github_app
+  #     appId: "123456"
+  #     installationId: "87654321"
+  #     secretRef: github_app_key     # PEM de la App en el vault
+  #     # apiUrl: https://github.mi-empresa.com/api/v3   # Enterprise (default api.github.com)
+  #     permissions: { contents: write, metadata: read }  # recorte opcional
+  #     repositories: [easyorder]                         # recorte opcional
+
+  # AWS STS: credenciales de sesion (AssumeRole si hay roleArn, si no
+  # GetSessionToken) inyectadas como env al spawn stdio del upstream.
+  # CONVENCION: secretRef es un NOMBRE BASE; el vault debe contener
+  #   '<secretRef>_ACCESS_KEY_ID' y '<secretRef>_SECRET_ACCESS_KEY'
+  # (credenciales maestras con permiso sts:AssumeRole). Solo las credenciales
+  # DE SESION se inyectan; las maestras nunca salen del vault.
+  #   scopegate secret add aws_master_ACCESS_KEY_ID
+  #   scopegate secret add aws_master_SECRET_ACCESS_KEY
+  # - name: aws-mcp
+  #   transport:
+  #     kind: stdio
+  #     command: npx
+  #     args: ["-y", "@aws/mcp-server"]
+  #   auth:
+  #     type: aws_sts
+  #     secretRef: aws_master         # base: aws_master_ACCESS_KEY_ID + _SECRET_ACCESS_KEY
+  #     roleArn: arn:aws:iam::123456789012:role/scopegate-staging   # opcional
+  #     region: eu-west-1             # default: us-east-1
+  #     durationSeconds: 900          # techo (minimo STS: 900); se clampea al grant
+
+  # ===========================================================================
+  # OLA 2 — CONEXIONES NATIVAS NEXGEN (EPIC-13..18, registry firmado)
+  # Alta de un comando por upstream desde el registry (registry/*.yaml):
+  #   scopegate_register_upstream { "from_registry": "huly" }
+  #   scopegate_register_upstream { "from_registry": "railway" }
+  #   scopegate_register_upstream { "from_registry": "cloudflare" }
+  #   scopegate_register_upstream { "from_registry": "google" }
+  # Despues, deposito de secretos (humano, fuera de banda, nunca en contexto):
+  #   scopegate secret add huly_nexgen          # blob JSON: {"email":"…","password":"…","workspace":"…","accountsUrl":"https://huly2.nexgen.systems"}
+  #   scopegate secret add railway_token        # API token de Railway (dashboard -> Tokens)
+  #   scopegate secret add cloudflare_api_token # API token SCOPED (Zone.DNS + lecturas; NUNCA Global API Key)
+  #   scopegate secret add google_sa            # JSON key de la service account (scopes minimos)
+  #
+  # Equivalente manual (lo que el registry aplica verbatim):
+  #
+  # Huly Nexgen (EPIC-13/14): el gateway mintea un workspace token efimero
+  # (login -> selectWorkspace) y expone 13 tools cerradas. Modo: minted:huly.
+  # - name: huly
+  #   transport: { kind: stdio, command: node, args: ["dist/upstreams/huly-bridge/server.js"] }
+  #   auth: { type: huly, secretRef: huly_nexgen }   # inyecta HULY_TOKEN/HULY_ENDPOINT/HULY_WORKSPACE
+  #
+  # Railway (EPIC-16): status/deploys/logs/dominios. Modo: fallback:injection
+  # (token de larga vida; deploy/redeploy gobernados por policy). El bridge
+  # NUNCA escribe variables/secretos: eso es `scopegate secret add`.
+  # - name: railway
+  #   transport: { kind: stdio, command: node, args: ["dist/upstreams/railway-bridge/server.js"] }
+  #   auth: { type: env, env: { RAILWAY_TOKEN: railway_token } }
+  #
+  # Cloudflare (EPIC-17): zonas/DNS/Workers/Pages/R2. Modo: fallback:injection.
+  # dns_delete siempre con require: human_approval (ver policies.example.yaml).
+  # - name: cloudflare
+  #   transport: { kind: stdio, command: node, args: ["dist/upstreams/cloudflare-bridge/server.js"] }
+  #   auth: { type: env, env: { CLOUDFLARE_API_TOKEN: cloudflare_api_token } }
+  #
+  # Google (EPIC-18): Drive/Gmail/Calendar. Modo: minted:google_sa — el gateway
+  # firma un JWT de service account y lo cambia por un access token (~1h);
+  # solo el access token llega al bridge (GOOGLE_ACCESS_TOKEN).
+  # - name: google
+  #   transport: { kind: stdio, command: node, args: ["dist/upstreams/google-bridge/server.js"] }
+  #   auth: { type: google_sa, secretRef: google_sa }
+  # Modo alternativo con OAuth de USUARIO (device-code, EPIC-03, ya soportado):
+  #   scopegate auth login    # completa el device-code en el navegador
+  # - name: google
+  #   transport: { kind: stdio, command: node, args: ["dist/upstreams/google-bridge/server.js"] }
+  #   auth: { type: oauth2, secretRef: google_user }
+  #
+  # GitHub por repo del ecosistema (EPIC-15): github_app con recorte por repo;
+  # un token filtrado vale <=1h y solo para SU repo. Lecturas auto; escrituras
+  # TTL corto; main/production con require: human_approval (ver policies).
+  #   scopegate secret add github_app_key       # private key PEM de la GitHub App
+  # - name: github-huly-platform
+  #   transport: { kind: http, url: "https://api.githubcopilot.com/mcp" }
+  #   auth:
+  #     type: github_app
+  #     appId: "123456"
+  #     installationId: "11111111"              # installation sobre huly-platform
+  #     secretRef: github_app_key
+  #     repositories: [huly-platform]
+  #     permissions: { contents: write, pull_requests: write, issues: write, metadata: read }
+  # - name: github-kimi-tag
+  #   transport: { kind: http, url: "https://api.githubcopilot.com/mcp" }
+  #   auth:
+  #     type: github_app
+  #     appId: "123456"
+  #     installationId: "22222222"              # installation sobre kimi-tag
+  #     secretRef: github_app_key
+  #     repositories: [kimi-tag]
+  #     permissions: { contents: write, pull_requests: write, issues: write, metadata: read }
+  # - name: github-scopegate
+  #   transport: { kind: http, url: "https://api.githubcopilot.com/mcp" }
+  #   auth:
+  #     type: github_app
+  #     appId: "123456"
+  #     installationId: "33333333"              # installation sobre scopegate
+  #     secretRef: github_app_key
+  #     repositories: [scopegate]
+  #     permissions: { contents: write, pull_requests: write, issues: write, metadata: read }

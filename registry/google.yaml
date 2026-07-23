@@ -1,0 +1,31 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+# Maps 1:1 to an UpstreamConfig: {name, transport, auth} are applied verbatim;
+# `setup.secrets` only carries human-facing hints for the waiting_for_secrets
+# flow. Secret VALUES never live here — only vault ref NAMES.
+version: registry/v1
+name: google
+description: Google bridge — Drive, Gmail and Calendar via the bundled google-bridge MCP (stdio, access token minted from a service-account key).
+transport:
+  kind: stdio
+  command: node
+  # Bundled bridge shipped inside the scopegate package (EPIC-18); the path is
+  # resolved from the package root. `node` is on the stdio allowlist.
+  args: ["dist/upstreams/google-bridge/server.js"]
+auth:
+  # NEW in wave 2 (EPIC-18): the gateway signs a service-account JWT (RS256)
+  # with the key from the vault and exchanges it for a ~1h access token
+  # (oauth2.googleapis.com/token) — same pattern as github_app. Only the
+  # access token (GOOGLE_ACCESS_TOKEN) reaches the bridge; the SA private key
+  # never leaves the vault. Alternative supported mode: user OAuth via the
+  # device-code daemon (EPIC-03, auth type oauth2) — see scopegate.example.yaml.
+  type: google_sa
+  secretRef: google_sa
+docs: https://developers.google.com/workspace
+setup:
+  secrets:
+    - ref: google_sa
+      hint: >-
+        Create a service account in Google Cloud with the minimum scopes you
+        need (Drive read, Gmail send, Calendar events), generate its JSON key
+        and deposit the key (never echoed) by running in your terminal:
+        scopegate secret add google_sa

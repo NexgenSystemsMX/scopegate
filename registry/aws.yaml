@@ -1,0 +1,31 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+# AWS via STS session credentials: secretRef is a BASE NAME — the vault must
+# hold '<ref>_ACCESS_KEY_ID' and '<ref>_SECRET_ACCESS_KEY' (master credentials
+# allowed to call STS). Only the short-lived SESSION credentials are ever
+# injected into the spawned upstream; masters never leave the vault.
+version: registry/v1
+name: aws
+description: AWS MCP server (awslabs) — account, cost and resource operations with STS session credentials.
+transport:
+  kind: stdio
+  command: uvx
+  args: ["awslabs.core-mcp-server@latest"]
+auth:
+  type: aws_sts
+  secretRef: aws_master
+  region: us-east-1
+  durationSeconds: 900
+  # To scope down further, add to your scopegate.yaml after registering:
+  #   roleArn: arn:aws:iam::<account>:role/<least-privilege-role>
+docs: https://awslabs.github.io/mcp/
+setup:
+  secrets:
+    - ref: aws_master_ACCESS_KEY_ID
+      hint: >-
+        Use an IAM principal allowed to call sts:GetSessionToken (and
+        sts:AssumeRole if you set roleArn). Then run in your terminal:
+        scopegate secret add aws_master_ACCESS_KEY_ID
+    - ref: aws_master_SECRET_ACCESS_KEY
+      hint: >-
+        Secret access key of the same IAM principal. Then run in your
+        terminal: scopegate secret add aws_master_SECRET_ACCESS_KEY

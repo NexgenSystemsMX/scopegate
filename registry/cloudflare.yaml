@@ -1,0 +1,30 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+# Maps 1:1 to an UpstreamConfig: {name, transport, auth} are applied verbatim;
+# `setup.secrets` only carries human-facing hints for the waiting_for_secrets
+# flow. Secret VALUES never live here — only vault ref NAMES.
+version: registry/v1
+name: cloudflare
+description: Cloudflare bridge — zones, DNS records, Workers, Pages and R2 via the bundled cloudflare-bridge MCP over the API v4 (stdio, scoped API token injected as env).
+transport:
+  kind: stdio
+  command: node
+  # Bundled bridge shipped inside the scopegate package (EPIC-17); the path is
+  # resolved from the package root. `node` is on the stdio allowlist.
+  args: ["dist/upstreams/cloudflare-bridge/server.js"]
+auth:
+  # Cloudflare API tokens are long-lived: declared fallback:injection mode —
+  # the token leaves the vault only as env of the bridge spawn, and the bridge
+  # never returns it. dns_delete is gated by policy (require: human_approval).
+  type: env
+  env:
+    CLOUDFLARE_API_TOKEN: cloudflare_api_token
+docs: https://developers.cloudflare.com/api/
+setup:
+  secrets:
+    - ref: cloudflare_api_token
+      hint: >-
+        Create a SCOPED API token at
+        https://dash.cloudflare.com/profile/api-tokens (Zone.DNS edit on the
+        zones you need + Workers/Pages/R2 read — never a Global API Key), then
+        run in your terminal:
+        scopegate secret add cloudflare_api_token

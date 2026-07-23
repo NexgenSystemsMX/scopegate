@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScopeGate Cloud</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --border:#28324a; --fg:#dbe2f1; --dim:#8b96b0; --accent:#5b9dff; --danger:#ff6b6b; --ok:#51cf8a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; align-items:center; gap:1em; padding:.7em 1.2em; background:var(--panel); border-bottom:1px solid var(--border); }
+  header h1 { font-size:1.05em; margin:0; }
+  header .spacer { flex:1; }
+  main { padding:1.2em; max-width:1100px; margin:0 auto; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:.45em .9em; cursor:pointer; font:inherit; }
+  button.secondary { background:transparent; border:1px solid var(--border); color:var(--fg); }
+  button.danger { background:var(--danger); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  input, select, textarea { background:#0b0f1a; color:var(--fg); border:1px solid var(--border); border-radius:6px; padding:.45em .6em; font:inherit; }
+  textarea { width:100%; font-family:ui-monospace,Consolas,monospace; }
+  table { width:100%; border-collapse:collapse; margin-top:.8em; }
+  th, td { text-align:left; padding:.45em .6em; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; }
+  code, .mono { font-family:ui-monospace,Consolas,monospace; font-size:.92em; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:1em 1.2em; margin-bottom:1em; }
+  .tabs { display:flex; gap:.4em; margin:1em 0; }
+  .tabs button { background:transparent; border:1px solid var(--border); color:var(--dim); }
+  .tabs button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .dim { color:var(--dim); }
+  .ok { color:var(--ok); }
+  .danger-text { color:var(--danger); }
+  .row { display:flex; gap:.6em; align-items:center; flex-wrap:wrap; }
+  .error-box { background:#3a1720; border:1px solid var(--danger); border-radius:8px; padding:.6em .9em; margin:.8em 0; white-space:pre-wrap; }
+  .hidden { display:none; }
+  .kv { margin:.2em 0; word-break:break-all; }
+  #login { max-width:420px; margin:6em auto; }
+  pre.snippet { background:#0b0f1a; border:1px solid var(--border); border-radius:8px; padding:.8em; overflow-x:auto; }
+</style>
+</head>
+<body>
+<header class="hidden" id="topbar">
+  <h1>ScopeGate Cloud</h1>
+  <select id="team-select" title="Team"></select>
+  <button id="new-team" class="secondary" title="Create team">+ Team</button>
+  <span class="spacer"></span>
+  <span class="dim" id="who"></span>
+  <button id="logout" class="secondary">Sign out</button>
+</header>
+
+<main>
+  <!-- Login -->
+  <div id="login" class="panel">
+    <h2>Sign in</h2>
+    <p class="dim">Admin token for this control plane (env <code>ADMIN_TOKEN</code>; dev default <code>dev-admin-token</code>).</p>
+    <div class="row">
+      <input type="password" id="token-input" placeholder="admin token" style="flex:1">
+      <button id="login-btn">Sign in</button>
+    </div>
+    <div id="login-error" class="error-box hidden"></div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <div class="tabs">
+      <button data-tab="agents" class="active">Agents</button>
+      <button data-tab="policy">Policy</button>
+      <button data-tab="audit">Audit</button>
+      <button data-tab="billing">Billing</button>
+      <button data-tab="settings">Settings</button>
+    </div>
+    <div id="global-error" class="error-box hidden"></div>
+
+    <section id="tab-agents">
+      <div class="panel">
+        <div class="row"><h2 style="margin:0;flex:1">Fleet</h2><button id="reload-agents" class="secondary">Reload</button></div>
+        <table id="agents-table">
+          <thead><tr><th>Agent</th><th>Fingerprint</th><th>Enrolled</th><th>Last seen</th><th>Status</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="dim" id="agents-empty">No agents enrolled yet — see Settings for the enroll command.</p>
+      </div>
+    </section>
+
+    <section id="tab-policy" class="hidden">
+      <div class="panel">
+        <h2 style="margin-top:0">Team policy</h2>
+        <p class="dim">Published versions are signed with the cloud key; gateways verify the signature before applying. Current: <span id="policy-version" class="mono">none</span></p>
+        <textarea id="policy-yaml" rows="16" spellcheck="false" placeholder="# team policy YAML — see policies.example.yaml"></textarea>
+        <div class="row" style="margin-top:.6em">
+          <button id="policy-save">Publish signed version</button>
+          <span id="policy-status" class="dim"></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-audit" class="hidden">
+      <div class="panel">
+        <h2 style="margin-top:0">Audit</h2>
+        <div class="row">
+          <input id="audit-agent" placeholder="agentId">
+          <input id="audit-kind" placeholder="kind (e.g. tool_call)">
+          <input id="audit-since" type="datetime-local" title="since">
+          <button id="audit-run">Query</button>
+        </div>
+        <table id="audit-table">
+          <thead><tr><th>ts</th><th>agent</th><th>kind</th><th>seq</th><th>detail</th><th>sig</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <p class="dim" id="audit-empty">No events.</p>
+      </div>
+    </section>
+
+    <section id="tab-billing" class="hidden">
+      <div class="panel">
+        <h2 style="margin-top:0">Billing usage</h2>
+        <div class="row">
+          <input id="billing-month" type="month">
+          <button id="billing-run">Report</button>
+        </div>
+        <div id="billing-result" style="margin-top:.8em"></div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="hidden">
+      <div class="panel">
+        <h2 style="margin-top:0">Settings</h2>
+        <div class="kv"><span class="dim">Cloud fingerprint: </span><span class="mono" id="cloud-fp"></span></div>
+        <div class="kv"><span class="dim">Team: </span><span class="mono" id="settings-team"></span></div>
+        <h3>Enroll a gateway</h3>
+        <p class="dim">Run on the gateway host (token shown once — keep it secret, it is the team root credential):</p>
+        <pre class="snippet mono" id="enroll-snippet"></pre>
+        <h3>Approval alerts (Slack)</h3>
+        <div class="row">
+          <input id="webhook-url" placeholder="https://hooks.slack.com/services/…" style="flex:1;min-width:22em">
+          <button id="webhook-save">Save webhook</button>
+        </div>
+        <p class="dim" id="webhook-status"></p>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

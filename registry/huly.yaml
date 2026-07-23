@@ -1,0 +1,30 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+# Maps 1:1 to an UpstreamConfig: {name, transport, auth} are applied verbatim;
+# `setup.secrets` only carries human-facing hints for the waiting_for_secrets
+# flow. Secret VALUES never live here — only vault ref NAMES.
+version: registry/v1
+name: huly
+description: Huly bridge (Nexgen) — tracker, documents, chunter and contacts via the bundled huly-bridge MCP (stdio, workspace token minted from a vault blob).
+transport:
+  kind: stdio
+  command: node
+  # Bundled bridge shipped inside the scopegate package (EPIC-14); the path is
+  # resolved from the package root. `node` is on the stdio allowlist.
+  args: ["dist/upstreams/huly-bridge/server.js"]
+auth:
+  # NEW in wave 2 (EPIC-13): the gateway mints a Huly workspace token from a
+  # JSON blob in the vault (login -> selectWorkspace, cache at 80% TTL) and
+  # injects HULY_TOKEN / HULY_ENDPOINT / HULY_WORKSPACE into the spawn. The
+  # account email/password never leaves the vault.
+  type: huly
+  secretRef: huly_nexgen
+  # accountsUrl: https://huly2.nexgen.systems  # optional override (wins over the blob's)
+docs: https://github.com/hcengineering/platform
+setup:
+  secrets:
+    - ref: huly_nexgen
+      hint: >-
+        Deposit a JSON blob with the Huly account (never echoed):
+        {"email":"you@nexgen","password":"…","workspace":"your-workspace","accountsUrl":"https://huly2.nexgen.systems"}
+        by running in your terminal:
+        scopegate secret add huly_nexgen

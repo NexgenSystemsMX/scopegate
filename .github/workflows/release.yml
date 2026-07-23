@@ -1,0 +1,74 @@
+name: release
+
+# Tag-driven release: tag v* → build → unit tests → e2e → npm publish
+# (provenance) → GitHub Release. The package lives in ./scopegate.
+#
+# Required secret: NPM_TOKEN (granular token scoped to the `scopegate`
+# package). Without it the publish step is skipped — everything else still
+# runs, so a tag always validates the release candidate.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write       # GitHub Release
+  id-token: write       # npm provenance
+
+defaults:
+  run:
+    working-directory: scopegate
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scopegate/package-lock.json
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      # e2e smoke: gateway, init/migration, oauth daemon, vaultd isolation
+      - run: node e2e-client.mjs
+      - run: node e2e-init.mjs
+      - run: node e2e-oauth.mjs
+      - run: node e2e-vaultd.mjs
+
+      - name: Publish to npm (skipped when NPM_TOKEN is not configured)
+        if: env.NPM_TOKEN_PRESENT == 'true'
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+
+  redteam:
+    # Adversarial suite (EPIC-11). Runs on the same tag; each attack must be
+    # blocked AND audited. Self-skips until redteam/run.mjs lands.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scopegate/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Red team harness
+        if: hashFiles('scopegate/redteam/run.mjs') != ''
+        run: node redteam/run.mjs

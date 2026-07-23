@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "updatedAt": "2026-07-22T23:28:28.319Z",
+  "manifests": {
+    "aws": {
+      "file": "aws.yaml",
+      "sha256": "863c111c946e173727f98821b4f83f0714819474cdcb8d4afc29d5be47ab2c56"
+    },
+    "cloudflare": {
+      "file": "cloudflare.yaml",
+      "sha256": "8dc603f1f99282daca5f4713dbfc5351803fff68eedd45b0f760312d45428a39"
+    },
+    "fakegit": {
+      "file": "fakegit.yaml",
+      "sha256": "e03a2911132defbc513a6094c38fa4636b2d536ea464d31e0bd3f57ee64afcd2"
+    },
+    "github": {
+      "file": "github.yaml",
+      "sha256": "ae10a7e2a51ce947339cab00c7e81b6b4913f252b0e8fceb0f14a97c50fdf027"
+    },
+    "google": {
+      "file": "google.yaml",
+      "sha256": "b12a616a919371474cbc88dff27f1beeed86370c04bbfce1341fe2aafc2936e0"
+    },
+    "huly": {
+      "file": "huly.yaml",
+      "sha256": "be2d884401cd7e2c66041911d1db13cd844ccf0dd07041b30d880f765b165579"
+    },
+    "notion": {
+      "file": "notion.yaml",
+      "sha256": "75121f6d6c1255b8a51648fbc39b3a58174a2c3d6133fe0fd4a51600a2354565"
+    },
+    "railway": {
+      "file": "railway.yaml",
+      "sha256": "205b5c96c25eccd2eeaad3c0c137d6cef6683b252f0fe43bc4f28e7aa8db9cb9"
+    },
+    "stripe": {
+      "file": "stripe.yaml",
+      "sha256": "3c6224f038b7505cd7cb3f5ee87ac3442888fd7966c327d9cef3e0a9f6483b89"
+    },
+    "supabase": {
+      "file": "supabase.yaml",
+      "sha256": "0669ba8a2a39ca86b5764e8af9b0d6a179a442713af5168994d8018eddb5ce4d"
+    }
+  }
+}

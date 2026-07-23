@@ -1,0 +1,19 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+version: registry/v1
+name: notion
+description: Notion remote MCP — search, read and write pages, databases and comments.
+transport:
+  kind: http
+  url: https://mcp.notion.com/mcp
+auth:
+  type: bearer
+  secretRef: notion_token
+docs: https://developers.notion.com/docs/mcp
+setup:
+  secrets:
+    - ref: notion_token
+      hint: >-
+        Create an internal integration at
+        https://www.notion.so/profile/integrations, share only the pages it
+        needs with that integration, then run in your terminal:
+        scopegate secret add notion_token

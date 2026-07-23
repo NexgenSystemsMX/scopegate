@@ -1,0 +1,29 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+# Maps 1:1 to an UpstreamConfig: {name, transport, auth} are applied verbatim;
+# `setup.secrets` only carries human-facing hints for the waiting_for_secrets
+# flow. Secret VALUES never live here — only vault ref NAMES.
+version: registry/v1
+name: railway
+description: Railway bridge — service status, deploys, logs and domains via the bundled railway-bridge MCP over the backboard GraphQL API (stdio, API token injected as env).
+transport:
+  kind: stdio
+  command: node
+  # Bundled bridge shipped inside the scopegate package (EPIC-16); the path is
+  # resolved from the package root. `node` is on the stdio allowlist.
+  args: ["dist/upstreams/railway-bridge/server.js"]
+auth:
+  # Railway API tokens are long-lived: declared fallback:injection mode — the
+  # token leaves the vault only as env of the bridge spawn, and the bridge
+  # never returns it. Write tools (deploy/redeploy) are gated by policy
+  # (require: human_approval); variables_list never returns VALUES.
+  type: env
+  env:
+    RAILWAY_TOKEN: railway_token
+docs: https://docs.railway.com/reference/public-api
+setup:
+  secrets:
+    - ref: railway_token
+      hint: >-
+        Create a Railway API token (Railway dashboard → Tokens) scoped to the
+        workspace/projects you need, then run in your terminal:
+        scopegate secret add railway_token

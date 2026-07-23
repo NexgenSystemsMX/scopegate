@@ -1,0 +1,18 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+version: registry/v1
+name: supabase
+description: Supabase remote MCP — projects, database queries/migrations, edge functions, branching.
+transport:
+  kind: http
+  url: https://mcp.supabase.com/mcp
+auth:
+  type: bearer
+  secretRef: supabase_pat
+docs: https://supabase.com/docs/guides/getting-started/mcp
+setup:
+  secrets:
+    - ref: supabase_pat
+      hint: >-
+        Create a Personal Access Token at
+        https://supabase.com/dashboard/account/tokens, then run in your
+        terminal: scopegate secret add supabase_pat

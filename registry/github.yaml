@@ -1,0 +1,27 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+# Maps 1:1 to an UpstreamConfig: {name, transport, auth} are applied verbatim;
+# `setup.secrets` only carries human-facing hints for the waiting_for_secrets
+# flow. Secret VALUES never live here — only vault ref NAMES.
+version: registry/v1
+name: github
+description: GitHub MCP server — repos, issues, PRs, code search (stdio, PAT injected as env).
+transport:
+  kind: stdio
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-github"]
+auth:
+  type: env
+  env:
+    GITHUB_PERSONAL_ACCESS_TOKEN: github_pat
+    # Alternative (stricter): auth type github_app mints ~1h installation
+    # tokens from an App private key — see scopegate.example.yaml. That mode
+    # needs your appId/installationId, so it cannot be shipped 1-click.
+docs: https://github.com/modelcontextprotocol/servers/tree/main/src/github
+setup:
+  secrets:
+    - ref: github_pat
+      hint: >-
+        Create a fine-grained Personal Access Token at
+        https://github.com/settings/personal-access-tokens scoped to only the
+        repos you need, then run in your terminal:
+        scopegate secret add github_pat

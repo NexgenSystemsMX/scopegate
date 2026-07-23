@@ -1,0 +1,71 @@
+{
+  "name": "scopegate",
+  "version": "0.1.0",
+  "description": "Ephemeral credentials & persistent connections gateway for coding agents (Claude Code, Kimi Code, Cursor, OpenCode). The agent never holds secrets — it holds short-lived, minimum-scope capabilities.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "credentials",
+    "secrets-management",
+    "coding-agents",
+    "claude-code",
+    "kimi-code",
+    "cursor",
+    "opencode",
+    "security",
+    "oauth",
+    "policy-engine",
+    "audit-trail"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nexgen/scopegate.git"
+  },
+  "homepage": "https://scopegate.dev",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "scopegate": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "install",
+    "registry",
+    "policies.example.yaml",
+    "scopegate.example.yaml",
+    "SKILL.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "node e2e-client.mjs",
+    "test:e2e": "node e2e-client.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sts": "^3.1093.0",
+    "@hcengineering/account-client": "^0.7.423",
+    "@hcengineering/api-client": "^0.7.423",
+    "@hcengineering/core": "^0.7.423",
+    "@hcengineering/text": "^0.7.423",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "commander": "^12.1.0",
+    "picomatch": "^4.0.2",
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/picomatch": "^3.0.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
+  }
+}

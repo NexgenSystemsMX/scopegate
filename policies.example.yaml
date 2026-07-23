@@ -1,0 +1,71 @@
+# ~/.scopegate/policies.yaml — SOLO humanos editan este archivo.
+# Los agentes proponen cambios vía scopegate_propose_policy → policies.pending.yaml
+version: 1
+
+# limits:                                  # TECHOS DUROS (opcionales, globales).
+#   max_ttl: 1h                            #   Ningún grant supera este TTL, pidan lo que pidan.
+#   deny:                                  #   Globs bloqueados ANTES que cualquier auto_approve
+#     - "aws:*:production"                 #   (fail-closed, anti prompt-injection; audit: ceiling_blocked)
+#     - "\\*:*"                            #   bloquea peticiones literales "*:*" (inyección típica)
+#   rate_limit: 30/m                       #   peticiones a request_capability por agente y ventana
+#   approval_ttl: 10m                      #   expiración de solicitudes de aprobación humana
+
+agents:
+  agent-luis-nexgen:
+    default_ttl: 15m
+    # limits:                              # techos por agente: GANAN sobre los globales
+    #   max_ttl: 30m
+    #   deny: ["stripe:write:*"]
+    capabilities:
+      - match: "github:call:{get_*,list_*,search_*}"   # lecturas: libre, 15m
+        auto_approve: true
+      - match: "github:call:*"                          # escrituras: TTL corto
+        auto_approve: true
+        ttl: 5m
+      - match: "notion:call:*"
+        auto_approve: true
+      # - match: "support:call:get_customer"            # respuestas con PII enmascarada
+      #   auto_approve: true                            # (email/teléfono/tarjeta Luhn/aws key id;
+      #   ttl: 5m                                       #  best-effort, audit registra SOLO conteos)
+      #   redact: [pii]
+      - match: "aws:*:production"                       # producción: humano siempre
+        require: human_approval                         #   → solicitud en approvals.pending.jsonl
+  "*":                                                  # fallback para agentes nuevos
+    default_ttl: 5m
+    capabilities:
+      - match: "*:call:{get_*,list_*,search_*,read_*}"
+        auto_approve: true
+
+# ===========================================================================
+# DEMO OLA 2 — agente nexgen-kimi (ecosistema Nexgen a traves del gateway).
+# Reglas en orden first-match-wins: las de require van ANTES que las auto.
+# Todo el bloque esta comentado: descomentalo dentro de `agents:` para usarlo.
+# ===========================================================================
+#  nexgen-kimi:
+#    default_ttl: 15m
+#    capabilities:
+#      # --- Huly Nexgen (EPIC-13/14): las 13 tools, auto con TTL estandar ---
+#      - match: "huly:call:*"
+#        auto_approve: true
+#      # --- GitHub (EPIC-15): auto 15m SALVO escrituras sobre main/production.
+#      #     El gateway filtra por tool, no por rama: las herramientas de
+#      #     escritura destructiva (merge, commit directo, borrado) escalan. ---
+#      - match: "github:call:{merge_pull_request,create_or_update_file,delete_file}"
+#        require: human_approval
+#      - match: "github:call:*"                       # lecturas y PRs: auto
+#        auto_approve: true
+#        ttl: 15m
+#      # --- Railway (EPIC-16): lecturas auto; deploys siempre con humano ---
+#      - match: "railway:call:{deploy,redeploy}"
+#        require: human_approval
+#      - match: "railway:call:{service_status,list_services,get_logs,domain_status}"
+#        auto_approve: true
+#      # --- Cloudflare (EPIC-17): borrado DNS siempre con humano ---
+#      - match: "cloudflare:call:dns_delete"
+#        require: human_approval
+#      - match: "cloudflare:call:*"
+#        auto_approve: true
+#      # --- Google (EPIC-18): todo auto con TTL mas corto (10m) ---
+#      - match: "google:call:*"
+#        auto_approve: true
+#        ttl: 10m
