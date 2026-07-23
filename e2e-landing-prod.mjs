@@ -18,7 +18,7 @@
  * global timeout (90s). No secrets involved.
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execSync } from "node:child_process";
 
 const LANDING = (process.env.LANDING_URL ?? "https://scopegate-cloud-production.up.railway.app").replace(/\/+$/, "");
 const GATEWAY = (process.env.GATEWAY_URL ?? "https://scopegate-production.up.railway.app").replace(/\/+$/, "");
@@ -93,7 +93,9 @@ async function main() {
 
   /* 4. npm package resolves on the public registry */
   try {
-    const out = execFileSync("npm", ["view", "scopegate", "version"], {
+    // execSync (shell) resolves the npm.cmd shim on Windows; execFileSync
+    // cannot find "npm" without the extension.
+    const out = execSync("npm view scopegate version", {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
