@@ -147,17 +147,16 @@ async function main() {
   );
   pass(`Cloudflare list_zones: ${zoneList.length} zone(s) live (scoped token)`);
 
-  /* ---------------------- Google: waiting for secrets ------------------- */
-  const diag = parse(await client.callTool({ name: "scopegate_diagnose", arguments: {} }));
-  const gEntry = diag.upstreams?.google;
-  assert.ok(gEntry, "diagnose missing upstream 'google'");
-  assert.equal(gEntry.ok, false, "google should be waiting for secrets");
-  assert.match(
-    String(gEntry.error ?? ""),
-    /secret add|not found/i,
-    `google error must be actionable about the missing secret: ${gEntry.error}`,
+  /* ----------------------------- Google (live) -------------------------- */
+  await cap("google:call:drive_list");
+  const drive = parse(await client.callTool({ name: "google__drive_list", arguments: { limit: 5 } }));
+  const files = drive.files ?? [];
+  assert.ok(files.length > 0, `expected >=1 Drive file: ${JSON.stringify(drive).slice(0, 200)}`);
+  assert.ok(
+    files.every((f) => typeof f.id === "string" && typeof f.name === "string"),
+    `file shape unexpected: ${JSON.stringify(drive).slice(0, 200)}`,
   );
-  pass("Google reports actionable waiting-for-secrets state");
+  pass(`Google drive_list: ${files.length} file(s) live (SA JWT → access token, domain-wide delegation)`);
 
   /* ---------------------------- secret hygiene -------------------------- */
   const hygieneText = JSON.stringify({ projects, status, domain, repo, found, created, comment });
