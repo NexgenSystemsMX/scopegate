@@ -100,6 +100,10 @@ export class GitHubAppProvider implements CredentialProvider {
     return {
       value: data.token,
       headers: { Authorization: `Bearer ${data.token}` },
+      // stdio ecosystem MCPs (e.g. @modelcontextprotocol/server-github) read
+      // the token from this env var — inject the minted installation token,
+      // never the App key.
+      env: { GITHUB_PERSONAL_ACCESS_TOKEN: data.token },
       // GitHub always issues 1h tokens; a narrower grant cannot shorten them
       // upstream-side, so the gateway treats the token as dead at the clamp
       // and re-mints (short tokens are left to expire, never revoked).

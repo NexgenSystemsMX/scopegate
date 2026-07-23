@@ -111,8 +111,26 @@ upstreams:
 All auth types: `bearer` (header injection), `env` (env vars into spawned
 stdio servers), `oauth2` (refresh daemon + device-code re-auth), `jwt`
 (gateway-minted HS256), `github_app` (installation tokens minted from the App
-key), `aws_sts` (session credentials via AssumeRole/GetSessionToken), `none`.
+key), `aws_sts` (session credentials via AssumeRole/GetSessionToken), `huly`
+(workspace token minted via login + selectWorkspace against a Huly account
+service — URL discovery through `/config.json`), `google_sa` (Google service
+account JWT → access token), `none`.
 See [scopegate.example.yaml](scopegate.example.yaml) for commented examples of each.
+
+## Native connectors (bridges in `src/upstreams/`)
+
+Ready-to-run MCP bridges; each runs as a stdio upstream and is also available
+in the signed registry (`scopegate_register_upstream {from_registry}`):
+
+| Upstream | Tools | Auth |
+|---|---|---|
+| `huly` | 13 tools: tracker (create/update/comment/search issues, projects), documents, chunter (channels/messages/threads), contacts | `huly` (vault blob `{email,password,workspace}` → minted workspace token) |
+| `railway` | 7 tools: list/status/deploy/redeploy/logs/variables(names only)/domains | `env` (`RAILWAY_TOKEN` account-scoped) |
+| `cloudflare` | 8 tools: zones, DNS list/create/update/delete, workers, pages, R2 | `env` (scoped API token) |
+| `google` | 7 tools: Drive list/search/read, Gmail send/list, Calendar list/create | `google_sa` (SA JWT → access token) |
+
+Their manifests ship signed in [`registry/`](registry/README.md);
+`docs/Implementacion/EPIC-13..18` has the design docs.
 
 Environment variables:
 
