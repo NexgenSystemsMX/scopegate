@@ -95,7 +95,10 @@ export class FileStore implements Store {
   private revocations: Revocation[];
   private decisions: ApprovalDecision[];
 
-  constructor(home: string) {
+  constructor(
+    home: string,
+    private readonly opts: { auditRetentionDays?: number } = {},
+  ) {
     this.dataDir = path.join(home, "data");
     fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
     this.teams = readJsonFile(this.file("teams.json"), { teams: [] }).teams;
@@ -201,8 +204,33 @@ export class FileStore implements Store {
   // -------------------------------------------------------------- audit
   appendAuditEvents(teamId: string, events: StoredAuditEvent[]): void {
     if (events.length === 0) return;
+    this.pruneAuditRetention(teamId);
     const lines = events.map((e) => JSON.stringify(e)).join("\n") + "\n";
     fs.appendFileSync(this.auditFile(teamId), lines, { mode: 0o600 });
+  }
+
+  /**
+   * 90-day audit retention (default; AUDIT_RETENTION_DAYS env, 0 disables):
+   * events older than the cutoff are dropped. Amortized — the file is only
+   * rewritten when at least one event is past retention.
+   */
+  private pruneAuditRetention(teamId: string): void {
+    const days = this.opts.auditRetentionDays ?? 90;
+    if (days <= 0) return;
+    const cutoff = Date.now() - days * 86_400_000;
+    const events = this.readAuditEvents(teamId);
+    if (events.length === 0) return;
+    const oldest = Date.parse(events[0].ts);
+    if (Number.isNaN(oldest) || oldest >= cutoff) return;
+    const kept = events.filter((e) => {
+      const t = Date.parse(e.ts);
+      return !Number.isNaN(t) && t >= cutoff;
+    });
+    const tmp = this.auditFile(teamId) + ".tmp";
+    fs.writeFileSync(tmp, kept.map((e) => JSON.stringify(e)).join("\n") + (kept.length ? "\n" : ""), {
+      mode: 0o600,
+    });
+    fs.renameSync(tmp, this.auditFile(teamId));
   }
 
   private readAuditEvents(teamId: string): StoredAuditEvent[] {

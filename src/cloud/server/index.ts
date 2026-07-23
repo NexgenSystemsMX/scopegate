@@ -231,7 +231,10 @@ export async function startCloudServer(
 ): Promise<RunningCloud> {
   const home = path.resolve(opts.home);
   const cloudIdentity = loadOrCreateCloudIdentity(home);
-  const store = new FileStore(home);
+  const retentionDays = Number(process.env.AUDIT_RETENTION_DAYS ?? 90);
+  const store = new FileStore(home, {
+    auditRetentionDays: Number.isFinite(retentionDays) ? retentionDays : 90,
+  });
   const adminToken = resolveAdminToken(opts.adminToken);
   const announce = opts.announce ?? true;
 

@@ -402,17 +402,36 @@ export async function handleApiRequest(
       if (!teamId) throw badRequest("teamId query param is required");
       if (!store.getTeam(teamId)) throw notFound(`no such team: ${teamId}`);
       // Signed events verbatim, chronological — SIEM/offline verification.
-      const body = store
+      // Optional since/until (ISO 8601) bounds; integrity headers let the
+      // receiver validate completeness without a second request.
+      const since = url.searchParams.get("since");
+      const until = url.searchParams.get("until");
+      const sinceMs = since ? Date.parse(since) : undefined;
+      const untilMs = until ? Date.parse(until) : undefined;
+      if (since && Number.isNaN(sinceMs)) throw badRequest("since must be ISO 8601");
+      if (until && Number.isNaN(untilMs)) throw badRequest("until must be ISO 8601");
+      const events = store
         .allAuditEvents(teamId)
-        .map((e) => JSON.stringify(e))
-        .join("\n");
+        .filter((e) => {
+          const t = Date.parse(e.ts);
+          if (Number.isNaN(t)) return true;
+          if (sinceMs !== undefined && t < sinceMs) return false;
+          if (untilMs !== undefined && t > untilMs) return false;
+          return true;
+        });
+      const body = events.map((e) => JSON.stringify(e)).join("\n");
+      const payload = body ? body + "\n" : "";
       res.writeHead(200, {
         "content-type": "application/x-ndjson; charset=utf-8",
         "content-disposition": `attachment; filename="scopegate-audit-${teamId}.jsonl"`,
-        "content-length": Buffer.byteLength(body ? body + "\n" : ""),
+        "content-length": Buffer.byteLength(payload),
         "cache-control": "no-store",
+        "x-audit-event-count": String(events.length),
+        "x-audit-first-seq": events.length ? String(events[0].seq) : "",
+        "x-audit-last-seq": events.length ? String(events[events.length - 1].seq) : "",
+        "x-audit-sha256": createHash("sha256").update(payload).digest("hex"),
       });
-      res.end(body ? body + "\n" : "");
+      res.end(payload);
       return true;
     }
 
