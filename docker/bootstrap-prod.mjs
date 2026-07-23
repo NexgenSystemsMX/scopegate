@@ -149,42 +149,54 @@ for (const up of ECOSYSTEM_UPSTREAMS) {
 fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), { mode: 0o600 });
 
 /* ---------------------------- 3. policies ------------------------------- */
-if (!fs.existsSync(POLICIES_PATH)) {
-  const policies = {
-    version: 1,
-    limits: { max_ttl: "1h", deny: ["\\*:*"] },
-    agents: {
-      "nexgen-kimi": {
-        default_ttl: "15m",
-        capabilities: [
-          { match: "railway:call:{deploy,redeploy}", require: "human_approval" },
-          { match: "cloudflare:call:dns_delete", require: "human_approval" },
-          {
-            match: "github:call:{merge_pull_request,create_or_update_file,delete_file}",
-            require: "human_approval",
-          },
-          { match: "huly:call:*", auto_approve: true, ttl: "15m" },
-          { match: "railway:call:*", auto_approve: true, ttl: "15m" },
-          { match: "cloudflare:call:*", auto_approve: true, ttl: "15m" },
-          { match: "google:call:*", auto_approve: true, ttl: "10m" },
-          { match: "github:call:*", auto_approve: true, ttl: "15m" },
-          { match: "fakegit:call:*", auto_approve: true, ttl: "15m" },
-        ],
-      },
-      "demo-agent": {
-        default_ttl: "15m",
-        capabilities: [
-          { match: "fakegit:call:danger", require: "human_approval", ttl: "5m" },
-          { match: "fakegit:call:*", auto_approve: true, ttl: "15m" },
-        ],
-      },
-      "*": { default_ttl: "5m", capabilities: [] },
+const ECOSYSTEM_AGENT_POLICY = {
+  default_ttl: "15m",
+  capabilities: [
+    { match: "railway:call:{deploy,redeploy}", require: "human_approval" },
+    { match: "cloudflare:call:dns_delete", require: "human_approval" },
+    {
+      match: "github:call:{merge_pull_request,create_or_update_file,delete_file}",
+      require: "human_approval",
     },
-  };
-  fs.writeFileSync(POLICIES_PATH, JSON.stringify(policies, null, 2), {
-    mode: 0o600,
-  });
+    { match: "huly:call:*", auto_approve: true, ttl: "15m" },
+    { match: "railway:call:*", auto_approve: true, ttl: "15m" },
+    { match: "cloudflare:call:*", auto_approve: true, ttl: "15m" },
+    { match: "google:call:*", auto_approve: true, ttl: "10m" },
+    { match: "github:call:*", auto_approve: true, ttl: "15m" },
+    { match: "fakegit:call:*", auto_approve: true, ttl: "15m" },
+  ],
+};
+
+let policies;
+if (fs.existsSync(POLICIES_PATH)) {
+  // Merge into the EXISTING file: upsert the ecosystem agent section and
+  // preserve everything else (demo-agent, humans' edits). JSON is YAML 1.2;
+  // if the file is real YAML, fall back to the yaml package.
+  const raw = fs.readFileSync(POLICIES_PATH, "utf8");
+  try {
+    policies = JSON.parse(raw);
+  } catch {
+    const YAML = (await import(pathToFileURL(path.join(APP, "node_modules", "yaml", "dist", "index.js")).href)).default;
+    policies = YAML.parse(raw);
+  }
+} else {
+  policies = { version: 1, limits: { max_ttl: "1h", deny: ["\\*:*"] }, agents: {} };
 }
+policies.version ??= 1;
+policies.limits ??= { max_ttl: "1h", deny: ["\\*:*"] };
+policies.agents ??= {};
+const agentWas = policies.agents["nexgen-kimi"] ? "updated" : "added";
+policies.agents["nexgen-kimi"] = ECOSYSTEM_AGENT_POLICY;
+policies.agents["demo-agent"] ??= {
+  default_ttl: "15m",
+  capabilities: [
+    { match: "fakegit:call:danger", require: "human_approval", ttl: "5m" },
+    { match: "fakegit:call:*", auto_approve: true, ttl: "15m" },
+  ],
+};
+policies.agents["*"] ??= { default_ttl: "5m", capabilities: [] };
+fs.writeFileSync(POLICIES_PATH, JSON.stringify(policies, null, 2), { mode: 0o600 });
+say(`policies: agent 'nexgen-kimi' ${agentWas} (others preserved)`);
 
 say(
   `secrets deposited (keep-first): [${deposited.join(", ")}] (${Object.keys(secrets).length} staged)`,
