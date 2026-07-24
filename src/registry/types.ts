@@ -20,6 +20,10 @@ export interface RegistryManifest {
   description: string;
   transport: UpstreamConfig["transport"];
   auth: UpstreamAuth;
+  /** M14.4: optional passthrough knobs (validated like scopegate.yaml). */
+  exposeTools?: string[];
+  attestation?: boolean;
+  pool?: UpstreamConfig["pool"];
   docs?: string;
   setup?: {
     secrets?: RegistryManifestSecret[];

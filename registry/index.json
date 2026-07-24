@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-22T23:28:28.319Z",
+  "updatedAt": "2026-07-24T05:12:50.291Z",
   "manifests": {
     "aws": {
       "file": "aws.yaml",
@@ -17,6 +17,10 @@
     "github": {
       "file": "github.yaml",
       "sha256": "ae10a7e2a51ce947339cab00c7e81b6b4913f252b0e8fceb0f14a97c50fdf027"
+    },
+    "github-official": {
+      "file": "github-official.yaml",
+      "sha256": "0a8a750a3f53f22c1b2f144d2c3f0628b022e092c8d490fc13336cb8a1f7c563"
     },
     "google": {
       "file": "google.yaml",

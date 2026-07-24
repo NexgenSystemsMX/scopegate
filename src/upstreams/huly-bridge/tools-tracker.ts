@@ -36,6 +36,13 @@ export function optionalLimit(args: Record<string, unknown>, def = 20): number |
   return Math.min(Math.floor(v), 100);
 }
 
+export function optionalBoolean(args: Record<string, unknown>, name: string): boolean | undefined {
+  const v = args[name];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "boolean") throw new Error(`Invalid argument "${name}" (expected boolean)`);
+  return v;
+}
+
 const PRIORITY_SCHEMA = {
   anyOf: [{ type: "string" }, { type: "number" }],
   description: "Issue priority: urgent|high|medium|low|none or 0-4",
@@ -53,6 +60,10 @@ export const trackerTools: ToolDefinition[] = [
         description: { type: "string", description: "Issue description (markdown)" },
         priority: PRIORITY_SCHEMA,
         assignee: { type: "string", description: "Assignee (Huly account/person ref)" },
+        status: {
+          type: "string",
+          description: "Initial status: backlog|todo|in_progress|done|canceled (default backlog)",
+        },
       },
       required: ["project", "title"],
     },
@@ -73,6 +84,8 @@ export const trackerTools: ToolDefinition[] = [
             status: { type: "string", description: "backlog|todo|in_progress|done|canceled" },
             priority: PRIORITY_SCHEMA,
             assignee: { type: "string" },
+            milestone: { type: "string", description: "Milestone ref (empty string clears it)" },
+            dueDate: { type: "string", description: "ISO date (e.g. 2026-08-01); empty string clears it" },
           },
         },
       },
@@ -93,15 +106,39 @@ export const trackerTools: ToolDefinition[] = [
   },
   {
     name: "tracker_search_issues",
-    description: "Search issues by text, project and/or status",
+    description: "Search issues by text, project, status and/or assignee",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Case-insensitive substring matched against the title" },
         project: { type: "string", description: "Project identifier (e.g. DEMO) or id" },
         status: { type: "string", description: "backlog|todo|in_progress|done|canceled" },
+        assignee: { type: "string", description: "Assignee (Huly account/person ref)" },
         limit: { type: "number", description: "Max results (default 20, max 100)" },
       },
+    },
+  },
+  {
+    name: "tracker_read_issue",
+    description: "Read a single issue by identifier or id, including its full description (markdown)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issueId: { type: "string", description: "Issue identifier (e.g. DEMO-1) or id" },
+      },
+      required: ["issueId"],
+    },
+  },
+  {
+    name: "tracker_read_comments",
+    description: "List the comments of an issue (author, timestamp, body in markdown), oldest first",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issueId: { type: "string", description: "Issue identifier (e.g. DEMO-1) or id" },
+        limit: { type: "number", description: "Max results (default 20, max 100)" },
+      },
+      required: ["issueId"],
     },
   },
   {
@@ -120,6 +157,7 @@ export function createTrackerHandlers(client: HulyBridgeClient): Record<string, 
         description: optionalString(args, "description"),
         priority: args.priority as string | number | undefined,
         assignee: optionalString(args, "assignee"),
+        status: optionalString(args, "status"),
       });
       return created;
     },
@@ -129,7 +167,7 @@ export function createTrackerHandlers(client: HulyBridgeClient): Record<string, 
       const fields = args.fields;
       if (typeof fields !== "object" || fields === null || Array.isArray(fields)) {
         throw new Error(
-          'Missing or invalid required argument "fields" (object with title/description/status/priority/assignee)',
+          'Missing or invalid required argument "fields" (object with title/description/status/priority/assignee/milestone/dueDate)',
         );
       }
       const f = fields as Record<string, unknown>;
@@ -139,6 +177,8 @@ export function createTrackerHandlers(client: HulyBridgeClient): Record<string, 
         status: optionalString(f, "status"),
         priority: f.priority as string | number | undefined,
         assignee: optionalString(f, "assignee"),
+        milestone: optionalString(f, "milestone"),
+        dueDate: optionalString(f, "dueDate"),
       });
     },
 
@@ -154,9 +194,22 @@ export function createTrackerHandlers(client: HulyBridgeClient): Record<string, 
         query: optionalString(args, "query"),
         project: optionalString(args, "project"),
         status: optionalString(args, "status"),
+        assignee: optionalString(args, "assignee"),
         limit: optionalLimit(args),
       });
       return { issues, count: issues.length };
+    },
+
+    tracker_read_issue: async (args) => {
+      return await client.readIssue(requireString(args, "issueId", "pass an identifier like DEMO-1 or an id"));
+    },
+
+    tracker_read_comments: async (args) => {
+      const comments = await client.readComments(
+        requireString(args, "issueId", "pass an identifier like DEMO-1 or an id"),
+        optionalLimit(args),
+      );
+      return { comments, count: comments.length };
     },
 
     tracker_list_projects: async () => {

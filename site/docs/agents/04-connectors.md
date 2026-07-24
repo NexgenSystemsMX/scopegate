@@ -6,7 +6,7 @@ ScopeGate ships 5 native connectors, installable in one call each from the signe
 
 | Connector | Tools | Auth type | Credential mode |
 |---|---|---|---|
-| `huly` | 13 | `huly` (vault blob → workspace token) | `minted:huly` |
+| `huly` | 16 | `huly` (vault blob → workspace token) | `minted:huly` |
 | `github` | upstream pkg | `env` (PAT) or `github_app` (~1h installation token) | `fallback:injection` / `minted:github_app` |
 | `railway` | 7 | `env` (API token) | `fallback:injection` |
 | `cloudflare` | 8 | `env` (scoped API token) | `fallback:injection` |
@@ -18,11 +18,11 @@ ScopeGate ships 5 native connectors, installable in one call each from the signe
 
 Bundled bridge (stdio) covering the four Huly surfaces: tracker (issues/projects), documents, chunter (channels/messages), contact (persons). Markdown in and out.
 
-**Tools (13, exposed as `huly__<name>`).** Status names: `backlog|todo|in_progress|done|canceled`; priority: `urgent|high|medium|low|none` or `0-4`. `project` accepts the identifier (`DEMO`) or an id; `issueId` accepts `DEMO-1` or an id.
+**Tools (16, exposed as `huly__<name>`).** Status names: `backlog|todo|in_progress|done|canceled`; priority: `urgent|high|medium|low|none` or `0-4`. `project` accepts the identifier (`DEMO`) or an id; `issueId` accepts `DEMO-1` or an id.
 
-- tracker: `tracker_create_issue {project, title, description?, priority?, assignee?}`, `tracker_update_issue {issueId, fields}`, `tracker_comment_issue {issueId, message}`, `tracker_search_issues {query?, project?, status?, limit?}`, `tracker_list_projects {}`
+- tracker: `tracker_create_issue {project, title, description?, priority?, assignee?, status?}`, `tracker_read_issue {issueId}` (with the full description), `tracker_read_comments {issueId, limit?}`, `tracker_update_issue {issueId, fields}` (fields now include `milestone` and `dueDate`; `""` clears them), `tracker_comment_issue {issueId, message}`, `tracker_search_issues {query?, project?, status?, assignee?, limit?}`, `tracker_list_projects {}`
 - documents: `documents_create {teamspace, title, content}`, `documents_read {documentId}`, `documents_update {documentId, content}`, `documents_list {teamspace?, limit?}`
-- chunter: `chunter_post_message {channel, message, thread?}`, `chunter_list_channels {}`, `chunter_list_messages {channel, limit?, thread?}`
+- chunter: `chunter_post_message {channel, message, thread?, thinking?}` (`thinking: true` renders the message as 💭 thinking), `chunter_edit_message {channel, messageId, content}` (update the bot's own checklist), `chunter_list_channels {}`, `chunter_list_messages {channel, limit?, thread?}`
 - contact: `contact_list_persons {limit?}`
 
 **Auth.** Type `huly`, `secretRef: huly_nexgen`. The human deposits a JSON blob (never echoed):
@@ -62,6 +62,13 @@ scopegate_register_upstream { "from_registry": "github" }
 scopegate_register_upstream { "name": "github", "transport": { "kind": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }, "auth": { "type": "env", "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "github_pat" } } }
 scopegate_register_upstream { "name": "github-huly-platform", "transport": { "kind": "http", "url": "https://api.githubcopilot.com/mcp" }, "auth": { "type": "github_app", "appId": "123456", "installationId": "11111111", "secretRef": "github_app_key", "repositories": ["huly-platform"], "permissions": { "contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read" } } }
 ```
+
+**Official remote server (1-click).** `from_registry: "github-official"` points at GitHub's
+own remote MCP (`https://api.githubcopilot.com/mcp`) with `github_app` auth — ~1h
+installation tokens, no PAT, nothing to spawn. The manifest ships `REPLACE_WITH_*`
+placeholders: after registering, edit `appId` / `installationId` (and optionally
+`repositories` / `permissions`) in `~/.scopegate/scopegate.yaml` and deposit the App
+private key (`scopegate secret add github_app_key`).
 
 **Recommended policies** — reads and PRs auto, destructive writes escalate:
 
@@ -155,7 +162,32 @@ scopegate_register_upstream { "name": "google", "transport": { "kind": "stdio", 
 
 **Recommended policy:** `- match: "google:call:*"` with `auto_approve: true` and `ttl: 10m`.
 
-## 6. Adding a new upstream (generic)
+## 6. Any REST API: the `openapi` transport (no bridge needed)
+
+Any REST API with an OpenAPI 3 spec becomes a governed upstream in minutes — the
+gateway generates ONE tool per operation and executes the HTTP calls itself (no MCP
+server in between). Declared in `~/.scopegate/scopegate.yaml`:
+
+```yaml
+upstreams:
+  - name: petstore
+    transport: { kind: openapi, spec: "https://api.example.com/openapi.json" }  # or a local path
+    auth: { type: bearer, secretRef: petstore_key }   # bearer | none in v1
+```
+
+- Each operation becomes `petstore__<operationId>` (operations without one get
+  `<method>_<path>`), with input schemas built from path/query/header parameters and
+  the JSON request body — `required` included.
+- Capabilities are the usual `petstore:call:<operationId>` — auto-approve, `when:`,
+  `require: human_approval`, hard limits, circuit breaker and signed audit all apply.
+- The spec is cached 24h under `~/.scopegate/openapi-cache/` (a failed refetch falls
+  back to the cache); https only outside localhost; 30s per-call timeout.
+- `baseUrl` in the transport overrides the spec's `servers[0].url`.
+
+**Registering one from chat:** `scopegate_register_upstream` accepts the same envelope
+(`transport: {"kind":"openapi","spec":"…"}`) — or write the YAML and restart the gateway.
+
+## 7. Adding a new upstream (generic)
 
 Register any MCP server with the exact envelope:
 

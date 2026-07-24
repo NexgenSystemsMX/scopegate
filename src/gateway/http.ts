@@ -49,6 +49,17 @@ export interface HttpGatewayContext {
   allowedAgents: () => string[];
   /** Live count of connected upstreams, surfaced by /health. */
   connectedUpstreams: () => number;
+  /**
+   * M12: readiness details for /health — additive fields
+   * (upstreams stays a number for existing probes).
+   */
+  readiness?: () => {
+    upstreams_detail: { ok: number; failed: string[] };
+    vault_mode: string;
+    pending_approvals: number;
+  };
+  /** M12: metadata-only event tail for GET /events (NDJSON, bearer-required). */
+  recentEvents?: (opts: { since?: string; limit: number }) => Record<string, unknown>[];
   /** Transport-independent cleanup (cloud sync, policy watcher, proxy). */
   shutdown: () => Promise<void>;
 }
@@ -150,6 +161,8 @@ export async function startHttpGateway(
         status: "ok",
         uptime_s: Math.round(process.uptime()),
         upstreams: ctx.connectedUpstreams(),
+        // M12: readiness detail (additive — upstreams stays a number).
+        ...(ctx.readiness ? ctx.readiness() : {}),
       });
       return;
     }
@@ -182,6 +195,25 @@ export async function startHttpGateway(
         res,
         "Missing or invalid credentials. Send `Authorization: Bearer <SCOPEGATE_HTTP_TOKEN>`.",
       );
+      return;
+    }
+
+    // M12: host-observability event tail (NDJSON, metadata only — never
+    // payloads). Poll with ?since=<ISO> for incremental reads.
+    if (req.method === "GET" && url.pathname === "/events") {
+      if (!ctx.recentEvents) {
+        sendJson(res, 501, { error: "not_implemented", message: "events are not wired on this gateway." });
+        return;
+      }
+      const since = url.searchParams.get("since") ?? undefined;
+      const limitRaw = Number(url.searchParams.get("limit") ?? 100);
+      const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : 100, 1), 500);
+      const events = ctx.recentEvents({ since, limit });
+      res.writeHead(200, {
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      res.end(events.map((e) => JSON.stringify(e)).join("\n") + (events.length > 0 ? "\n" : ""));
       return;
     }
 

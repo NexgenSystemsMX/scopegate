@@ -97,6 +97,6 @@ spawn env; their destructive tools are gated by policy).
 2. Re-sign: `node registry/sign-index.mjs`.
 3. Verify: `npm test` (registry tests load and verify every shipped manifest).
 
-Note: `package.json`'s `files` allowlist does not yet include `registry/`;
-it must be added before this registry ships in the npm tarball (tracked for
-the packaging sprint — outside EPIC-12 registry scope).
+`registry/` IS included in `package.json`'s `files` allowlist — every shipped
+manifest above ships in the npm tarball (the sha256+signature chain is what
+makes that safe to consume).

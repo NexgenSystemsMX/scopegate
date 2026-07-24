@@ -11,8 +11,11 @@
  * (HULY_TOKEN / HULY_ENDPOINT / HULY_WORKSPACE) into stdio-spawned upstreams.
  *
  * TTL: the `exp` claim of the workspace JWT when present, else a 12h default;
- * the Minter cache renews at 80% of the TTL like every other provider, which
- * makes re-login transparent.
+ * the Minter cache renews at 80% of the TTL like every other provider.
+ * Renewal applies to NEW spawns/connections minted after the renewal —
+ * an already-spawned stdio child keeps the env it was born with (env vars
+ * cannot be mutated in a live child); the proxy's M2 self-heal respawns on
+ * auth failure and picks up the fresh token then.
  *
  * The account client is injectable for tests. @hcengineering/account-client
  * ships CJS with no type declarations, so it is loaded with createRequire

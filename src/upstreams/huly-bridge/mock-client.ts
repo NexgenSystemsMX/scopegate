@@ -25,9 +25,12 @@ import type {
   DocumentInfo,
   DocumentSummary,
   HulyBridgeClient,
+  IssueComment,
   IssueCreated,
+  IssueDetails,
   IssueSummary,
   IssueUpdated,
+  MessageEdited,
   MessageInfo,
   MessagePosted,
   PersonInfo,
@@ -84,6 +87,16 @@ function resolvePriority(input: string | number): number {
   );
 }
 
+function resolveDueDate(input: string): number | null {
+  const trimmed = input.trim();
+  if (trimmed === "") return null;
+  const ts = Date.parse(trimmed);
+  if (Number.isNaN(ts)) {
+    throw new Error(`Invalid dueDate "${input}" — pass an ISO date (e.g. 2026-08-01) or "" to clear it`);
+  }
+  return ts;
+}
+
 interface MockIssue {
   id: string;
   identifier: string;
@@ -93,6 +106,8 @@ interface MockIssue {
   status: string;
   priority: number;
   assignee: string | null;
+  milestone: string | null;
+  dueDate: number | null;
   number: number;
   updatedAt: number;
 }
@@ -118,7 +133,7 @@ export class MockHulyClient implements HulyBridgeClient {
   private seq = 0;
   private readonly projects = new Map<string, { id: string; identifier: string; name: string; sequence: number }>();
   private readonly issues = new Map<string, MockIssue>();
-  private readonly comments: Array<{ id: string; issueId: string; text: string; createdAt: number }> = [];
+  private readonly comments: Array<{ id: string; issueId: string; author: string; text: string; createdAt: number }> = [];
   private readonly teamspaces = new Map<string, { id: string; name: string }>();
   private readonly documents = new Map<string, MockDocument>();
   private readonly channels = new Map<string, { id: string; name: string }>();
@@ -170,9 +185,11 @@ export class MockHulyClient implements HulyBridgeClient {
       projectId: project.id,
       title: input.title,
       description: input.description ?? "",
-      status: STATUS_REFS.backlog,
+      status: input.status !== undefined ? resolveStatusRef(input.status) : STATUS_REFS.backlog,
       priority: input.priority !== undefined ? resolvePriority(input.priority) : 0,
       assignee: input.assignee ?? null,
+      milestone: null,
+      dueDate: null,
       number: project.sequence,
       updatedAt: this.now(),
     };
@@ -203,9 +220,17 @@ export class MockHulyClient implements HulyBridgeClient {
       issue.assignee = fields.assignee;
       updated.push("assignee");
     }
+    if (fields.milestone !== undefined) {
+      issue.milestone = fields.milestone !== "" ? fields.milestone : null;
+      updated.push("milestone");
+    }
+    if (fields.dueDate !== undefined) {
+      issue.dueDate = resolveDueDate(fields.dueDate);
+      updated.push("dueDate");
+    }
     if (updated.length === 0) {
       throw new Error(
-        'Nothing to update: pass at least one of title/description/status/priority/assignee inside "fields"',
+        'Nothing to update: pass at least one of title/description/status/priority/assignee/milestone/dueDate inside "fields"',
       );
     }
     issue.updatedAt = this.now();
@@ -215,7 +240,7 @@ export class MockHulyClient implements HulyBridgeClient {
   async commentIssue(issueId: string, message: string): Promise<CommentCreated> {
     const issue = this.resolveIssue(issueId);
     const id = this.nextId("mock-comment");
-    this.comments.push({ id, issueId: issue.id, text: message, createdAt: this.now() });
+    this.comments.push({ id, issueId: issue.id, author: "mock-bot", text: message, createdAt: this.now() });
     issue.updatedAt = this.now();
     return { id, issue: issue.identifier, updatedAt: issue.updatedAt };
   }
@@ -230,6 +255,9 @@ export class MockHulyClient implements HulyBridgeClient {
     if (filter.status !== undefined && filter.status !== "") {
       const statusRef = resolveStatusRef(filter.status);
       issues = issues.filter((i) => i.status === statusRef);
+    }
+    if (filter.assignee !== undefined && filter.assignee !== "") {
+      issues = issues.filter((i) => i.assignee === filter.assignee);
     }
     if (filter.query !== undefined && filter.query.trim() !== "") {
       const needle = filter.query.trim().toLowerCase();
@@ -247,6 +275,31 @@ export class MockHulyClient implements HulyBridgeClient {
         assignee: i.assignee,
         updatedAt: i.updatedAt,
       }));
+  }
+
+  async readIssue(issueId: string): Promise<IssueDetails> {
+    const issue = this.resolveIssue(issueId);
+    const project = this.projects.get(issue.projectId);
+    return {
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      description: issue.description,
+      status: STATUS_NAMES[issue.status] ?? issue.status,
+      priority: PRIORITY_NAMES[issue.priority] ?? String(issue.priority),
+      assignee: issue.assignee,
+      project: project?.identifier ?? issue.projectId,
+    };
+  }
+
+  async readComments(issueId: string, limit?: number): Promise<IssueComment[]> {
+    const issue = this.resolveIssue(issueId);
+    const lim = limit !== undefined && limit > 0 ? Math.floor(limit) : 20;
+    return this.comments
+      .filter((c) => c.issueId === issue.id)
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-lim)
+      .map((c) => ({ id: c.id, author: c.author, text: c.text, createdAt: c.createdAt }));
   }
 
   async listProjects(): Promise<ProjectInfo[]> {
@@ -368,6 +421,18 @@ export class MockHulyClient implements HulyBridgeClient {
     };
     this.messages.push(msg);
     return { id: msg.id, channel: channel.name, updatedAt: msg.createdAt };
+  }
+
+  async editMessage(input: { channel: string; messageId: string; content: string }): Promise<MessageEdited> {
+    const channel = this.resolveChannel(input.channel);
+    const msg = this.messages.find((m) => m.id === input.messageId);
+    if (msg === undefined || msg.channelId !== channel.id) {
+      throw new Error(
+        `Message not found: "${input.messageId}" in channel "${channel.name}" — pass a message id from chunter_list_messages`,
+      );
+    }
+    msg.text = input.content;
+    return { id: msg.id, channel: channel.name, updatedAt: this.now() };
   }
 
   async listChannels(): Promise<ChannelInfo[]> {

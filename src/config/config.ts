@@ -188,6 +188,18 @@ export interface UpstreamConfig {
   transport:
     | { kind: "http"; url: string }
     | {
+        /**
+         * M11.2: OpenAPI→MCP import. The gateway acts as the MCP server of a
+         * plain REST API: one tool per spec operation, executed as direct HTTP
+         * calls (no intermediate MCP server, no spawned process).
+         */
+        kind: "openapi";
+        /** https URL or local file path to the OpenAPI spec (JSON or YAML). */
+        spec: string;
+        /** API base URL override; default: spec's servers[0].url. */
+        baseUrl?: string;
+      }
+    | {
         kind: "stdio";
         command: string;
         args?: string[];
@@ -255,6 +267,24 @@ export function loadConfig(): ScopeGateConfig {
       throw new Error(
         `upstream '${up.name}': transport.envPassthrough must be an array of env var names`,
       );
+    }
+    if (up?.transport?.kind === "openapi") {
+      const t = up.transport;
+      if (typeof t.spec !== "string" || t.spec.trim().length === 0) {
+        throw new Error(
+          `upstream '${up.name}': openapi transport requires transport.spec ` +
+            `(an https URL or a local file path to a JSON/YAML spec)`,
+        );
+      }
+      if (/^http:\/\//i.test(t.spec) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#]|$)/i.test(t.spec)) {
+        throw new Error(
+          `upstream '${up.name}': openapi transport.spec must be an https URL ` +
+            `(http is allowed only for localhost/127.0.0.1) or a local file path`,
+        );
+      }
+      if (t.baseUrl !== undefined && typeof t.baseUrl !== "string") {
+        throw new Error(`upstream '${up.name}': transport.baseUrl must be a string`);
+      }
     }
   }
   return raw as ScopeGateConfig;

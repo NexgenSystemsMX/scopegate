@@ -43,6 +43,31 @@ export const MANAGEMENT_TOOLS: Tool[] = [
     },
   },
   {
+    name: "scopegate_request_capabilities",
+    description:
+      "Batch version of scopegate_request_capability (M15): request several capabilities in ONE call (max 20) with a single rate-limit evaluation. Each item gets its own outcome — granted, pending_human_approval (with approval_id), or denied with reason. No wait/execute_on_approval in batch mode — use the single-call form for those.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        requests: {
+          type: "array",
+          description: "Max 20 items.",
+          items: {
+            type: "object",
+            properties: {
+              capability: { type: "string" },
+              ttl: { type: "string" },
+              reason: { type: "string" },
+              lease_id: { type: "string" },
+            },
+            required: ["capability"],
+          },
+        },
+      },
+      required: ["requests"],
+    },
+  },
+  {
     name: "scopegate_collect",
     description:
       "Collect the outcome of an approval continuation (execute_on_approval). Returns {status: pending|executed|failed|expired|none, result?|error?} — call it after the human approves; never abandon a queued intent silently.",
@@ -65,6 +90,21 @@ export const MANAGEMENT_TOOLS: Tool[] = [
         timeout_s: { type: "number", description: "Max seconds to wait (default 60, max 120)." },
       },
       required: ["approval_id"],
+    },
+  },
+  {
+    name: "scopegate_inject_file",
+    description:
+      "Materialize a vault secret into a file (legacy CLI configs — governed exception). Capability vault:inject:<ref> requires human approval BY DEFAULT (a policy rule must explicitly auto_approve it). Atomic 0600 write with backup; the rendered content's sha256 is audited, never the value. Prefer direct vault-backed flows whenever the tool supports them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "Vault secretRef to materialize." },
+        out: { type: "string", description: "Destination file path (written 0600, atomically)." },
+        template: { type: "string", description: "Inline template containing {{secret}}. Omit for the raw secret." },
+        template_file: { type: "string", description: "Path to a template file containing {{secret}} (wins over template)." },
+      },
+      required: ["ref", "out"],
     },
   },
   {
@@ -201,6 +241,20 @@ export const MANAGEMENT_TOOLS: Tool[] = [
     },
   },
   {
+    name: "scopegate_events",
+    description:
+      "Host-observability tail (M12): recent gateway events as metadata ({ts, kind, agentId, upstream?, capability?, code?} — never payloads) for the host UI: capabilities denied, approvals requested/decided, upstream failures, grants, leases. Filter by since/kinds/agent. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: { type: "string", description: "ISO 8601 lower bound. Default: last 2 hours." },
+        kinds: { type: "array", items: { type: "string" }, description: "Optional audit-kind filter (e.g. ['capability_denied','approval_requested'])." },
+        agent: { type: "string", description: "Optional agentId filter (default: every identity on this gateway)." },
+        limit: { type: "number", description: "Max events returned (default 50, max 200)." },
+      },
+    },
+  },
+  {
     name: "scopegate_list_capabilities",
     description:
       "List the currently active (non-expired) capability grants for this agent, with remaining TTL.",
@@ -221,10 +275,11 @@ export const MANAGEMENT_TOOLS: Tool[] = [
         name: { type: "string", description: "Unique upstream name (lowercase, no spaces). Tools are exposed as '<name>__<tool>'. Required unless from_registry is set." },
         transport: {
           type: "object",
-          description: "Either {kind:'http', url} or {kind:'stdio', command, args?}",
+          description: "Either {kind:'http', url}, {kind:'stdio', command, args?} or {kind:'openapi', spec} (OpenAPI 3 spec URL/path — one governed tool per operation).",
           properties: {
-            kind: { type: "string", enum: ["http", "stdio"] },
+            kind: { type: "string", enum: ["http", "stdio", "openapi"] },
             url: { type: "string" },
+            spec: { type: "string" },
             command: { type: "string" },
             args: { type: "array", items: { type: "string" } },
           },

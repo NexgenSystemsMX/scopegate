@@ -1,0 +1,39 @@
+# ScopeGate registry manifest — format: registry/v1 (see README.md).
+# GitHub's OFFICIAL remote MCP (api.githubcopilot.com) behind the gateway,
+# authenticated with a GitHub App: ~1h installation tokens minted per task,
+# scoped to only the repos you list — no static PAT anywhere.
+#
+# appId/installationId are per-GitHub-App, so this manifest ships with
+# placeholders: after registering, EDIT the two marked fields in
+# ~/.scopegate/scopegate.yaml (or re-register with explicit values).
+version: registry/v1
+name: github-official
+description: >-
+  Official GitHub remote MCP (repos, issues, PRs, code search, actions) over
+  HTTP — GitHub App installation tokens minted per call, TTL ~1h, optionally
+  narrowed per repository. No PAT, no local server to run.
+transport:
+  kind: http
+  url: https://api.githubcopilot.com/mcp
+auth:
+  type: github_app
+  appId: "REPLACE_WITH_APP_ID"                  # ← edit after install
+  installationId: "REPLACE_WITH_INSTALLATION_ID" # ← edit after install
+  secretRef: github_app_key
+  # Optional hardening (recommended): narrow every minted token to only the
+  # repos and permissions this agent needs.
+  # repositories: [my-repo]
+  # permissions: { contents: write, pull_requests: write, issues: write, metadata: read }
+docs: https://github.com/github/github-mcp-server
+setup:
+  secrets:
+    - ref: github_app_key
+      hint: >-
+        Create a GitHub App (https://github.com/settings/apps/new) with the
+        permissions you need, install it on your repos, then:
+        1) download its private key (PEM) and run in your terminal:
+           scopegate secret add github_app_key
+        2) edit ~/.scopegate/scopegate.yaml — set auth.appId and
+           auth.installationId of the github-official upstream (visible in
+           the App page and in the installation URL), and optionally narrow
+           repositories/permissions.

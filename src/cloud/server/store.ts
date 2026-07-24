@@ -7,10 +7,10 @@
  * on mutation — correct and simple at control-plane-for-a-team scale, NOT a
  * multi-tenant SaaS store.
  *
- * The `Store` interface is the swap point for a future Postgres backend
- * (EPIC-10 H10.1 schema: teams/agents/policies/audit_events/revocations):
- * feature modules (enroll/ingest/policies/...) only ever talk to `Store`,
- * so replacing FileStore does not touch API code.
+ * The `Store` interface is the swap point for the Postgres backend (M13,
+ * pg-store.ts — teams/agents/policy_versions/audit_events/revocations/
+ * approval_decisions): feature modules (enroll/ingest/policies/...) only
+ * ever talk to `Store`, so replacing FileStore does not touch API code.
  *
  * Layout:
  *   <home>/data/teams.json         { teams: Team[] }
@@ -74,6 +74,21 @@ export interface Store {
 
   /** All stored events for a team in chronological (file) order — audit export. */
   allAuditEvents(teamId: string): StoredAuditEvent[];
+
+  /**
+   * M13 retention: drop every audit event with ts < cutoffIso across ALL
+   * teams (ISO-8601 strings compare chronologically). Returns the number of
+   * events removed. Invoked periodically by the server when
+   * SCOPEGATE_CLOUD_AUDIT_RETENTION_DAYS is set — never on the request path.
+   */
+  purgeAuditEvents(cutoffIso: string): number;
+
+  /**
+   * M13: release store resources on server shutdown. PostgresStore flushes
+   * the write-behind queue and ends the pool; FileStore has nothing to
+   * release (no-op optional).
+   */
+  close?(): Promise<void> | void;
 }
 
 function readJsonFile<T>(file: string, fallback: T): T {
@@ -271,6 +286,34 @@ export class FileStore implements Store {
       if (e.ts >= startIso && e.ts < endIso) active.add(e.agentId);
     }
     return [...active].sort();
+  }
+
+  /**
+   * M13 periodic retention (SCOPEGATE_CLOUD_AUDIT_RETENTION_DAYS): drop every
+   * event with ts < cutoffIso across all teams, rewriting only the files that
+   * actually shrink. Same drop semantics as the append-time prune above
+   * (legacy AUDIT_RETENTION_DAYS) but an independent, server-driven trigger.
+   */
+  purgeAuditEvents(cutoffIso: string): number {
+    let removed = 0;
+    for (const entry of fs.readdirSync(this.dataDir)) {
+      const m = /^audit-(.+)\.jsonl$/.exec(entry);
+      if (!m) continue;
+      const teamId = m[1];
+      const events = this.readAuditEvents(teamId);
+      if (events.length === 0) continue;
+      const kept = events.filter((e) => e.ts >= cutoffIso);
+      if (kept.length === events.length) continue;
+      removed += events.length - kept.length;
+      const tmp = this.auditFile(teamId) + ".tmp";
+      fs.writeFileSync(
+        tmp,
+        kept.map((e) => JSON.stringify(e)).join("\n") + (kept.length ? "\n" : ""),
+        { mode: 0o600 },
+      );
+      fs.renameSync(tmp, this.auditFile(teamId));
+    }
+    return removed;
   }
 
   // --------------------------------------------------------- revocations

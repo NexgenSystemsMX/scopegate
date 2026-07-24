@@ -26,9 +26,10 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 2. Human deposits secrets once per secret: `scopegate secret add <ref>`.
 3. The agent operates by itself through six MCP tools, holding TTL grants instead of credentials. Time from init to first proxied tool call: under 90 seconds.
 
-## The eighteen agent tools (MCP)
+## The twenty-one agent tools (MCP)
 
 - `scopegate_request_capability` — ask for a scoped, TTL-bound grant before a privileged action; returns the grant, a denial with actionable reason, or `pending_human_approval` with an `approval_id`. Accepts `execute_on_approval {tool, args}` (approval continuation) and `wait: true` + `timeout_s` (inline long-poll of the human decision, returns the grant in the same call).
+- `scopegate_request_capabilities` — batch: up to 20 capability requests in one call with a single rate-limit evaluation; per-item granted/pending/denied outcomes.
 - `scopegate_list_capabilities` — active grants and remaining TTL.
 - `scopegate_register_upstream` — connect a new service (never accepts secret values, only `secretRef` names; also installs from the signed registry with `from_registry`).
 - `scopegate_diagnose` — health check of every upstream; self-repair hints with `action_required`.
@@ -46,6 +47,8 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 - `scopegate_result_get` — read a slice of a stored oversized result (result_ref) by dot-path; returns {found, value}.
 - `scopegate_result_grep` — search a stored oversized result by substring or /regex/ (max 50 hits, context-sized).
 - `scopegate_delegate` — delegate a live grant to a child agent with strict attenuation: scope ⊆ parent capability, ttl ≤ parent remaining (any widening refused fail-closed). The child grant carries the attribution chain and dies with the parent.
+- `scopegate_events` — host-observability tail: recent gateway events as metadata ({ts, kind, agentId, upstream?, capability?, code?} — never payloads) filtered by since/kinds/agent; the same tail over `GET /events` (NDJSON).
+- `scopegate_inject_file` — materialize a vault secret into a legacy config file (governed exception): `vault:inject:<ref>` requires human approval BY DEFAULT; atomic 0600 write with backup, sha256-only audit, refresh after rotation.
 
 ## Taint tracking (return-path prompt-injection defense)
 
@@ -81,12 +84,19 @@ Every failure is a machine-readable envelope `{error, kind, message, retry_after
 - **Arg-aware policies (`when:`)** — rules can guard the call's arguments (globs for strings, strict equality for numbers/booleans): `kimi/*` branches auto-approve while `main` escalates; the guard sticks to the issued grant.
 - **Native approval channels** — Slack, HMAC-signed webhooks and Huly via `notify.json notifiers[]`; decisions are pushed back to the same channel, and `wait: true` on `scopegate_request_capability` long-polls the decision inline (max 120 s, audited `approval_waited`).
 - **Multi-identity HTTP gateway** — the `X-ScopeGate-Agent` header selects the logical agent per request (validated against the policies allowlist, 403 otherwise); one gateway serves many threads with separate grants, audit and approval queues.
+- **Embeddable library API** — `import { createGatewayServer } from "scopegate"` boots the real gateway in-process (no subprocess, no daemons unless opted in); `scopegate/testkit` ships a fake upstream + `bootFakeGateway()` for consumer integration tests without real credentials.
+- **OpenAPI importer** — the `openapi` transport turns any OpenAPI 3 spec (https or local file, 24h cache) into one governed tool per operation; the gateway executes the HTTP calls itself (bearer|none in v1, SSRF-guarded).
+- **Batch capability requests** — `scopegate_request_capabilities {requests: [...]}` (max 20) with a single rate-limit evaluation.
+- **Governed file injection** — `scopegate inject` / `scopegate_inject_file` materialize a vault secret into a legacy config file: human approval by default (`vault:inject:<ref>` inverted default), atomic 0600 write, `.bak` backup, sha256-only audit, `--refresh` after rotation.
+- **Host observability** — `scopegate_events` + `GET /events` (NDJSON) metadata-only tails; `/health` readiness detail (upstreams ok/failed, vault mode, pending approvals); upstream state changes push MCP `notifications/message`.
+- **Honeytoken CLI** — `scopegate honeytoken plant <name>` deposits a decoy credential whose use triggers surgical revocation.
+- **Cloud production backend** — PostgresStore behind the Store interface (`SCOPEGATE_CLOUD_DATABASE_URL`), configurable audit retention (`SCOPEGATE_CLOUD_AUDIT_RETENTION_DAYS`), and `scopegate cloud enroll --cloud <url> --token <t>` CLI.
 
 ## Native connectors (signed registry, one command to install)
 
 - `github` — full GitHub MCP via gateway; GitHub App installation tokens minted per task.
 - `aws` — STS-scoped sessions (AssumeRole / GetSessionToken), TTL-clamped.
-- `huly` — 13 tools: issues, projects, documents, channels, contacts; workspace token minted from a vault blob.
+- `huly` — 16 tools: issues (read with description, read comments, milestone/dueDate, assignee filter, status on create), projects, documents, channels (edit message, thinking flag), contacts; workspace token minted from a vault blob.
 - `railway` — 7 tools: services, deploy, logs, domains; deploys can require human approval.
 - `cloudflare` — 8 tools: zones, DNS, workers, pages, R2; scoped API token in vault.
 - `google` — 7 tools: Drive, Gmail, Calendar; service-account JWT → short-lived access token.

@@ -25,19 +25,25 @@ Requirements: Node.js ≥ 20, npm 10. No native modules, no global services.
 
 ```
 cli.ts          # entry: init | start | secret | status | audit | auth | vaultd | vault |
-                #        rollback | approve | deny | policies | cloud
-commands/       # init, secret, oauth-login, vaultd, vault-rotate, approvals/policies CLI
+                #        rollback | approve | deny | policies | cloud | git-credential |
+                #        inject | honeytoken
+api.ts          # M7: embeddable library API (createGatewayServer) — dist/api.js + types
+testkit/        # M7: scopegate/testkit — fake upstream + bootFakeGateway (consumer tests)
+commands/       # init, secret, oauth-login, vaultd, vault-rotate, approvals/policies CLI,
+                # git-credential, inject
 config/         # paths + scopegate.yaml loader (NEVER holds secrets)
 gateway/        # MCP server, policy enforcement, upstream proxy + injection + self-heal,
-                # scopegate_* tools
+                # scopegate_* tools (transports: stdio, http, openapi)
 harness/        # adapters: claude-code, kimi-code, cursor, opencode, mcp-json
 vault/          # AES-256-GCM store, master-key backends, vaultd daemon + IPC
-policy/         # engine, grants, limits, rate limit, redact, approvals
+policy/         # engine (when: arg guards, vault:inject default escalation), grants,
+                # limits, rate limit, redact, approvals
+inject/         # M10: governed secret materialization into files (atomic 0600 + sidecar)
 minter/         # token minter + providers/ (jwt, github-app, aws-sts, huly, google-sa)
 oauth/          # refresh daemon, device-code
 audit/          # hash-chained JSONL, Ed25519 signing, verify, index
-upstreams/      # native connectors: huly, railway, cloudflare, google
-cloud/          # optional multi-tenant control plane (metadata-only)
+upstreams/      # native connectors: huly, railway, cloudflare, google + openapi importer
+cloud/          # optional multi-tenant control plane (metadata-only; FileStore|PostgresStore)
 attestation/ honeytoken/ notify/ registry/ telemetry/
 ```
 

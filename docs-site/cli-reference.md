@@ -77,6 +77,15 @@ web dashboard at `/`. State lives under `--home` (default
 $ADMIN_TOKEN` (default `dev-admin-token` — set it in any real deployment).
 Prints `SCOPEGATE_CLOUD_LISTENING port=<n>` when ready.
 
+## `scopegate cloud enroll --cloud <url> --token <enrollToken> [--agent <id>]`
+
+Enroll this gateway into a ScopeGate Cloud control plane (M13): exchanges the
+one-time enroll token for the gateway's credentials and writes `cloud.json`
+(0600) — from then on the gateway syncs team policies, central audit and
+revocation with the cloud. The printed JSON never includes the agent secret.
+Backend: `SCOPEGATE_CLOUD_DATABASE_URL` (Postgres) or the JSON file store by
+default; audit retention via `SCOPEGATE_CLOUD_AUDIT_RETENTION_DAYS`.
+
 ## Approvals: `scopegate approve <id>` · `deny <id>` · `policies`
 
 Human-side commands for the approval flow: when `request_capability` returns
@@ -99,6 +108,22 @@ agent's context, never into `.git/config`). The capability
 exits 1 with an actionable stderr message that git surfaces. Non-GitHub hosts
 and store/erase are silent no-ops. Every mint is audited
 (`git_credential_minted`). Requires a `github_app` upstream in `scopegate.yaml`.
+
+## `scopegate inject --ref <r> --out <f> [--template|--template-file]` · `--refresh <f>`
+
+Materialize a vault secret into a legacy CLI config file (governed exception):
+`vault:inject:<ref>` requires human approval BY DEFAULT (a policy rule must
+explicitly auto_approve it). Atomic 0600 write with the previous file backed up
+to `<out>.bak`; the audit stores only the rendered content's sha256. A sidecar
+manifest (`<out>.scopegate.json`) powers `--refresh` — re-materialize after the
+secret rotates (the vault is the source; the file is a view). Output is one
+JSON line; exit 0 materialized, 1 denied/error, 2 pending approval.
+
+## `scopegate honeytoken plant <name> [--agent <id>] [--upstream <n>]`
+
+Plant a decoy credential in the vault as `canary:<name>` (the value prints
+once — spread it wherever a leak would prove exfiltration). Any use of the
+decoy as a credential triggers a honeytoken alert and surgical revocation.
 
 ## Exit codes
 

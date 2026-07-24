@@ -116,6 +116,17 @@ export function priorityName(value: number): string {
   return PRIORITY_NAMES[value] ?? String(value);
 }
 
+/** ISO date/datetime string → Huly timestamp (ms since epoch); "" clears the field. */
+export function resolveDueDate(input: string): number | null {
+  const trimmed = input.trim();
+  if (trimmed === "") return null;
+  const ts = Date.parse(trimmed);
+  if (Number.isNaN(ts)) {
+    throw new Error(`Invalid dueDate "${input}" — pass an ISO date (e.g. 2026-08-01) or "" to clear it`);
+  }
+  return ts;
+}
+
 // --- Markup conversion (the ONLY place Huly markup is handled) ---
 
 /** markdown → inline ProseMirror-JSON markup string (chunter messages, issue comments). */
@@ -172,6 +183,24 @@ export interface IssueSummary {
   updatedAt: number;
 }
 
+export interface IssueDetails {
+  id: string;
+  identifier: string;
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  assignee: string | null;
+  project: string;
+}
+
+export interface IssueComment {
+  id: string;
+  author: string;
+  text: string;
+  createdAt: number;
+}
+
 export interface ProjectInfo {
   id: string;
   identifier: string;
@@ -213,6 +242,12 @@ export interface MessagePosted {
   updatedAt: number;
 }
 
+export interface MessageEdited {
+  id: string;
+  channel: string;
+  updatedAt: number;
+}
+
 export interface MessageInfo {
   id: string;
   author: string;
@@ -233,6 +268,7 @@ export interface CreateIssueInput {
   description?: string;
   priority?: string | number;
   assignee?: string;
+  status?: string;
 }
 
 export interface UpdateIssueFields {
@@ -241,12 +277,15 @@ export interface UpdateIssueFields {
   status?: string;
   priority?: string | number;
   assignee?: string;
+  milestone?: string;
+  dueDate?: string;
 }
 
 export interface SearchIssuesFilter {
   query?: string;
   project?: string;
   status?: string;
+  assignee?: string;
   limit?: number;
 }
 
@@ -258,6 +297,8 @@ export interface HulyBridgeClient {
   updateIssue: (issueId: string, fields: UpdateIssueFields) => Promise<IssueUpdated>;
   commentIssue: (issueId: string, message: string) => Promise<CommentCreated>;
   searchIssues: (filter: SearchIssuesFilter) => Promise<IssueSummary[]>;
+  readIssue: (issueId: string) => Promise<IssueDetails>;
+  readComments: (issueId: string, limit?: number) => Promise<IssueComment[]>;
   listProjects: () => Promise<ProjectInfo[]>;
 
   createDocument: (input: { teamspace: string; title: string; content: string }) => Promise<DocumentCreated>;
@@ -266,6 +307,7 @@ export interface HulyBridgeClient {
   listDocuments: (filter: { teamspace?: string; limit?: number }) => Promise<DocumentSummary[]>;
 
   postMessage: (input: { channel: string; message: string; thread?: string }) => Promise<MessagePosted>;
+  editMessage: (input: { channel: string; messageId: string; content: string }) => Promise<MessageEdited>;
   listChannels: () => Promise<ChannelInfo[]>;
   listMessages: (filter: { channel: string; limit?: number; thread?: string }) => Promise<MessageInfo[]>;
 
@@ -444,7 +486,7 @@ export class RealHulyClient implements HulyBridgeClient {
       // and stores the blob ref (the model type for Issue.description).
       description:
         input.description !== undefined && input.description !== "" ? markdown(input.description) : null,
-      status: STATUS_REFS.backlog,
+      status: input.status !== undefined ? resolveStatusRef(input.status) : STATUS_REFS.backlog,
       priority: input.priority !== undefined ? resolvePriority(input.priority) : 0,
       kind: KIND_ISSUE,
       component: null,
@@ -479,10 +521,12 @@ export class RealHulyClient implements HulyBridgeClient {
       ops.description = fields.description !== "" ? markdown(fields.description) : null;
     }
     if (fields.assignee !== undefined) ops.assignee = fields.assignee;
+    if (fields.milestone !== undefined) ops.milestone = fields.milestone !== "" ? fields.milestone : null;
+    if (fields.dueDate !== undefined) ops.dueDate = resolveDueDate(fields.dueDate);
     const updatedFields = Object.keys(ops);
     if (updatedFields.length === 0) {
       throw new Error(
-        'Nothing to update: pass at least one of title/description/status/priority/assignee inside "fields"',
+        'Nothing to update: pass at least one of title/description/status/priority/assignee/milestone/dueDate inside "fields"',
       );
     }
     await p.updateDoc(CLASS_ISSUE, String(issue.space ?? SPACE_CORE), String(issue._id), ops);
@@ -516,6 +560,9 @@ export class RealHulyClient implements HulyBridgeClient {
     if (filter.status !== undefined && filter.status !== "") {
       query.status = resolveStatusRef(filter.status);
     }
+    if (filter.assignee !== undefined && filter.assignee !== "") {
+      query.assignee = filter.assignee;
+    }
     const docs = await p.findAll(CLASS_ISSUE, query);
     let issues = docs as Array<Record<string, unknown> & DocLike>;
     if (filter.query !== undefined && filter.query.trim() !== "") {
@@ -534,6 +581,47 @@ export class RealHulyClient implements HulyBridgeClient {
         assignee: i.assignee !== null && i.assignee !== undefined ? String(i.assignee) : null,
         updatedAt: Number(i.modifiedOn ?? i.createdOn ?? 0),
       }));
+  }
+
+  async readIssue(issueId: string): Promise<IssueDetails> {
+    const p = this.requirePlatform();
+    const issue = await this.resolveIssue(issueId);
+    const description =
+      issue.description !== null && issue.description !== undefined && issue.description !== ""
+        ? await this.resolveMarkupText(CLASS_ISSUE, String(issue._id), String(issue.description), "description")
+        : "";
+    const project = await p.findOne(CLASS_PROJECT, { _id: String(issue.space ?? "") });
+    return {
+      id: String(issue._id),
+      identifier: String(issue.identifier),
+      title: String(issue.title ?? ""),
+      description,
+      status: statusName(String(issue.status ?? "")),
+      priority: priorityName(Number(issue.priority ?? 0)),
+      assignee: issue.assignee !== null && issue.assignee !== undefined ? String(issue.assignee) : null,
+      project: project !== undefined ? String(project.identifier ?? project._id) : String(issue.space ?? ""),
+    };
+  }
+
+  async readComments(issueId: string, limit?: number): Promise<IssueComment[]> {
+    const p = this.requirePlatform();
+    const issue = await this.resolveIssue(issueId);
+    const lim = limit !== undefined && limit > 0 ? Math.floor(limit) : 20;
+    // Issue comments are ChatMessages in the issue's 'comments' collection.
+    const comments = await p.findAll(CLASS_CHAT_MESSAGE, { attachedTo: issue._id });
+    const sorted = comments
+      .sort((a, b) => Number(a.createdOn ?? 0) - Number(b.createdOn ?? 0))
+      .slice(-lim);
+    const out: IssueComment[] = [];
+    for (const c of sorted) {
+      out.push({
+        id: String(c._id),
+        author: String(c.modifiedBy ?? ""),
+        text: await this.resolveMarkupText(CLASS_CHAT_MESSAGE, String(c._id), String(c.message ?? ""), "message"),
+        createdAt: Number(c.createdOn ?? c.modifiedOn ?? 0),
+      });
+    }
+    return out;
   }
 
   async listProjects(): Promise<ProjectInfo[]> {
@@ -691,6 +779,35 @@ export class RealHulyClient implements HulyBridgeClient {
       },
     );
     return { id, channel: String(channel.name ?? channelId), thread: input.thread, updatedAt: Date.now() };
+  }
+
+  async editMessage(input: { channel: string; messageId: string; content: string }): Promise<MessageEdited> {
+    const p = this.requirePlatform();
+    const channel = await this.resolveChannel(input.channel);
+    const channelId = String(channel._id);
+    const channelName = String(channel.name ?? channelId);
+
+    // Top-level channel message (ChatMessage attached to the channel).
+    const chat = await p.findOne(CLASS_CHAT_MESSAGE, { _id: input.messageId });
+    if (chat !== undefined && String(chat.attachedTo ?? "") === channelId) {
+      await p.updateDoc(CLASS_CHAT_MESSAGE, String(chat.space ?? channelId), input.messageId, {
+        message: markdownToHulyMarkup(input.content),
+      });
+      return { id: input.messageId, channel: channelName, updatedAt: Date.now() };
+    }
+
+    // Thread reply (ThreadMessage whose objectId is the channel).
+    const reply = await p.findOne(CLASS_THREAD_MESSAGE, { _id: input.messageId });
+    if (reply !== undefined && String(reply.objectId ?? "") === channelId) {
+      await p.updateDoc(CLASS_THREAD_MESSAGE, String(reply.space ?? channelId), input.messageId, {
+        message: markdownToHulyMarkup(input.content),
+      });
+      return { id: input.messageId, channel: channelName, updatedAt: Date.now() };
+    }
+
+    throw new Error(
+      `Message not found: "${input.messageId}" in channel "${channelName}" — pass a message id from chunter_list_messages`,
+    );
   }
 
   async listChannels(): Promise<ChannelInfo[]> {

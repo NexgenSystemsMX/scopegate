@@ -4,8 +4,8 @@
  * no network, no Huly instance, no SCOPEGATE_HOME involved.
  *
  * Covers the frozen contract:
- *   - listTools exposes exactly the 13 bare tool names
- *   - happy path of all 13 tools (write→read round-trips through the mock)
+ *   - listTools exposes exactly the 16 bare tool names
+ *   - happy path of all 16 tools (write→read round-trips through the mock)
  *   - actionable isError results (unknown issue/channel/document/teamspace,
  *     missing required args, unknown tool)
  *   - markup conversion: markdown ↔ Huly PM-JSON round-trip, plain-text fallback
@@ -30,12 +30,15 @@ const EXPECTED_TOOLS = [
   "tracker_update_issue",
   "tracker_comment_issue",
   "tracker_search_issues",
+  "tracker_read_issue",
+  "tracker_read_comments",
   "tracker_list_projects",
   "documents_create",
   "documents_read",
   "documents_update",
   "documents_list",
   "chunter_post_message",
+  "chunter_edit_message",
   "chunter_list_channels",
   "chunter_list_messages",
   "contact_list_persons",
@@ -72,11 +75,11 @@ afterEach(async () => {
 });
 
 describe("huly-bridge tools list", () => {
-  it("exposes exactly the 13 frozen bare tool names", async () => {
+  it("exposes exactly the 16 frozen bare tool names", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOLS].sort());
-    expect(buildToolList()).toHaveLength(13);
+    expect(buildToolList()).toHaveLength(16);
     for (const tool of tools) {
       expect(tool.description).toBeTruthy();
       expect(tool.inputSchema).toBeTruthy();

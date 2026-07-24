@@ -24,7 +24,7 @@ const REPO_REGISTRY = path.resolve(
   "registry",
 );
 const SIGN_SCRIPT = path.join(REPO_REGISTRY, "sign-index.mjs");
-const EXPECTED_NAMES = ["aws", "cloudflare", "fakegit", "github", "google", "huly", "notion", "railway", "stripe", "supabase"];
+const EXPECTED_NAMES = ["aws", "cloudflare", "fakegit", "github", "github-official", "google", "huly", "notion", "railway", "stripe", "supabase"];
 
 let home: string;
 

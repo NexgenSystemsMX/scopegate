@@ -4,7 +4,14 @@
  * client boundary.
  */
 import type { HulyBridgeClient } from "./client.js";
-import { optionalLimit, optionalString, requireString, type ToolDefinition, type ToolHandler } from "./tools-tracker.js";
+import {
+  optionalBoolean,
+  optionalLimit,
+  optionalString,
+  requireString,
+  type ToolDefinition,
+  type ToolHandler,
+} from "./tools-tracker.js";
 
 export const chunterTools: ToolDefinition[] = [
   {
@@ -16,8 +23,26 @@ export const chunterTools: ToolDefinition[] = [
         channel: { type: "string", description: "Channel name (e.g. general) or id" },
         message: { type: "string", description: "Message body (markdown)" },
         thread: { type: "string", description: "Parent message id to reply in a thread" },
+        thinking: {
+          type: "boolean",
+          description:
+            'Mark the message as a thinking note: the body is prefixed with "💭 " (Huly chat has no native thinking flag)',
+        },
       },
       required: ["channel", "message"],
+    },
+  },
+  {
+    name: "chunter_edit_message",
+    description: "Edit the body of an existing channel message or thread reply (e.g. refresh a bot checklist)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        channel: { type: "string", description: "Channel name (e.g. general) or id" },
+        messageId: { type: "string", description: "Message id from chunter_post_message or chunter_list_messages" },
+        content: { type: "string", description: "New body (markdown) — replaces the whole message" },
+      },
+      required: ["channel", "messageId", "content"],
     },
   },
   {
@@ -43,10 +68,20 @@ export const chunterTools: ToolDefinition[] = [
 export function createChunterHandlers(client: HulyBridgeClient): Record<string, ToolHandler> {
   return {
     chunter_post_message: async (args) => {
+      const message = requireString(args, "message");
+      const thinking = optionalBoolean(args, "thinking");
       return await client.postMessage({
         channel: requireString(args, "channel", "use chunter_list_channels to see names"),
-        message: requireString(args, "message"),
+        message: thinking === true ? `💭 ${message}` : message,
         thread: optionalString(args, "thread"),
+      });
+    },
+
+    chunter_edit_message: async (args) => {
+      return await client.editMessage({
+        channel: requireString(args, "channel", "use chunter_list_channels to see names"),
+        messageId: requireString(args, "messageId", "pass a message id from chunter_list_messages"),
+        content: requireString(args, "content"),
       });
     },
 

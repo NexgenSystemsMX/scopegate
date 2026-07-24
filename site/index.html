@@ -475,6 +475,38 @@ first tool call at 87s — zero secrets in context</pre>
           separate grants, audit trails and approval queues.
         </p>
       </div>
+      <div class="card">
+        <h3>Any REST API, governed</h3>
+        <p>
+          Point the <code>openapi</code> transport at an OpenAPI 3 spec and every operation
+          becomes a governed MCP tool — schemas, policies, TTLs and audit included.
+          No custom bridge, no wrapper code.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Embeddable + testkit</h3>
+        <p>
+          <code>import { createGatewayServer } from "scopegate"</code> runs the gateway
+          in-process (no subprocess, no daemons). <code>scopegate/testkit</code> ships a
+          fake upstream so consumers test integrations with zero real credentials.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Host observability</h3>
+        <p>
+          <code>scopegate_events</code> and <code>GET /events</code> stream a metadata-only
+          tail for host UIs; <code>/health</code> reports readiness (upstreams, vault,
+          pending approvals); upstream state changes push MCP log notifications.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Governed file injection</h3>
+        <p>
+          Legacy CLIs read keys from files. <code>scopegate inject</code> materializes a
+          vault secret into a config file — human approval by default, atomic 0600 write,
+          sha256-only audit, one-command refresh after rotation.
+        </p>
+      </div>
     </div>
   </div>
 </section>
@@ -588,7 +620,7 @@ first tool call at 87s — zero secrets in context</pre>
           </tr>
           <tr>
             <td class="mono">huly</td>
-            <td>13 tools — issues, projects, documents, channels, contacts</td>
+            <td>16 tools — issues, projects, documents, channels, contacts</td>
             <td>Workspace token minted from a vault blob</td>
           </tr>
           <tr>

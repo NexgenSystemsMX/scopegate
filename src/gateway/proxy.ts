@@ -54,6 +54,14 @@ import {
   type OAuthHealth,
 } from "../oauth/daemon.js";
 import { ATTESTATION_HEADER, getAttestation } from "../attestation/attest.js";
+import {
+  callOperation,
+  loadOpenApiSpec,
+  resolveBaseUrl,
+  toolsFromSpec,
+  type OpenApiSpec,
+  type ResolvedOperation,
+} from "../upstreams/openapi.js";
 
 /** Correlation fingerprint for a minted token: first 12 hex of its SHA-256. */
 function tokenFingerprint(value: string): string {
@@ -132,6 +140,17 @@ interface Connection {
   client: Client;
   tools: ProxiedTool[];
   connectedAt: number;
+}
+
+/**
+ * M12: upstream state-change event for host observability (wired to MCP
+ * `notifications/message` by the gateway server; surfaced by /health).
+ */
+export interface UpstreamEvent {
+  kind: "upstream_connect_failed" | "circuit_open" | "circuit_closed" | "circuit_half_open";
+  upstream: string;
+  detail?: string;
+  ts: string;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -271,6 +290,31 @@ export class UpstreamProxy {
 
   private static readonly CIRCUIT_OPEN_AFTER = 5;
   private static readonly CIRCUIT_RESET_MS = 30_000;
+
+  /**
+   * M11.2: loaded OpenAPI upstreams (spec + resolved operations + baseUrl).
+   * Populated by the openapi branch of connectAndListTools — for an openapi
+   * upstream "connected" means "spec loaded"; there is no live transport.
+   */
+  private openApi = new Map<
+    string,
+    { spec: OpenApiSpec; operations: Map<string, ResolvedOperation>; baseUrl: string }
+  >();
+
+  /**
+   * M12: host-observability hook — fired on upstream state changes (connect
+   * failure, circuit transitions). The gateway server wires it to MCP
+   * `notifications/message`; fire-and-forget, must never throw into a call.
+   */
+  public onUpstreamEvent?: (e: UpstreamEvent) => void;
+
+  private emitUpstreamEvent(kind: UpstreamEvent["kind"], upstream: string, detail?: string): void {
+    try {
+      this.onUpstreamEvent?.({ kind, upstream, detail, ts: new Date().toISOString() });
+    } catch {
+      /* observability must never break a call */
+    }
+  }
 
   constructor(
     private upstreams: UpstreamConfig[],
@@ -660,6 +704,31 @@ export class UpstreamProxy {
         { requestInit: { headers } },
       );
       await client.connect(transport);
+    } else if (up.transport.kind === "openapi") {
+      // M11.2: the gateway IS the MCP server of the REST API — "connect"
+      // means loading the spec and generating one tool per operation. No
+      // transport is connected and no process is spawned; the (unused)
+      // client stays unconnected and calls go through callOpenApi().
+      if (up.auth.type !== "bearer" && up.auth.type !== "none") {
+        throw new Error(
+          `upstream '${up.name}': openapi transport supports bearer|none auth in v1 ` +
+            `(got '${up.auth.type}')`,
+        );
+      }
+      const spec = await loadOpenApiSpec(up.transport.spec);
+      const baseUrl = resolveBaseUrl(spec, up.transport.baseUrl);
+      const { tools, operations } = toolsFromSpec(spec, up.name);
+      this.openApi.set(up.name, { spec, operations, baseUrl });
+      const allow = new Set(up.exposeTools ?? []);
+      return tools
+        .filter((t) => allow.size === 0 || allow.has(t.name))
+        .map((t) => ({
+          upstream: up.name,
+          exposedName: `${up.name}__${t.name}`,
+          upstreamName: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }));
     } else {
       // stdio: inject secret env vars at spawn — invisible to the agent.
       const env = this.buildSpawnEnv(up);
@@ -777,6 +846,7 @@ export class UpstreamProxy {
               error: errorMessage(e),
             });
             status[up.name] = { ok: false, error: errorMessage(e) };
+            this.emitUpstreamEvent("upstream_connect_failed", up.name, errorMessage(e));
           }
         }),
     );
@@ -908,10 +978,17 @@ export class UpstreamProxy {
         const conn = pool
           ? (handle = await this.checkoutPool(poolUp!, pool, ctx)).conn
           : await this.getConnection(tool.upstream, ctx);
-        const result = await conn.client.callTool({
-          name: tool.upstreamName,
-          arguments: callArgs,
-        });
+        // M11.2: an openapi upstream has no MCP client — the gateway executes
+        // the spec operation as a direct HTTP call, with credentials injected
+        // through the same buildAuthHeaders path as http upstreams (so the
+        // audit, minting and circuit-breaker semantics are unchanged).
+        const result =
+          up && up.transport.kind === "openapi"
+            ? await this.callOpenApi(up, tool.upstreamName, callArgs, ctx)
+            : await conn.client.callTool({
+                name: tool.upstreamName,
+                arguments: callArgs,
+              });
         if (handle && poolUp && pool) this.releasePoolEntry(poolUp, pool, handle, true);
         // M2.2: an in-band auth failure (isError) on a minted/oauth2 upstream
         // invalidates the mint cache and heals with a fresh credential — never
@@ -1031,6 +1108,78 @@ export class UpstreamProxy {
   }
 
   /* ------------------------------------------------------------------ */
+  /* M11.2: OpenAPI upstream execution                                     */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Execute an OpenAPI spec operation as a direct HTTP call and shape the
+   * outcome as an MCP tool result ({ content: [...] }, isError on HTTP
+   * errors) so the rest of the pipeline (redaction, taint, idempotency,
+   * error taxonomy) treats it exactly like a proxied MCP call. Credentials
+   * are injected per attempt via buildAuthHeaders — the same flow as http
+   * upstreams (minted or fallback injection, always audited).
+   */
+  private async callOpenApi(
+    up: UpstreamConfig,
+    operationName: string,
+    args: Record<string, unknown>,
+    ctx: CallContext,
+  ): Promise<unknown> {
+    const loaded = this.openApi.get(up.name);
+    if (!loaded) {
+      // The spec map is populated at (re)connect; a missing entry means the
+      // upstream was never connected — getConnection() in call() rebuilds it.
+      throw new Error(
+        `openapi upstream '${up.name}' has no loaded spec — reconnect it first`,
+      );
+    }
+    const op = loaded.operations.get(operationName);
+    if (!op) {
+      throw new Error(
+        `openapi upstream '${up.name}': operation '${operationName}' not found in the spec`,
+      );
+    }
+    const authHeaders =
+      up.auth.type === "none" ? {} : await this.buildAuthHeaders(up, ctx);
+    const res = await callOperation(loaded.spec, op, args, {
+      authHeaders,
+      baseUrl: loaded.baseUrl,
+    });
+    if (res.error) {
+      // In-band HTTP error: returned (not thrown) so the proxy classifies it
+      // like any tool-level upstream failure — no retry, no circuit hit.
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              { error: true, status: res.status, body: res.body },
+              null,
+              2,
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            typeof res.body === "string"
+              ? res.body
+              : JSON.stringify(res.body, null, 2),
+        },
+      ],
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* M11.2: OpenAPI upstream execution — end                               */
+  /* ------------------------------------------------------------------ */
+
+  /* ------------------------------------------------------------------ */
   /* Mejora #8: circuit breaker                                          */
   /* ------------------------------------------------------------------ */
 
@@ -1051,13 +1200,18 @@ export class UpstreamProxy {
         );
       }
       c.state = "half_open"; // one probe decides
+      this.emitUpstreamEvent("circuit_half_open", upstream, `probe after ${c.failures} failures`);
       return null;
     }
     return null; // half_open: the probe is already being allowed
   }
 
   private circuitSuccess(upstream: string): void {
+    const prev = this.circuits.get(upstream);
     this.circuits.set(upstream, { state: "closed", failures: 0, openedAt: 0 });
+    if (prev && prev.state !== "closed") {
+      this.emitUpstreamEvent("circuit_closed", upstream, `recovered after ${prev.failures} failures`);
+    }
   }
 
   private circuitFailure(upstream: string): void {
@@ -1067,6 +1221,7 @@ export class UpstreamProxy {
       c.state = "open";
       c.openedAt = Date.now();
       log("warn", `circuit OPEN on upstream '${upstream}' (${c.failures} consecutive failures)`, {});
+      this.emitUpstreamEvent("circuit_open", upstream, `${c.failures} consecutive failures`);
     }
     this.circuits.set(upstream, c);
   }
@@ -1303,13 +1458,19 @@ export class UpstreamProxy {
       } else {
         try {
           const conn = await this.getConnection(up.name);
-          // Liveness probe, bounded so a hung server can't stall diagnosis.
-          const t = await withTimeout(
-            conn.client.listTools(),
-            CONNECT_TIMEOUT_MS,
-            `health probe of upstream '${up.name}'`,
-          );
-          out[up.name] = { ok: true, tools: t.tools.length, mode };
+          if (up.transport.kind === "openapi") {
+            // M11.2: no live MCP connection to probe — "healthy" means the
+            // spec is loaded and its tools are registered.
+            out[up.name] = { ok: true, tools: conn.tools.length, mode };
+          } else {
+            // Liveness probe, bounded so a hung server can't stall diagnosis.
+            const t = await withTimeout(
+              conn.client.listTools(),
+              CONNECT_TIMEOUT_MS,
+              `health probe of upstream '${up.name}'`,
+            );
+            out[up.name] = { ok: true, tools: t.tools.length, mode };
+          }
         } catch (e) {
           // Drop (and close) the broken connection; the next call to this
           // upstream reconnects with fresh credentials (self-heal).
@@ -1347,6 +1508,7 @@ export class UpstreamProxy {
     }
     this.pools.clear();
     this.toolRegistry.clear();
+    this.openApi.clear();
   }
 }
 

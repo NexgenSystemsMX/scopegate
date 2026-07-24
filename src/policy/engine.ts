@@ -121,6 +121,15 @@ export interface PoliciesFile {
   agents: Record<string, AgentPolicy>;
 }
 
+/**
+ * M10 (inverted default): capabilities under these prefixes escalate to human
+ * approval BY DEFAULT — a matching auto_approve rule must be written
+ * explicitly to lift it. Materializing a vault secret into a file
+ * (`vault:inject:<ref>`) widens the egress surface, so silence is an
+ * escalation, never a plain no_rule denial.
+ */
+export const DEFAULT_APPROVAL_PREFIXES = ["vault:inject:"];
+
 /** Provenance of an installed team policy layer (EPIC-10). */
 export interface TeamPolicyMeta {
   /** Server-issued, monotonically increasing policy version. */
@@ -656,6 +665,43 @@ export class PolicyEngine {
         return { allow: true, ttlMs, rule: rule.match };
       }
     }
+    // M10: inverted default — vault:inject:* escalates instead of no_rule.
+    if (DEFAULT_APPROVAL_PREFIXES.some((p) => capability.startsWith(p))) {
+      let approvalTtlMs = DEFAULT_APPROVAL_TTL_MS;
+      try {
+        approvalTtlMs = limits.approval_ttl
+          ? parseTtlStrict(limits.approval_ttl, "limits.approval_ttl")
+          : DEFAULT_APPROVAL_TTL_MS;
+      } catch {
+        /* validated at load; keep the safe default defensively */
+      }
+      const { request: ap, created } = createApprovalRequest({
+        agentId,
+        capability,
+        ttl: ttl ?? null,
+        reason,
+        approvalTtlMs,
+      });
+      if (created) {
+        bestEffortAudit(agentId, "approval_requested", {
+          id: ap.id,
+          capability,
+          ttl: ap.ttl,
+          reason,
+          via: "default_escalation",
+          expiresAt: new Date(ap.expiresAt).toISOString(),
+        });
+      }
+      return {
+        allow: false,
+        reason:
+          `Capability '${capability}' requires human approval BY DEFAULT — materializing a secret into a file ` +
+          `is a governed exception; a policy rule must explicitly auto_approve it.`,
+        escalation: "human_approval",
+        approvalId: ap.id,
+        approvalExpiresAt: ap.expiresAt,
+      };
+    }
     return {
       allow: false,
       code: "no_rule",
@@ -767,6 +813,15 @@ export class PolicyEngine {
       }
     }
 
+    // M10: inverted default — mirror of request()'s default escalation.
+    if (DEFAULT_APPROVAL_PREFIXES.some((p) => capability.startsWith(p))) {
+      return {
+        decision: "needs_approval",
+        reason:
+          `Capability '${capability}' requires human approval BY DEFAULT (governed exception — ` +
+          `a policy rule must explicitly auto_approve it).`,
+      };
+    }
     return {
       decision: "deny",
       code: "no_rule",

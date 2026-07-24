@@ -565,9 +565,76 @@ the human to run `scopegate secret add <ref>` in their terminal.
 
 Example call: `{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { "name": "scopegate_vault_status", "arguments": {} } }`
 
+## scopegate_request_capabilities
+
+Batch version of `scopegate_request_capability`: up to 20 capability requests in ONE
+call with a single rate-limit evaluation. No `wait`/`execute_on_approval` in batch mode —
+use the single-call form for those.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `requests` | array | yes | max 20 items of `{capability, reason?, ttl?, lease_id?}` |
+
+**Response**
+
+```json
+{
+  "total": 3,
+  "granted": 1,
+  "results": [
+    { "capability": "github:call:list_issues", "granted": true, "expires_in_seconds": 900, "matched_rule": "github:call:list_*" },
+    { "capability": "aws:deploy:prod", "granted": false, "status": "pending_human_approval", "approval_id": "3f6b8c2e-…" },
+    { "capability": "stripe:write:*", "granted": false, "code": "no_rule", "reason": "No auto_approve rule matches…" }
+  ]
+}
+```
+
+## scopegate_events
+
+Host-observability tail (M12): recent gateway events as metadata only — never args or
+payloads. The host renders them in its UI ("capability X denied", "approval pending").
+
+| field | type | required | notes |
+|---|---|---|---|
+| `since` | string | no | ISO 8601 lower bound; default last 2h |
+| `kinds` | string[] | no | audit-kind filter (e.g. `["capability_denied"]`) |
+| `agent` | string | no | agentId filter (default: every identity) |
+| `limit` | number | no | default 50, max 200 |
+
+**Response**: `{ "since": "…", "count": 2, "events": [{ "ts": "…", "kind": "capability_denied", "agentId": "kimi", "capability": "aws:*:production", "code": "ceiling_blocked" }] }`
+
+The same tail is available over HTTP as `GET /events` (NDJSON, bearer-required), and
+upstream state changes (connect failure, circuit open/close) push MCP
+`notifications/message` logMessages to harnesses that display them.
+
+## scopegate_inject_file
+
+Materialize a vault secret into a file (legacy CLI configs — **governed exception**).
+The capability `vault:inject:<ref>` requires human approval BY DEFAULT: a policy rule
+must explicitly `auto_approve` to lift it. Atomic 0600 write, previous file backed up
+to `<out>.bak`, sidecar manifest `<out>.scopegate.json` for `scopegate inject --refresh`,
+and the audit stores only the rendered content's sha256.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `ref` | string | yes | vault secretRef |
+| `out` | string | yes | destination file path |
+| `template` | string | no | inline template containing `{{secret}}` (default: raw secret) |
+| `template_file` | string | no | path to a template file (wins over `template`) |
+
+**Response — pending (the default)**: same `pending_human_approval` contract as
+`scopegate_request_capability` — ask the human to `scopegate approve <id>`, then re-call
+with the SAME arguments.
+
+**Response — materialized**
+
+```json
+{ "materialized": true, "out": "/home/user/.kimi/config.toml", "sha256": "b7c…", "note": "Written 0600 (previous file backed up to <out>.bak). Re-run after rotation with: scopegate inject --refresh <out>." }
+```
+
 ## Proxied tools: `<upstream>__<tool>`
 
-`tools/list` returns the eighteen management tools PLUS every tool of every connected upstream,
+`tools/list` returns the twenty-one management tools PLUS every tool of every connected upstream,
 renamed `<upstream>__<toolName>` (double underscore; description/inputSchema pass through
 unchanged; an upstream config may restrict exposure with an `exposeTools` allowlist).
 

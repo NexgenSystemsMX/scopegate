@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * huly-bridge (EPIC-14): MCP stdio server exposing the four Huly surfaces
- * (tracker / documents / chunter / contact) as 13 bare-named tools. Deployed
+ * huly-bridge (EPIC-14 + M9): MCP stdio server exposing the four Huly surfaces
+ * (tracker / documents / chunter / contact) as 16 bare-named tools. Deployed
  * as a stdio upstream of the ScopeGate gateway, which adds the `huly__`
  * namespace and injects the env at spawn:
  *
@@ -25,7 +25,7 @@ import { createDocumentHandlers, documentTools } from "./tools-documents.js";
 import { chunterTools, createChunterHandlers } from "./tools-chunter.js";
 import { contactTools, createContactHandlers } from "./tools-contact.js";
 
-/** The closed list of 13 tools (frozen contract). */
+/** The closed list of 16 tools (frozen contract). */
 export function buildToolList(): ToolDefinition[] {
   return [...trackerTools, ...documentTools, ...chunterTools, ...contactTools];
 }

@@ -30,6 +30,19 @@
   "bin": {
     "scopegate": "./dist/cli.js"
   },
+  "main": "./dist/api.js",
+  "types": "./dist/api.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/api.d.ts",
+      "default": "./dist/api.js"
+    },
+    "./testkit": {
+      "types": "./dist/testkit/index.d.ts",
+      "default": "./dist/testkit/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "install",
@@ -58,14 +71,16 @@
     "@hcengineering/api-client": "^0.7.423",
     "@hcengineering/core": "^0.7.423",
     "@hcengineering/text": "^0.7.423",
+    "@hcengineering/text-markdown": "^0.7.423",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "commander": "^12.1.0",
+    "pg": "^8.22.0",
     "picomatch": "^4.0.2",
-    "yaml": "^2.6.0",
-    "@hcengineering/text-markdown": "^0.7.423"
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.20.0",
     "@types/picomatch": "^3.0.1",
     "typescript": "^5.7.0",
     "vitest": "^4.1.10"

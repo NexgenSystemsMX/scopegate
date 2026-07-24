@@ -209,6 +209,8 @@ describe("audit signing (EPIC-07)", () => {
       "git_credential_minted",
       // M5: native approval wait.
       "approval_waited",
+      // M10: governed secret materialization.
+      "secret_materialized",
     ];
     expect([...AUDIT_KINDS].sort()).toEqual(expected.sort());
   });

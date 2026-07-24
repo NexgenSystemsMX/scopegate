@@ -18,6 +18,7 @@
  *   scopegate vault rotate-key re-encrypt the vault with a fresh master key
  *   scopegate rollback         restore harness configs from *.pre-scopegate.bak
  *   scopegate cloud serve      run the ScopeGate Cloud control plane (EPIC-10)
+  scopegate cloud enroll     bind this gateway to a cloud team (writes cloud.json)
  */
 import { Command } from "commander";
 import os from "node:os";
@@ -92,6 +93,51 @@ program
     const { runGitCredential } = await import("./commands/git-credential.js");
     await runGitCredential();
   });
+
+program
+  .command("inject")
+  .description(
+    "Materialize a vault secret into a file (M10, governed exception): atomic 0600 write, " +
+      "backup, signed audit; vault:inject:<ref> requires human approval by default",
+  )
+  .option("--ref <secretRef>", "vault secret reference to materialize")
+  .option("--out <path>", "destination file (0600)")
+  .option("--template <inline>", "inline template containing {{secret}}")
+  .option("--template-file <path>", "template file containing {{secret}}")
+  .option("--refresh <path>", "re-materialize from the sidecar manifest (secret rotated)")
+  .action(async (opts) => {
+    const { runInject } = await import("./commands/inject.js");
+    await runInject(opts);
+  });
+
+program
+  .command("honeytoken")
+  .description("Honeytoken canaries (decoy credentials that trigger surgical revocation when touched)")
+  .addCommand(
+    new Command("plant")
+      .argument("<name>", "canary name — the decoy lands in the vault as canary:<name>")
+      .option("--agent <id>", "attribute the canary to an agent")
+      .option("--upstream <name>", "attribute the canary to an upstream")
+      .action(async (name: string, opts: { agent?: string; upstream?: string }) => {
+        const { Vault } = await import("./vault/vault.js");
+        const { plantCanary } = await import("./honeytoken/honeytoken.js");
+        const planted = plantCanary(Vault.open(), {
+          name,
+          agentId: opts.agent,
+          upstream: opts.upstream,
+        });
+        // The VALUE is printed once — deposit it as a decoy wherever a leak
+        // would prove exfiltration (a fake repo secret, a bogus .env line).
+        console.log(
+          JSON.stringify({
+            planted: planted.name,
+            ref: planted.ref,
+            value: planted.value,
+            note: "Decoy planted in the vault. Any use of this value as a credential triggers an alert + surgical revocation.",
+          }),
+        );
+      }),
+  );
 
 program
   .command("start")
@@ -283,6 +329,28 @@ cloudCmd
     // The listening server keeps the process alive; the parseable
     // SCOPEGATE_CLOUD_* lines are printed by startCloudServer.
     await startCloudServer({ port, home: opts.home });
+  });
+
+cloudCmd
+  .command("enroll")
+  .description(
+    "Bind this gateway to a ScopeGate Cloud team (M13): sends the identity " +
+      "PUBKEY fingerprint (never private keys, never vault secrets) plus the " +
+      "one-shot enroll token, and writes cloud.json. Prints the enrolled " +
+      "config as JSON (agentSecret omitted — it only lands in cloud.json, mode 0600).",
+  )
+  .requiredOption("--cloud <url>", "base URL of the cloud API (e.g. http://127.0.0.1:8787)")
+  .requiredOption("--token <enrollToken>", "one-shot enroll token from the dashboard / admin API")
+  .option("--agent <id>", "override the agent identity to enroll (default: env/config agentId)")
+  .action(async (opts) => {
+    const { enrollGateway } = await import("./cloud/client/enroll.js");
+    const cfg = await enrollGateway({
+      url: opts.cloud,
+      enrollToken: opts.token,
+      agentId: opts.agent,
+    });
+    const { agentSecret: _withheld, ...printable } = cfg;
+    console.log(JSON.stringify(printable, null, 2));
   });
 
 // Single exit point for CLI failures: actionable message to stderr, non-zero

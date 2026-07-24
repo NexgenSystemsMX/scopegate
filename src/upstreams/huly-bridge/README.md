@@ -21,15 +21,21 @@ the Huly transactor over websocket.
 Missing vars in live mode abort startup with an actionable stderr message.
 stdout is reserved for MCP framing; logs go to stderr only, without secrets.
 
-## Tools (13, bare names — the gateway adds the `huly__` namespace)
+## Tools (16, bare names — the gateway adds the `huly__` namespace)
 
-- **tracker**: `tracker_create_issue` `{project, title, description?, priority?, assignee?}`,
-  `tracker_update_issue` `{issueId, fields}`, `tracker_comment_issue` `{issueId, message}`,
-  `tracker_search_issues` `{query?, project?, status?, limit?}`, `tracker_list_projects` `{}`.
+- **tracker**: `tracker_create_issue` `{project, title, description?, priority?, assignee?, status?}`,
+  `tracker_update_issue` `{issueId, fields}` (fields: `title`, `description`, `status`,
+  `priority`, `assignee`, `milestone`, `dueDate` — ISO date, `""` clears),
+  `tracker_comment_issue` `{issueId, message}`,
+  `tracker_search_issues` `{query?, project?, status?, assignee?, limit?}`,
+  `tracker_read_issue` `{issueId}` (full issue incl. markdown description),
+  `tracker_read_comments` `{issueId, limit?}`, `tracker_list_projects` `{}`.
 - **documents**: `documents_create` `{teamspace, title, content}`,
   `documents_read` `{documentId}`, `documents_update` `{documentId, content}`,
   `documents_list` `{teamspace?, limit?}`.
-- **chunter**: `chunter_post_message` `{channel, message, thread?}`,
+- **chunter**: `chunter_post_message` `{channel, message, thread?, thinking?}`
+  (`thinking: true` prefixes the body with `💭 ` — Huly chat has no native
+  thinking flag), `chunter_edit_message` `{channel, messageId, content}`,
   `chunter_list_channels` `{}`, `chunter_list_messages` `{channel, limit?, thread?}`.
 - **contact**: `contact_list_persons` `{limit?}`.
 

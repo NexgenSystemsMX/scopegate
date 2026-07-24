@@ -62,6 +62,7 @@ export const AUDIT_KINDS = [
   "approval_denied",
   "approval_expired",
   "approval_waited",
+  "secret_materialized",
   "policy_accepted",
   "policy_rejected",
   "grant_issued",

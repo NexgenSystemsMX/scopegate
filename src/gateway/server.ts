@@ -215,6 +215,38 @@ export async function runGateway(
         allowedAgents: () => [agentId, ...policy.agentIds().filter((a) => a !== agentId)],
         connectedUpstreams: () =>
           Object.values(status).filter((s) => s.ok).length,
+        // M12: readiness detail for /health (additive to the legacy count).
+        readiness: () => {
+          const circuits = proxy.circuitReport();
+          const failed = Object.entries(circuits)
+            .filter(([, c]) => c.state === "open")
+            .map(([n]) => n);
+          for (const [n, s] of Object.entries(status)) {
+            if (!s.ok && !failed.includes(n)) failed.push(n);
+          }
+          const total = Math.max(Object.keys(circuits).length, Object.keys(status).length);
+          return {
+            upstreams_detail: { ok: Math.max(0, total - failed.length), failed },
+            vault_mode: process.env.SCOPEGATE_VAULT_MODE ?? "auto",
+            pending_approvals: listApprovals().filter((a) => a.effectiveStatus === "pending").length,
+          };
+        },
+        // M12: metadata-only event tail for GET /events.
+        recentEvents: ({ since, limit }) => {
+          const sinceMs = since ? Date.parse(since) : Date.now() - 2 * 3600 * 1000;
+          return readAuditEvents()
+            .filter((e) => !Number.isNaN(sinceMs) && Date.parse(e.ts) >= sinceMs)
+            .slice(-limit)
+            .map((e) => ({
+              ts: e.ts,
+              kind: e.kind,
+              agentId: e.agentId,
+              ...(typeof e.detail.tool === "string" ? { tool: e.detail.tool } : {}),
+              ...(typeof e.detail.capability === "string" ? { capability: e.detail.capability } : {}),
+              ...(typeof e.detail.upstream === "string" ? { upstream: e.detail.upstream } : {}),
+              ...(typeof e.detail.code === "string" ? { code: e.detail.code } : {}),
+            }));
+        },
         shutdown: async () => {
           cloudSync?.stop();
           policy.stopWatching();
@@ -249,8 +281,9 @@ export async function runGateway(
  * The agent-facing MCP server (management tools + proxied upstream tools).
  * Transport-independent: stdio mode connects ONE instance; stateless http
  * mode builds a fresh instance per request over the same shared deps.
+ * Exported for the embeddable library API (M7, src/api.ts).
  */
-function createAgentServer(deps: {
+export function createAgentServer(deps: {
   cfg: ScopeGateConfig;
   proxy: UpstreamProxy;
   policy: PolicyEngine;
@@ -358,6 +391,19 @@ function createAgentServer(deps: {
     { name: "scopegate", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
+
+  // M12: host observability — upstream state changes reach the harness as MCP
+  // logMessage notifications (Kimi Code SDK surfaces them as events).
+  // Fire-and-forget: a harness that ignores them changes nothing.
+  proxy.onUpstreamEvent = (e) => {
+    server
+      .sendLoggingMessage({
+        level: e.kind === "circuit_closed" ? "info" : "warning",
+        logger: "scopegate",
+        data: JSON.stringify(e),
+      })
+      .catch(() => {});
+  };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const proxied: Tool[] = proxy.listProxiedTools().map((t) => ({
@@ -651,6 +697,113 @@ function createAgentServer(deps: {
           });
         }
 
+        case "scopegate_request_capabilities": {
+          // M15: batch request — ONE rate-limit evaluation for the whole
+          // batch, per-item outcomes. No wait/continuation in batch mode.
+          const reqs = Array.isArray(args.requests) ? args.requests : null;
+          if (!reqs || reqs.length === 0) {
+            return err(
+              "Missing required argument 'requests' (non-empty array of {capability, reason?, ttl?, lease_id?}).",
+            );
+          }
+          if (reqs.length > 20) return err("Batch too large — max 20 requests per call.");
+          const rl = policy.checkRateLimit(agentId);
+          if (!rl.allowed) {
+            auditOrThrow(agentId, "capability_denied", {
+              capability: "<batch>",
+              reason: "batch request",
+              decision: { allow: false, code: "capability_rate_limited", reason: rl.reason },
+            });
+            return text({
+              granted: false,
+              code: "capability_rate_limited",
+              reason: rl.reason,
+              next_step: "Back off and retry after the rate window resets. Do NOT loop requests.",
+            });
+          }
+          const results: Record<string, unknown>[] = [];
+          for (const item of reqs as Record<string, unknown>[]) {
+            const capability = String(item?.capability ?? "");
+            const reason =
+              typeof item?.reason === "string" && item.reason ? item.reason : "batch request";
+            if (!capability) {
+              results.push({ capability: "", granted: false, code: "invalid", reason: "missing capability" });
+              continue;
+            }
+            const htMention = findCanaryRefsInText(capability);
+            if (htMention) {
+              respondCanaryTrigger({
+                policy,
+                agentId,
+                canary: htMention,
+                vector: "request_capability",
+                evidence: { capability },
+              });
+              results.push({
+                capability,
+                granted: false,
+                code: "honeytoken",
+                reason: `references honeytoken '${htMention.ref}' — incident recorded`,
+              });
+              continue;
+            }
+            const tg = taintGate(capability);
+            if (tg) {
+              results.push({
+                capability,
+                granted: false,
+                status: "pending_human_approval",
+                approval_id: tg.approvalId,
+                reason: "[taint guard] cross-upstream write while the session is tainted.",
+              });
+              continue;
+            }
+            const leaseId =
+              typeof item?.lease_id === "string" && item.lease_id.length > 0
+                ? item.lease_id
+                : undefined;
+            const d = policy.request(
+              agentId,
+              capability,
+              typeof item?.ttl === "string" ? item.ttl : undefined,
+              reason,
+              { leaseId },
+            );
+            auditOrThrow(
+              agentId,
+              d.allow ? "capability_request" : d.code === "ceiling_blocked" ? "ceiling_blocked" : "capability_denied",
+              { capability, reason, decision: d, via: "batch" },
+            );
+            if (d.allow) {
+              results.push({
+                capability,
+                granted: true,
+                expires_in_seconds: Math.round(d.ttlMs / 1000),
+                matched_rule: d.rule,
+                ...(leaseId ? { lease_id: leaseId } : {}),
+              });
+            } else if (d.escalation === "human_approval") {
+              results.push({
+                capability,
+                granted: false,
+                status: "pending_human_approval",
+                approval_id: d.approvalId,
+                approval_expires_at: d.approvalExpiresAt
+                  ? new Date(d.approvalExpiresAt).toISOString()
+                  : undefined,
+                reason: d.reason,
+              });
+            } else {
+              results.push({ capability, granted: false, code: d.code, reason: d.reason });
+            }
+          }
+          return text({
+            results,
+            granted: results.filter((r) => r.granted === true).length,
+            total: results.length,
+          });
+        }
+
         case "scopegate_list_capabilities": {
           const grants = policy.activeGrants(agentId).map((g) => ({
             id: g.id,
@@ -870,14 +1023,21 @@ function createAgentServer(deps: {
               "Invalid or missing 'name'. Use lowercase letters, digits, '_' or '-' (e.g. 'github'). Tools are exposed as '<name>__<tool>'.",
             );
           }
-          if (up.transport?.kind !== "http" && up.transport?.kind !== "stdio") {
-            return err("Invalid or missing 'transport.kind' — must be 'http' or 'stdio'.");
+          if (
+            up.transport?.kind !== "http" &&
+            up.transport?.kind !== "stdio" &&
+            up.transport?.kind !== "openapi"
+          ) {
+            return err("Invalid or missing 'transport.kind' — must be 'http', 'stdio' or 'openapi'.");
           }
           if (up.transport.kind === "http" && !up.transport.url) {
             return err("Missing 'transport.url' for an http upstream.");
           }
           if (up.transport.kind === "stdio" && !up.transport.command) {
             return err("Missing 'transport.command' for a stdio upstream.");
+          }
+          if (up.transport.kind === "openapi" && !(up.transport as { spec?: string }).spec) {
+            return err("Missing 'transport.spec' for an openapi upstream (https URL or local path to an OpenAPI 3 spec).");
           }
           // EPIC-11: a canary ref passed as a credential is a honeytoken
           // trigger — the decoy left the vault. Checked for every auth type
@@ -1027,6 +1187,51 @@ function createAgentServer(deps: {
           return text({ secret_refs: vault.listRefs() });
         }
 
+        case "scopegate_inject_file": {
+          // M10: governed secret materialization into files. The policy
+          // engine's inverted default makes vault:inject:* escalate unless a
+          // rule explicitly auto-approves it.
+          const ref = String(args.ref ?? "");
+          const out = String(args.out ?? "");
+          if (!ref || !out) return err("Missing required arguments 'ref' and 'out'.");
+          try {
+            const { materializeSecret } = await import("../inject/inject.js");
+            const res = await materializeSecret({
+              ref,
+              out,
+              template: typeof args.template === "string" ? args.template : undefined,
+              templateFile: typeof args.template_file === "string" ? args.template_file : undefined,
+              agentId,
+              policy,
+            });
+            if (res.status === "pending_human_approval") {
+              return text({
+                granted: false,
+                status: "pending_human_approval",
+                approval_id: res.approvalId,
+                approval_expires_at: res.approvalExpiresAt
+                  ? new Date(res.approvalExpiresAt).toISOString()
+                  : undefined,
+                reason: res.reason,
+                instructions:
+                  `A human must approve materializing this secret. Ask them to run: ` +
+                  `scopegate approve ${res.approvalId} — then call scopegate_inject_file again with the SAME arguments.`,
+              });
+            }
+            if (res.status === "denied") {
+              return text({ granted: false, status: "denied", reason: res.reason });
+            }
+            return text({
+              materialized: true,
+              out: res.out,
+              sha256: res.sha256,
+              note: "Written 0600 (previous file backed up to <out>.bak). Re-run after rotation with: scopegate inject --refresh <out>.",
+            });
+          } catch (e) {
+            return err(`inject failed: ${(e as Error).message}`);
+          }
+        }
+
         case "scopegate_upstream_health": {
           // Mejora #8: health as an MCP tool (diagnose lived CLI-side only) —
           // liveness + tool count + circuit-breaker state per upstream.
@@ -1130,6 +1335,43 @@ function createAgentServer(deps: {
             writes,
             active_grants: activeGrants,
             pending_approvals: pendingApprovals,
+          });
+        }
+
+        case "scopegate_events": {
+          // M12: host-observability tail — metadata-only events (never args or
+          // payloads), optionally filtered. The host renders these in its UI.
+          const sinceRaw = typeof args.since === "string" ? args.since : null;
+          let sinceMs = Date.now() - 2 * 3600 * 1000;
+          if (sinceRaw) {
+            const parsed = Date.parse(sinceRaw);
+            if (Number.isNaN(parsed)) return err(`Invalid 'since' (must be ISO 8601): ${sinceRaw}`);
+            sinceMs = parsed;
+          }
+          const kindsFilter = Array.isArray(args.kinds)
+            ? new Set(args.kinds.filter((k) => typeof k === "string"))
+            : null;
+          const agentFilter = typeof args.agent === "string" && args.agent ? args.agent : null;
+          const limit = Math.min(Math.max(Number(args.limit ?? 50) || 50, 1), 200);
+
+          const events = readAuditEvents()
+            .filter((e) => Date.parse(e.ts) >= sinceMs)
+            .filter((e) => (agentFilter ? e.agentId === agentFilter : true))
+            .filter((e) => (kindsFilter && kindsFilter.size > 0 ? kindsFilter.has(e.kind) : true))
+            .slice(-limit)
+            .map((e) => ({
+              ts: e.ts,
+              kind: e.kind,
+              agentId: e.agentId,
+              ...(typeof e.detail.tool === "string" ? { tool: e.detail.tool } : {}),
+              ...(typeof e.detail.capability === "string" ? { capability: e.detail.capability } : {}),
+              ...(typeof e.detail.upstream === "string" ? { upstream: e.detail.upstream } : {}),
+              ...(typeof e.detail.code === "string" ? { code: e.detail.code } : {}),
+            }));
+          return text({
+            since: new Date(sinceMs).toISOString(),
+            count: events.length,
+            events,
           });
         }
 

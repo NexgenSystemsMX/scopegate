@@ -41,6 +41,16 @@ upstreams:
   #     ttl: "5m"                     # techo del token (default 15m); se clampea al grant
   #     claims: { sub: "agent-luis", scope: "read" }   # claims extra opcionales
 
+  # OpenAPI (M11): cualquier REST con spec OpenAPI 3 se vuelve upstream
+  # gobernado sin escribir un bridge — UNA tool por operación, con schemas del
+  # spec; el gateway ejecuta el HTTP él mismo (auth bearer|none en v1).
+  # Cache de spec 24h en ~/.scopegate/openapi-cache; https salvo localhost.
+  #   scopegate secret add petstore_key
+  # - name: petstore
+  #   transport: { kind: openapi, spec: "https://petstore3.swagger.io/api/v3/openapi.json" }
+  #   # baseUrl: "https://otro-host/api"    # opcional: override de servers[0].url
+  #   auth: { type: bearer, secretRef: petstore_key }
+
   # GitHub App: el gateway firma un App JWT (RS256) con la private key del
   # vault y lo cambia por un installation token (~1h) con permisos recortados.
   # Solo el installation token sale hacia el upstream.

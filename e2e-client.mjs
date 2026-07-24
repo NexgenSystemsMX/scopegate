@@ -476,6 +476,73 @@ async function main() {
     assert.match(mainPush.content[0].text, /scopegate approve/);
     pass("when: guard — branch kimi/* auto-approves, branch main escalates to human approval");
 
+    // 16c4. M15 (batch): one call, per-item outcomes (granted/no_rule/pending).
+    const batch = parse(
+      await client.callTool({
+        name: "scopegate_request_capabilities",
+        arguments: {
+          requests: [
+            { capability: "fakegit:call:whoami", reason: "batch auto" },
+            { capability: "other:call:x", reason: "batch no rule" },
+            { capability: "fakegit:call:danger3", reason: "batch needs human" },
+          ],
+        },
+      }),
+    );
+    assert.equal(batch.total, 3, `batch must answer 3 items: ${JSON.stringify(batch)}`);
+    assert.equal(batch.results[0].granted, true, "batch auto must grant");
+    assert.equal(batch.results[1].code, "no_rule", "batch no-rule must deny with code");
+    assert.equal(batch.results[2].status, "pending_human_approval", "batch require must escalate");
+    assert.ok(batch.results[2].approval_id, "batch escalation carries approval_id");
+    pass("batch request_capabilities — granted/no_rule/pending in one call");
+
+    // 16c5. M12 (host observability): the events tail shows the batch, metadata only.
+    const eventsTail = parse(
+      await client.callTool({
+        name: "scopegate_events",
+        arguments: { kinds: ["capability_request", "capability_denied"], limit: 20 },
+      }),
+    );
+    assert.ok(eventsTail.count > 0, "events tail must not be empty");
+    const batchEvent = eventsTail.events.find((e) => e.capability === "other:call:x");
+    assert.ok(batchEvent, "the batch denial must appear in the events tail");
+    assert.equal(batchEvent.kind, "capability_denied");
+    for (const e of eventsTail.events) {
+      assert.equal(e.args, undefined, "events must be metadata-only (no args)");
+    }
+    pass("scopegate_events — metadata-only tail for the host UI");
+
+    // 16c6. M10 (inject): vault:inject:* escalates BY DEFAULT; approval on disk
+    // materializes the file (0600, sidecar manifest, audit with sha256 only).
+    const injectOut = path.join(home, "injected-config.toml");
+    const injectReq = parse(
+      await client.callTool({
+        name: "scopegate_inject_file",
+        arguments: { ref: "fake_token", out: injectOut, template: 'token = "{{secret}}"' },
+      }),
+    );
+    assert.equal(injectReq.status, "pending_human_approval", `inject must escalate by default: ${JSON.stringify(injectReq)}`);
+    assert.ok(injectReq.approval_id, "inject escalation carries approval_id");
+    assert.ok(!fs.existsSync(injectOut), "no file may be written before approval");
+    fs.appendFileSync(
+      path.join(home, "approvals.decisions.jsonl"),
+      JSON.stringify({ id: injectReq.approval_id, decision: "approved", decidedAt: Date.now(), decidedBy: "human:e2e" }) + "\n",
+      { mode: 0o600 },
+    );
+    const injectDone = parse(
+      await client.callTool({
+        name: "scopegate_inject_file",
+        arguments: { ref: "fake_token", out: injectOut, template: 'token = "{{secret}}"' },
+      }),
+    );
+    assert.equal(injectDone.materialized, true, `inject must materialize after approval: ${JSON.stringify(injectDone)}`);
+    assert.equal(fs.readFileSync(injectOut, "utf8"), 'token = "supersecret123"');
+    assert.ok(fs.existsSync(injectOut + ".scopegate.json"), "sidecar manifest must exist");
+    const auditInject = fs.readFileSync(path.join(home, "audit.jsonl"), "utf8");
+    assert.ok(auditInject.includes('"secret_materialized"'), "secret_materialized must be audited");
+    assert.ok(!auditInject.includes("supersecret123"), "the audit must never carry the secret value");
+    pass("inject — default escalation → approval → atomic 0600 file (audit: sha256 only)");
+
     // 16d. Mejora #3 (policy preflight) + mejora #9 (recall as session memory).
     const canAllow = parse(
       await client.callTool({ name: "scopegate_can_i", arguments: { capability: "fakegit:call:whoami" } }),

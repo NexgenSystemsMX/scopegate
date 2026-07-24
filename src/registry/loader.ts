@@ -193,6 +193,22 @@ function assertManifestShape(raw: unknown, expectedName: string): RegistryManife
   if (!m.auth || typeof m.auth !== "object" || !KNOWN_AUTH_TYPES.has(String(m.auth.type))) {
     throw new Error(`manifest '${expectedName}' has an unknown auth.type (fail-closed)`);
   }
+  // M14.4: optional passthrough knobs, validated like scopegate.yaml.
+  if (m.exposeTools !== undefined) {
+    if (!Array.isArray(m.exposeTools) || m.exposeTools.some((t) => typeof t !== "string")) {
+      throw new Error(`manifest '${expectedName}' has a malformed exposeTools (fail-closed)`);
+    }
+  }
+  if (m.attestation !== undefined && typeof m.attestation !== "boolean") {
+    throw new Error(`manifest '${expectedName}' has a malformed attestation (fail-closed)`);
+  }
+  if (m.pool !== undefined) {
+    const p = m.pool as Record<string, unknown>;
+    const numOk = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v) && v >= 0);
+    if (!p || typeof p !== "object" || !numOk(p.min) || !numOk(p.max) || !numOk(p.idleMs)) {
+      throw new Error(`manifest '${expectedName}' has a malformed pool (fail-closed)`);
+    }
+  }
   for (const s of m.setup?.secrets ?? []) {
     if (typeof s?.ref !== "string" || typeof s?.hint !== "string") {
       throw new Error(`manifest '${expectedName}' has a malformed setup.secrets entry (fail-closed)`);
@@ -236,6 +252,10 @@ export function manifestToUpstream(manifest: RegistryManifest): UpstreamConfig {
     name: manifest.name,
     transport: manifest.transport,
     auth: manifest.auth,
+    // M14.4: passthrough knobs (undefined keys are dropped by the config writer).
+    ...(manifest.exposeTools ? { exposeTools: manifest.exposeTools } : {}),
+    ...(manifest.attestation !== undefined ? { attestation: manifest.attestation } : {}),
+    ...(manifest.pool ? { pool: manifest.pool } : {}),
   };
 }
 

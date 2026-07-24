@@ -175,10 +175,13 @@ export function toUpstreamFromNormalized(
       : undefined;
   let enabled = spec.enabled ?? true;
   if (spec.sse) {
+    // M14.6: EXPLICIT reject — legacy SSE-only MCP servers are not proxied
+    // (the gateway speaks streamable HTTP). Migrated disabled + loud warning
+    // instead of a silently broken upstream.
     enabled = false;
     hooks.warn(
-      `'${name}': SSE transport is not proxied by the gateway yet — migrated with ` +
-        `enabled: false so nothing breaks silently. Re-enable it when SSE support lands.`,
+      `'${name}': legacy SSE transport is not proxied by the gateway (streamable HTTP only) — migrated with ` +
+        `enabled: false so nothing breaks silently. Upgrade the server to streamable HTTP and re-enable it.`,
     );
   }
 
