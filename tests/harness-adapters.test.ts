@@ -153,7 +153,11 @@ describe("detect", () => {
   });
 
   it("falls back to the harness CLI on PATH when no config exists", async () => {
-    fs.writeFileSync(path.join(emptyPathDir, "opencode"), "#!/bin/sh\n");
+    const fakeCli = path.join(emptyPathDir, "opencode");
+    fs.writeFileSync(fakeCli, "#!/bin/sh\n");
+    // executableOnPath checks X_OK — POSIX runners need the exec bit
+    // (win32 treats X_OK as existence, so this is a no-op there).
+    if (process.platform !== "win32") fs.chmodSync(fakeCli, 0o755);
     const { getAdapter } = await import("../src/harness/index.js");
     const found = await getAdapter("opencode").detect();
     expect(found).toEqual([
