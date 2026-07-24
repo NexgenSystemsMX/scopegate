@@ -373,6 +373,12 @@ function createAgentServer(deps: {
             capability,
             args.ttl as string | undefined,
             String(args.reason),
+            {
+              leaseId:
+                typeof args.lease_id === "string" && args.lease_id.length > 0
+                  ? args.lease_id
+                  : undefined,
+            },
           );
           auditOrThrow(
             agentId,
@@ -384,11 +390,15 @@ function createAgentServer(deps: {
             { capability, reason: args.reason, decision },
           );
           if (decision.allow) {
+            const leaseId = typeof args.lease_id === "string" && args.lease_id.length > 0
+              ? args.lease_id
+              : undefined;
             return text({
               granted: true,
               capability,
               expires_in_seconds: Math.round(decision.ttlMs / 1000),
               matched_rule: decision.rule,
+              ...(leaseId ? { lease_id: leaseId, renewable: true } : {}),
             });
           }
           if (decision.escalation === "human_approval") {
@@ -481,8 +491,68 @@ function createAgentServer(deps: {
               0,
               Math.round((g.expiresAt - Date.now()) / 1000),
             ),
+            ...(g.leaseId ? { lease_id: g.leaseId, renewable: true } : {}),
           }));
-          return text({ agentId, active_grants: grants });
+          const leases = policy.leasesForAgent(agentId).map((l) => ({
+            lease_id: l.leaseId,
+            goal: l.goal,
+            status: l.status,
+            deadline_at: new Date(l.deadlineMs).toISOString(),
+            writes: { used: l.writesUsed, max: l.maxWrites },
+          }));
+          return text({ agentId, active_grants: grants, leases });
+        }
+
+        case "scopegate_open_task_lease": {
+          // Mejora #1: open a task lease (double budget: total time + writes).
+          const goal = String(args.goal ?? "").trim();
+          if (!goal) return err("Missing required argument 'goal' — one line naming the task (lands in the audit log).");
+          const upstreams = Array.isArray(args.upstreams)
+            ? args.upstreams.filter((u): u is string => typeof u === "string" && u.length > 0)
+            : [];
+          let opened: ReturnType<typeof policy.openLease>;
+          try {
+            opened = policy.openLease(agentId, {
+              goal,
+              upstreams,
+              max_total: typeof args.max_total === "string" ? args.max_total : undefined,
+              max_writes: typeof args.max_writes === "number" ? args.max_writes : undefined,
+            });
+          } catch (e) {
+            return err(errorMessage(e));
+          }
+          const { lease, clamped } = opened;
+          return text({
+            lease_id: lease.leaseId,
+            goal: lease.goal,
+            upstreams: lease.upstreams,
+            total_ms: lease.totalMs,
+            deadline_at: new Date(lease.deadlineMs).toISOString(),
+            max_writes: lease.maxWrites,
+            ...(clamped
+              ? { clamped: true, note: "total clamped by limits.max_lease_total (the ceiling always wins)" }
+              : {}),
+            next_step:
+              "Request capabilities with lease_id to bind them to this lease; renew them with scopegate_renew_capability before they die.",
+          });
+        }
+
+        case "scopegate_renew_capability": {
+          // Mejora #1: sliding-TTL renew for lease-covered grants.
+          const grantId = String(args.grant_id ?? "");
+          if (!grantId) return err("Missing required argument 'grant_id' (see scopegate_list_capabilities).");
+          try {
+            const renewed = policy.renewGrant(agentId, grantId);
+            return text({
+              renewed: true,
+              grant_id: renewed.grantId,
+              lease_id: renewed.leaseId,
+              expires_at: new Date(renewed.expiresAt).toISOString(),
+              expires_in_seconds: Math.max(0, Math.round((renewed.expiresAt - Date.now()) / 1000)),
+            });
+          } catch (e) {
+            return err(errorMessage(e));
+          }
         }
 
         case "scopegate_register_upstream": {
@@ -904,6 +974,21 @@ function createAgentServer(deps: {
           // mints for this call (token_ttl = min(provider ceiling, grant TTL)).
           // The same grant carries the redact categories of its issuing rule.
           const grant = policy.coveringGrant(agentId, capability);
+          // Mejora #1: lease write budget — a lease-covered WRITE consumes one
+          // unit of the task budget; exhausted (or dead) lease denies the call.
+          if (grant?.leaseId && isWriteTool(tool.upstream, tool.upstreamName)) {
+            if (!policy.consumeLeaseWrite(grant.leaseId)) {
+              const msg =
+                `Task lease write budget exhausted or lease dead (lease ${grant.leaseId}) — ` +
+                `open a new lease with scopegate_open_task_lease, or ask a human to raise max_writes.`;
+              auditOrThrow(agentId, "capability_denied", {
+                tool: name,
+                code: "lease_budget_exhausted",
+                reason: msg,
+              });
+              return { ...text(classifyError({ message: msg, code: "policy_denied" })), isError: true };
+            }
+          }
           const grantTtlMs = grant
             ? Math.max(0, grant.expiresAt - Date.now())
             : undefined;
@@ -917,6 +1002,30 @@ function createAgentServer(deps: {
             trackEvent("first_tool_call", {
               latency_ms: Math.round(process.uptime() * 1000),
             });
+          }
+          // Mejora #1: structured <20%-TTL warning on lease-covered calls —
+          // the agent renews BEFORE dying instead of learning from failure.
+          if (
+            grant?.leaseId &&
+            result !== null &&
+            typeof result === "object" &&
+            Array.isArray((result as { content?: unknown[] }).content)
+          ) {
+            const remainingMs = grant.expiresAt - Date.now();
+            const originalMs = Math.max(1, grant.expiresAt - grant.grantedAt);
+            if (remainingMs / originalMs < 0.2) {
+              (result as { content: unknown[] }).content.push({
+                type: "text",
+                text: JSON.stringify({
+                  scopegate_notice: {
+                    grant_id: grant.id,
+                    expires_in_s: Math.max(0, Math.round(remainingMs / 1000)),
+                    renewable: true,
+                    hint: "Call scopegate_renew_capability {grant_id} BEFORE this grant dies — do not let the task fail mid-way.",
+                  },
+                }),
+              });
+            }
           }
           // H-04.6: redact PII in the RESPONSE when the issuing rule says so.
           // Applied here (policy layer), never inside proxy.ts; the audit

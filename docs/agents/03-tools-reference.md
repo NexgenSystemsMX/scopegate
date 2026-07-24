@@ -1,6 +1,6 @@
 # 03 — MCP Tools Reference
 
-Exact reference of the twelve `scopegate_*` management tools, plus how proxied
+Exact reference of the fourteen `scopegate_*` management tools, plus how proxied
 upstream tools (`<upstream>__<tool>`) work. Every shape here is traceable to
 `src/gateway/tools.ts`, `src/gateway/server.ts` and `src/policy/engine.ts`.
 Read [02 — Agent Protocol](./02-protocol.md) first; use this as its lookup table.
@@ -55,6 +55,7 @@ Request an ephemeral grant before privileged work. Capability format:
 | `capability` | string | yes | e.g. `github:write:easyorder/*` |
 | `ttl` | string | no | `'<n>s'`, `'<n>m'` or `'<n>h'`; the policy ceiling always wins |
 | `reason` | string | yes | one line; recorded in the audit log |
+| `lease_id` | string | no | bind the grant to a task lease (validated: live + upstream scope) |
 | `execute_on_approval` | object | no | `{tool, args}` continuation — see below |
 
 **Approval continuation (`execute_on_approval`).** When a request escalates, you
@@ -171,6 +172,42 @@ Long-poll for the outcome — prefer this over polling loops that burn turns.
 Returns the executed/failed shape as soon as it exists, `{status: "expired"}` when the
 approval window closed, or `{status: "timeout"}` — in which case the approval is still
 pending: collect later with `scopegate_collect`, never abandon the task silently.
+
+## scopegate_open_task_lease
+
+Open a task lease for long-running work (see [08 — Long tasks](./08-long-tasks.md)).
+Double budget: total time (clamped by `limits.max_lease_total`, default 4h — hard
+ceiling, never extends) and writes (default 200).
+
+| field | type | required | notes |
+|---|---|---|---|
+| `goal` | string | yes | one line naming the task (audited) |
+| `upstreams` | string[] | yes | scope; `[]` means all |
+| `max_total` | string | no | e.g. `2h` — clamped by the ceiling |
+| `max_writes` | number | no | default 200 |
+
+```json
+{ "lease_id": "f47ac10b-…", "goal": "…", "upstreams": ["github"],
+  "total_ms": 7200000, "deadline_at": "…", "max_writes": 60,
+  "next_step": "Request capabilities with lease_id to bind them to this lease; renew them with scopegate_renew_capability before they die." }
+```
+
+## scopegate_renew_capability
+
+Renew a lease-covered grant (sliding TTL, auto-approved while the lease lives).
+
+| field | type | required | notes |
+|---|---|---|---|
+| `grant_id` | string | yes | from `scopegate_list_capabilities` |
+
+```json
+{ "renewed": true, "grant_id": "…", "lease_id": "f47ac10b-…",
+  "expires_at": "2026-07-23T20:10:00.000Z", "expires_in_seconds": 594 }
+```
+
+New expiry = `min(now + original ttl, lease deadline, rule ceilings)` — never
+past the deadline. Tool errors when the grant is unknown, not lease-covered, or
+the lease is dead (open a new lease).
 
 ## scopegate_upstream_health
 
@@ -415,7 +452,7 @@ Example call: `{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { 
 
 ## Proxied tools: `<upstream>__<tool>`
 
-`tools/list` returns the twelve management tools PLUS every tool of every connected upstream,
+`tools/list` returns the fourteen management tools PLUS every tool of every connected upstream,
 renamed `<upstream>__<toolName>` (double underscore; description/inputSchema pass through
 unchanged; an upstream config may restrict exposure with an `exposeTools` allowlist).
 

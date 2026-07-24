@@ -79,6 +79,33 @@ export const MANAGEMENT_TOOLS: Tool[] = [
     },
   },
   {
+    name: "scopegate_open_task_lease",
+    description:
+      "Open a task lease for long-running work: a double budget — total time (clamped by the hard limits.max_lease_total ceiling, default 4h) and write count (default 200). While the lease lives, renew your grants yourself with scopegate_renew_capability instead of dying mid-task. Request capabilities with lease_id to bind them; revoking the lease revokes every bound grant at once.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        goal: { type: "string", description: "One line — the task this lease covers (lands in the audit log)." },
+        upstreams: { type: "array", items: { type: "string" }, description: "Upstream names the lease is scoped to (empty = all)." },
+        max_total: { type: "string", description: "Requested total duration like '2h' — clamped by limits.max_lease_total (default 4h, the ceiling always wins)." },
+        max_writes: { type: "number", description: "Write budget for the task (default 200)." },
+      },
+      required: ["goal", "upstreams"],
+    },
+  },
+  {
+    name: "scopegate_renew_capability",
+    description:
+      "Renew a lease-covered grant (sliding TTL): new expiry = min(now + original ttl, lease deadline, rule ceilings). Auto-approved while the lease lives — call it BEFORE the grant dies (proxied responses warn you at <20% TTL).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        grant_id: { type: "string", description: "The grant id from scopegate_list_capabilities." },
+      },
+      required: ["grant_id"],
+    },
+  },
+  {
     name: "scopegate_policy_summary",
     description:
       "Your policy digest for session-start planning: which capability globs auto-approve, which require human approval, the hard-limit deny globs, and every ceiling (max_ttl, approval_ttl, rate_limit) plus the team-policy layer when installed. Read-only.",

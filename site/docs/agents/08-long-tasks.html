@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 — Long tasks: leases, renewals, idempotent writes — ScopeGate Docs</title>
+<meta name="description" content="How to finish multi-hour tasks (refactors, migrations, iterative debugging) behind ScopeGate without dying mid-way: task leases keep your grants alive under a d">
+<link rel="canonical" href="https://scopegate.io/docs/agents/08-long-tasks">
+<meta property="og:title" content="08 — Long tasks: leases, renewals, idempotent writes — ScopeGate Docs">
+<meta property="og:description" content="How to finish multi-hour tasks (refactors, migrations, iterative debugging) behind ScopeGate without dying mid-way: task leases keep your grants alive under a d">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://scopegate.io/docs/agents/08-long-tasks">
+<meta property="og:image" content="https://scopegate.io/og.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="/">
+      <img src="/favicon.svg" alt="" width="22" height="22">
+      <span>ScopeGate</span>
+    </a>
+    <input type="checkbox" id="nav-toggle" class="nav-toggle">
+    <label for="nav-toggle" class="nav-burger" aria-label="Menu">☰</label>
+    <div class="nav-links">
+      <a href="/#how-it-works">How it works</a>
+      <a href="/#features">Features</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/docs/" aria-current="page">Docs</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a class="btn btn-small" href="/#get-started">Get started</a>
+    </div>
+  </div>
+</nav>
+<main class="wrap doc">
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>08 — Long tasks: leases, renewals, idempotent writes</span></nav>
+  <article>
+<h1 id="08-long-tasks-leases-renewals-idempotent-writes">08 — Long tasks: leases, renewals, idempotent writes</h1>
+<p>How to finish multi-hour tasks (refactors, migrations, iterative debugging) behind ScopeGate without dying mid-way: <strong>task leases</strong> keep your grants alive under a double budget, and <strong>idempotency keys</strong> make your writes safe to retry. Read <a href="/docs/agents/02-protocol">02 — Protocol</a> first; the tool shapes live in <a href="/docs/agents/03-tools-reference">03 — Tools reference</a>.</p>
+<h2 id="1-the-problem-this-solves">1. The problem this solves</h2>
+<p>Grants expire in minutes; your tasks last hours. The naive failure mode is the TTL dying at 70% of the task — and if the re-request needs a human, they may not be there. Retrying writes after a timeout is the other classic: duplicate issues, double deploys. Both are solved in the gateway, not by you being careful.</p>
+<h2 id="2-task-leases">2. Task leases</h2>
+<p>A lease groups every grant of one task under <strong>two budgets</strong>:</p>
+<ul><li><strong>Time</strong> — <code>max_total</code> you ask for, clamped by <code>limits.max_lease_total</code></li></ul>
+<p>  (default <strong>4h</strong>). This is a hard, non-negotiable ceiling exactly like   <code>max_ttl</code>: the ceiling always wins, it never extends.</p>
+<ul><li><strong>Writes</strong> — <code>max_writes</code> (default <strong>200</strong>). Every lease-covered write</li></ul>
+<p>  consumes one unit; exhausted budget denies the call with an actionable error.</p>
+<p>Open one at task start:</p>
+<pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 1, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_open_task_lease&quot;,
+              &quot;arguments&quot;: { &quot;goal&quot;: &quot;Migrate the billing module&quot;,
+                             &quot;upstreams&quot;: [&quot;github&quot;, &quot;railway&quot;],
+                             &quot;max_total&quot;: &quot;3h&quot;, &quot;max_writes&quot;: 60 } } }</code></pre>
+<pre class="code" data-lang="json"><code>{ &quot;lease_id&quot;: &quot;f47ac10b-…&quot;, &quot;goal&quot;: &quot;Migrate the billing module&quot;,
+  &quot;upstreams&quot;: [&quot;github&quot;, &quot;railway&quot;], &quot;total_ms&quot;: 10800000,
+  &quot;deadline_at&quot;: &quot;2026-07-23T21:00:00.000Z&quot;, &quot;max_writes&quot;: 60,
+  &quot;next_step&quot;: &quot;Request capabilities with lease_id to bind them to this lease; renew them with scopegate_renew_capability before they die.&quot; }</code></pre>
+<p>Then bind your requests with <code>lease_id</code> (lease binding applies to NEW grants; an already-held grant is returned as-is):</p>
+<pre class="code" data-lang="json"><code>{ &quot;capability&quot;: &quot;github:write:easyorder/*&quot;, &quot;reason&quot;: &quot;push the migration&quot;, &quot;lease_id&quot;: &quot;f47ac10b-…&quot; }</code></pre>
+<p>Grants bound to the lease come back with <code>renewable: true</code>. Two rules, fail-closed both: the lease must be <strong>live</strong> (open, before <code>deadline_at</code>) and the capability&#39;s upstream must be <strong>in scope</strong> (<code>upstreams: []</code> means all; anything else refuses with <code>lease_error</code>).</p>
+<h2 id="3-renew-don-t-die">3. Renew, don&#39;t die</h2>
+<p>While the lease lives you renew by yourself — sliding TTL, auto-approved:</p>
+<pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 2, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_renew_capability&quot;,
+              &quot;arguments&quot;: { &quot;grant_id&quot;: &quot;&lt;id from scopegate_list_capabilities&gt;&quot; } } }</code></pre>
+<p>New expiry = <code>min(now + original ttl, lease deadline, rule ceilings)</code> — you can never renew past the lease deadline. Proxied responses warn you when a grant drops below 20% TTL with a structured <code>scopegate_notice</code> (grant_id, expires_in_s, renewable) — renew on the notice, not on the failure.</p>
+<p><code>scopegate_list_capabilities</code> shows the lease itself (goal, status, deadline, writes used/max) next to your grants. Revoking a lease (<code>scopegate cloud</code> panel, or the operator&#39;s policy) drops <strong>every</strong> bound grant at once — one kill switch per task.</p>
+<h2 id="4-idempotent-writes">4. Idempotent writes</h2>
+<p>Any proxied call accepts <code>_sg_idempotency_key</code>. Generate <strong>one key per intention</strong> (never per attempt), e.g. <code>create-issue-billing-migration-2026-07-23</code>:</p>
+<pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 3, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;huly__create_issue&quot;,
+              &quot;arguments&quot;: { &quot;title&quot;: &quot;Billing migration&quot;, &quot;project&quot;: &quot;BILL&quot;,
+                             &quot;_sg_idempotency_key&quot;: &quot;huly-create-billing-migration-v1&quot; } } }</code></pre>
+<ul><li>First call: executes upstream; the result is cached 24h (the key never</li></ul>
+<p>  reaches the upstream).</p>
+<ul><li>Retry with the same key + same args: the cached result is <strong>replayed</strong> — the</li></ul>
+<p>  upstream is never called twice (audit records <code>idempotency_replayed</code>).</p>
+<ul><li>Same key + different args: explicit <code>idempotency_key_conflict</code> error — you</li></ul>
+<p>  are reusing a key for a different intention. Mint a fresh one.</p>
+<p>Combine with <a href="/docs/agents/03-tools-reference#scopegate_recall">recall</a>: &quot;did I already do this write?&quot; is answered from your own audit before you repeat it.</p>
+<h2 id="5-the-pattern-end-to-end">5. The pattern, end to end</h2>
+<ol><li><code>scopegate_policy_summary</code> — what auto-approves, what needs a human.</li><li><code>scopegate_can_i</code> on anything uncertain — zero side effects.</li><li><code>scopegate_open_task_lease</code> for the task (scope upstreams honestly).</li><li>Work through lease-bound grants; renew on the 20% notice.</li><li>Every write carries an idempotency key; every escalation carries</li></ol>
+<p>   <code>execute_on_approval</code> so a human decision completes the work (see    <a href="/docs/agents/02-protocol">02 §4b</a>).</p>
+<ol><li>After a restart or compaction: <code>scopegate_recall</code> to rebuild state — grants,</li></ol>
+<p>   writes done, pending approvals, the lease&#39;s remaining budget.</p>
+<p>Related: <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> · <a href="/docs/agents/03-tools-reference">03 — Tools reference</a> · <a href="/docs/agents/05-policies">05 — Policies</a> · <a href="/docs/agents/06-self-repair">06 — Self-repair</a> · <a href="/docs/agents/07-security-rules">07 — Security rules</a> · <a href="/docs/agents/">Index</a></p>
+  </article>
+
+</main>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <strong>ScopeGate</strong>
+      <p class="dim">Ephemeral credentials &amp; persistent connections for coding agents.</p>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/NexgenSystemsMX/scopegate" rel="noopener">GitHub</a>
+      <a href="https://www.npmjs.com/package/scopegate" rel="noopener">npm</a>
+      <a href="/docs/">Documentation</a>
+      <a href="/panel">Cloud panel</a>
+      <a href="https://github.com/NexgenSystemsMX/scopegate/blob/master/LICENSE" rel="noopener">Apache-2.0</a>
+    </div>
+  </div>
+</footer>
+</body>
+</html>

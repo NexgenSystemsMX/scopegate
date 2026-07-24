@@ -40,6 +40,12 @@ import { Minter, secretRefsOf, type CredentialMode } from "../minter/minter.js";
 import { audit } from "../audit/log.js";
 import { isRateLimitMessage, parseRetryAfterS } from "./errors.js";
 import {
+  IDEMPOTENCY_ARG,
+  hashCallArgs,
+  lookupIdempotent,
+  storeIdempotent,
+} from "./idempotency.js";
+import {
   OAuthRefreshDaemon,
   reauthInstruction,
   type OAuthHealth,
@@ -797,6 +803,36 @@ export class UpstreamProxy {
     const up = this.upstreams.find((u) => u.name === tool.upstream);
     const oauthAuth = up && up.auth.type === "oauth2" ? up.auth : undefined;
     const daemon = oauthAuth ? this.oauthDaemon : undefined;
+
+    // Mejora #6 (idempotent writes): `_sg_idempotency_key` in args is the
+    // agent's dedupe handle — stripped before the upstream call. Same key +
+    // same args → cached replay (upstream untouched); same key + different
+    // args → explicit conflict (keys name intentions, not attempts).
+    let idemKey: string | undefined;
+    let idemArgsHash: string | undefined;
+    let callArgs = args;
+    const rawIdem = args[IDEMPOTENCY_ARG];
+    if (typeof rawIdem === "string" && rawIdem.length > 0) {
+      idemKey = rawIdem;
+      callArgs = { ...args };
+      delete (callArgs as Record<string, unknown>)[IDEMPOTENCY_ARG];
+      idemArgsHash = hashCallArgs(callArgs);
+      const lookup = lookupIdempotent(idemKey, idemArgsHash);
+      if (lookup.outcome === "replay") {
+        audit(this.agentId, "idempotency_replayed", {
+          upstream: tool.upstream,
+          tool: exposedName,
+          key: idemKey,
+        });
+        return lookup.result;
+      }
+      if (lookup.outcome === "conflict") {
+        throw new Error(
+          `idempotency_key_conflict: key '${idemKey}' was already used with DIFFERENT args — ` +
+            `pick a new key for a new intention (keys name intentions, not attempts).`,
+        );
+      }
+    }
     // A grant already known to be dead fails fast (no retry loop, no dead
     // token on the wire); reauthBlockReason also recovers the daemon when the
     // human already completed `scopegate auth login`.
@@ -830,10 +866,15 @@ export class UpstreamProxy {
           : await this.getConnection(tool.upstream, ctx);
         const result = await conn.client.callTool({
           name: tool.upstreamName,
-          arguments: args,
+          arguments: callArgs,
         });
         if (handle && poolUp && pool) this.releasePoolEntry(poolUp, pool, handle, true);
         this.circuitSuccess(tool.upstream);
+        if (idemKey && idemArgsHash) {
+          // Persist ONLY after a genuine upstream success — a replay never
+          // stands in for a result the upstream never produced.
+          storeIdempotent(idemKey, tool.upstream, tool.upstreamName, idemArgsHash, result);
+        }
         return result;
       } catch (e) {
         lastError = e;

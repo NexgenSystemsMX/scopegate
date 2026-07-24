@@ -118,6 +118,9 @@ async function main() {
             // preflight-only fixture (mejora #3) — never requested, so no
             // live grant ever covers it in this run
             { match: "fakegit:call:danger3", require: "human_approval", ttl: "10m" },
+            // lease fixture (mejora #1) — fresh capability, never requested
+            // outside the lease section (lease binding applies to NEW grants)
+            { match: "fakegit:call:leased", auto_approve: true, ttl: "10m" },
             // PII in the RESPONSE is masked under this rule
             { match: "fakegit:call:pii_echo", auto_approve: true, ttl: "5m", redact: ["pii"] },
           ],
@@ -453,6 +456,67 @@ async function main() {
     );
     assert.ok(Array.isArray(recall.active_grants) && Array.isArray(recall.writes));
     pass("scopegate_recall returns my actions, writes, grants and pending approvals");
+
+    // 16e. Mejora #1 (task leases) + mejora #6 (idempotent writes).
+    const leaseRes = parse(
+      await client.callTool({
+        name: "scopegate_open_task_lease",
+        arguments: { goal: "e2e long task", upstreams: ["fakegit"], max_total: "1h", max_writes: 3 },
+      }),
+    );
+    assert.ok(leaseRes.lease_id, `expected lease_id: ${JSON.stringify(leaseRes)}`);
+    assert.equal(leaseRes.total_ms, 3600_000);
+    assert.equal(leaseRes.max_writes, 3);
+    const leaseId = leaseRes.lease_id;
+    pass("scopegate_open_task_lease opens a lease with the double budget");
+
+    // Lease binding applies to NEW grants (fakegit:call:leased is fresh here).
+    const bound = parse(
+      await client.callTool({
+        name: "scopegate_request_capability",
+        arguments: { capability: "fakegit:call:leased", ttl: "10m", reason: "lease-bound", lease_id: leaseId },
+      }),
+    );
+    assert.equal(bound.granted, true, `expected grant: ${JSON.stringify(bound)}`);
+    assert.equal(bound.lease_id, leaseId);
+    assert.equal(bound.renewable, true);
+    pass("lease-bound request issues a grant carrying lease_id + renewable");
+
+    const capsForLease = parse(await client.callTool({ name: "scopegate_list_capabilities", arguments: {} }));
+    const leaseGrant = capsForLease.active_grants.find((g) => g.lease_id === leaseId);
+    assert.ok(leaseGrant, `grant must be bound to the lease: ${JSON.stringify(capsForLease.active_grants)}`);
+    assert.ok(capsForLease.leases.some((l) => l.lease_id === leaseId && l.status === "open"));
+    const renewed = parse(
+      await client.callTool({ name: "scopegate_renew_capability", arguments: { grant_id: leaseGrant.id } }),
+    );
+    assert.equal(renewed.renewed, true, `expected renew: ${JSON.stringify(renewed)}`);
+    assert.equal(renewed.lease_id, leaseId);
+    assert.ok(renewed.expires_in_seconds > 0);
+    pass("scopegate_renew_capability slides the grant expiry while the lease lives");
+
+    // Out-of-scope lease usage is refused fail-closed.
+    const outOfScope = parse(
+      await client.callTool({
+        name: "scopegate_request_capability",
+        arguments: { capability: "jwtupstream:call:echo_auth", ttl: "5m", reason: "out of scope", lease_id: leaseId },
+      }),
+    );
+    assert.equal(outOfScope.granted, false, `expected refusal: ${JSON.stringify(outOfScope)}`);
+    assert.equal(outOfScope.code, "lease_error");
+    assert.match(outOfScope.reason, /out of scope/);
+    pass("out-of-scope lease usage is refused (lease_error)");
+
+    // Idempotency: the second identical call replays; a different payload with
+    // the same key is an explicit conflict.
+    const idemArgs = { _sg_idempotency_key: "e2e-idem-1" };
+    const w1 = await client.callTool({ name: "fakegit__whoami", arguments: idemArgs });
+    assert.notEqual(w1.isError, true, `first call failed: ${w1.content[0].text}`);
+    const w2 = await client.callTool({ name: "fakegit__whoami", arguments: idemArgs });
+    assert.deepEqual(JSON.parse(JSON.stringify(w2)), JSON.parse(JSON.stringify(w1)));
+    const w3 = await client.callTool({ name: "fakegit__whoami", arguments: { _sg_idempotency_key: "e2e-idem-1", other: 1 } });
+    assert.equal(w3.isError, true, "same key + different args must conflict");
+    assert.match(w3.content[0].text, /idempotency_key_conflict/);
+    pass("idempotency: same key+args replays, same key+different args conflicts");
 
     // 17. redact: [pii] masks email/card in the proxied tool RESPONSE.
     const pii = await client.callTool({ name: "fakegit__pii_echo", arguments: {} });

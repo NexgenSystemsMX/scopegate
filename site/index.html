@@ -151,7 +151,7 @@
       <div class="fact"><span class="fact-num">&lt;90s</span><span class="fact-lbl">install → first tool call</span></div>
       <div class="fact"><span class="fact-num">&lt;30s</span><span class="fact-lbl">fleet revocation, online</span></div>
       <div class="fact"><span class="fact-num">0</span><span class="fact-lbl">secrets in the model's context</span></div>
-      <div class="fact"><span class="fact-num">12</span><span class="fact-lbl">MCP tools for the agent</span></div>
+      <div class="fact"><span class="fact-num">14</span><span class="fact-lbl">MCP tools for the agent</span></div>
       <div class="fact"><span class="fact-num">5</span><span class="fact-lbl">native connectors</span></div>
       <div class="fact"><span class="fact-num">Apache-2.0</span><span class="fact-lbl">open source, self-hosted</span></div>
     </div>
@@ -408,6 +408,23 @@ first tool call at 87s — zero secrets in context</pre>
           Every failure is a structured envelope — <code>{kind, next_action, retry_after_s}</code> —
           so agents decide retry/renew/escalate without guessing. Dead upstreams fail
           fast behind a per-upstream circuit breaker; 429s are absorbed server-side.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Task leases</h3>
+        <p>
+          Grants that survive hours-long tasks: a double budget (total time,
+          hard-clamped at 4 h; write count) with agent-driven renewal
+          (<code>scopegate_renew_capability</code>) and a structured warning at 20% TTL —
+          the task finishes instead of dying at 70%.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Idempotent writes</h3>
+        <p>
+          One <code>_sg_idempotency_key</code> per intention: the gateway dedupes retries
+          for 24 h — replayed results without a second upstream write, and an explicit
+          conflict when a key is reused for a different intention.
         </p>
       </div>
     </div>

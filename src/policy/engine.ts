@@ -48,6 +48,12 @@ import {
 import { audit, type AuditKind } from "../audit/log.js";
 import { GrantStore } from "./grants.js";
 import {
+  LeaseStore,
+  DEFAULT_LEASE_TOTAL_MS,
+  DEFAULT_LEASE_MAX_WRITES,
+  type Lease,
+} from "./leases.js";
+import {
   createApprovalRequest,
   readPendingRequests,
   readDecisions,
@@ -86,6 +92,8 @@ export interface PolicyLimits {
   deny?: string[];
   /** Sliding-window limit for scopegate_request_capability (e.g. "30/m"). */
   rate_limit?: string;
+  /** Absolute ceiling for a task-lease total duration (mejora #1; e.g. "4h"). */
+  max_lease_total?: string;
   /** Lifetime of a pending human-approval request (default 10m). */
   approval_ttl?: string;
 }
@@ -115,7 +123,9 @@ export type DenyCode =
   | "no_rule"
   | "ceiling_blocked"
   | "invalid_ttl"
-  | "config_error";
+  | "config_error"
+  /** Lease unusable for the request (dead, unknown, or out of scope). */
+  | "lease_error";
 
 export type Decision =
   | { allow: true; ttlMs: number; rule: string }
@@ -207,7 +217,7 @@ export class PolicyConfigError extends Error {}
 /* ------------------------------------------------------------------------ */
 
 const RULE_KEYS = new Set(["match", "auto_approve", "ttl", "require", "redact"]);
-const LIMIT_KEYS = new Set(["max_ttl", "deny", "rate_limit", "approval_ttl"]);
+const LIMIT_KEYS = new Set(["max_ttl", "deny", "rate_limit", "approval_ttl", "max_lease_total"]);
 
 function assertCompilableGlob(glob: unknown, where: string): asserts glob is string {
   if (typeof glob !== "string" || !glob.trim()) {
@@ -249,6 +259,7 @@ function validateLimits(raw: unknown, where: string): void {
   }
   const lim = raw as PolicyLimits;
   if (lim.max_ttl !== undefined) strictTtlAt(lim.max_ttl, `${where}.max_ttl`);
+  if (lim.max_lease_total !== undefined) strictTtlAt(lim.max_lease_total, `${where}.max_lease_total`);
   if (lim.approval_ttl !== undefined) strictTtlAt(lim.approval_ttl, `${where}.approval_ttl`);
   if (lim.deny !== undefined) {
     if (!Array.isArray(lim.deny)) {
@@ -412,6 +423,9 @@ export class PolicyEngine {
     | ((intent: ApprovalIntent) => Promise<{ ok: boolean; result?: unknown; error?: string }>)
     | null = null;
 
+  /** Mejora #1: task-lease store (grants grouped per task with a double budget). */
+  private leases = new LeaseStore();
+
   constructor(policies: PoliciesFile, deps: { grants?: GrantStore } = {}) {
     this.policies = policies;
     this.grants = deps.grants ?? new GrantStore();
@@ -432,7 +446,13 @@ export class PolicyEngine {
   }
 
   /** Evaluate a capability request. Grants persist on disk and expire by TTL. */
-  request(agentId: string, capability: string, ttl?: string, reason = ""): Decision {
+  request(
+    agentId: string,
+    capability: string,
+    ttl?: string,
+    reason = "",
+    opts?: { leaseId?: string },
+  ): Decision {
     // Pick up human decisions first: an approved request materializes its
     // one-shot grant here (fresh read by mtime — no cross-process watchers).
     this.refreshApprovals(agentId);
@@ -443,6 +463,16 @@ export class PolicyEngine {
     // No-op when no team policy is installed (local-first default).
     const teamGateDeny = this.teamGate(agentId, capability);
     if (teamGateDeny) return teamGateDeny;
+
+    // Mejora #1: a lease-bound request is validated UP FRONT (live + upstream
+    // scope) — an existing grant must never bypass the lease's scope check.
+    if (opts?.leaseId) {
+      try {
+        this.assertLeaseUsable(agentId, opts.leaseId, capability);
+      } catch (e) {
+        return { allow: false, code: "lease_error", reason: (e as Error).message };
+      }
+    }
 
     // Idempotent re-request: a live covering grant (including one just
     // materialized from an approval) is returned, not duplicated.
@@ -577,6 +607,7 @@ export class PolicyEngine {
           ttlMs,
           redact: rule.redact,
           rule: rule.match,
+          ...(opts?.leaseId ? { leaseId: opts.leaseId } : {}),
         });
         bestEffortAudit(agentId, "grant_issued", {
           id: grant.id,
@@ -789,6 +820,157 @@ export class PolicyEngine {
     }
     return removed;
   }
+
+  /* ---------------------------------------------------------------------- */
+  /* Mejora #1: task leases                                                  */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Open a task lease. `max_total` is CLAMPED by limits.max_lease_total
+   * (default 4h — a hard, non-negotiable ceiling exactly like max_ttl:
+   * the ceiling always wins, it never extends). `max_writes` defaults to 200.
+   */
+  openLease(
+    agentId: string,
+    input: {
+      goal: string;
+      upstreams: string[];
+      max_total?: string;
+      max_writes?: number;
+    },
+  ): { lease: Lease; clamped: boolean } {
+    const limits = effectiveLimitsFor(this.policies, agentId);
+    const ceilingMs = limits.max_lease_total
+      ? parseTtlStrict(limits.max_lease_total, "limits.max_lease_total")
+      : DEFAULT_LEASE_TOTAL_MS;
+    let totalMs = ceilingMs;
+    let clamped = false;
+    if (input.max_total !== undefined) {
+      const asked = parseTtlStrict(input.max_total, "max_total");
+      if (asked < ceilingMs) totalMs = asked;
+      else clamped = asked > ceilingMs;
+    }
+    const maxWrites =
+      input.max_writes !== undefined && Number.isInteger(input.max_writes) && input.max_writes > 0
+        ? input.max_writes
+        : DEFAULT_LEASE_MAX_WRITES;
+    const lease = this.leases.open({
+      agentId,
+      goal: input.goal,
+      upstreams: input.upstreams,
+      totalMs,
+      ceilingMs,
+      maxWrites,
+    });
+    bestEffortAudit(agentId, "lease_opened", {
+      leaseId: lease.leaseId,
+      goal: lease.goal,
+      upstreams: lease.upstreams,
+      totalMs: lease.totalMs,
+      deadlineAt: new Date(lease.deadlineMs).toISOString(),
+      maxWrites: lease.maxWrites,
+      clamped,
+    });
+    return { lease, clamped };
+  }
+
+  /** A capability request may bind to a lease: it must be live AND in scope. */
+  private assertLeaseUsable(agentId: string, leaseId: string, capability: string): Lease {
+    const lease = this.leases.get(leaseId);
+    if (!lease || lease.agentId !== agentId) {
+      throw new Error(`Unknown lease '${leaseId}' for agent '${agentId}'.`);
+    }
+    if (!this.leases.isLive(leaseId)) {
+      throw new Error(
+        `Lease '${leaseId}' is ${lease.status} (deadline ${new Date(lease.deadlineMs).toISOString()}) — open a new one with scopegate_open_task_lease.`,
+      );
+    }
+    const upstream = capability.split(":")[0];
+    if (lease.upstreams.length > 0 && !lease.upstreams.includes(upstream)) {
+      throw new Error(
+        `Lease '${leaseId}' is scoped to upstreams [${lease.upstreams.join(", ")}] — capability '${capability}' is out of scope.`,
+      );
+    }
+    return lease;
+  }
+
+  /**
+   * Renew a lease-covered grant (sliding TTL): new expiry =
+   * min(now + original ttl, lease deadline, rule ceilings) — the lease's
+   * live status and scope are re-validated every time. Auto-approved while
+   * the lease lives; never past the lease deadline (the hard budget).
+   */
+  renewGrant(agentId: string, grantId: string): { grantId: string; expiresAt: number; leaseId: string } {
+    const grant = this.grants.byId(agentId, grantId);
+    if (!grant) {
+      throw new Error(
+        `No live grant '${grantId}' for agent '${agentId}' — it may have expired; request a fresh capability.`,
+      );
+    }
+    if (!grant.leaseId) {
+      throw new Error(
+        `Grant '${grantId}' is not covered by any lease — renew by re-requesting the capability (scopegate_request_capability).`,
+      );
+    }
+    const lease = this.assertLeaseUsable(agentId, grant.leaseId, grant.capability);
+    const originalTtl = Math.max(1, grant.expiresAt - grant.grantedAt);
+    const now = Date.now();
+    // Re-apply the same ceilings as a fresh request: rule/max_ttl clamp of
+    // the ORIGINAL ttl, then the lease deadline as the outermost bound.
+    let newExpiry = now + originalTtl;
+    const evald = this.evaluate(agentId, grant.capability);
+    if (evald.decision === "allow" && evald.ttl_ms !== undefined) {
+      newExpiry = Math.min(newExpiry, now + evald.ttl_ms);
+    }
+    newExpiry = Math.min(newExpiry, lease.deadlineMs);
+    if (newExpiry <= now) {
+      throw new Error(
+        `Cannot renew: the lease '${lease.leaseId}' deadline has passed — open a new lease with scopegate_open_task_lease.`,
+      );
+    }
+    this.grants.updateExpiry(agentId, grantId, newExpiry);
+    bestEffortAudit(agentId, "lease_renewed", {
+      leaseId: lease.leaseId,
+      grantId,
+      capability: grant.capability,
+      expiresAt: new Date(newExpiry).toISOString(),
+      leaseRemainingMs: lease.deadlineMs - now,
+    });
+    return { grantId, expiresAt: newExpiry, leaseId: lease.leaseId };
+  }
+
+  /** Revoke a lease and every grant bound to it (one kill switch per task). */
+  revokeLease(agentId: string, leaseId: string): { revokedGrants: number } {
+    const lease = this.leases.get(leaseId);
+    if (!lease || lease.agentId !== agentId) {
+      throw new Error(`Unknown lease '${leaseId}' for agent '${agentId}'.`);
+    }
+    this.leases.revoke(leaseId);
+    const revokedGrants = this.grants.revokeLease(leaseId);
+    bestEffortAudit(agentId, "lease_revoked", {
+      leaseId,
+      goal: lease.goal,
+      revokedGrants,
+    });
+    return { revokedGrants };
+  }
+
+  leasesForAgent(agentId: string): Lease[] {
+    return this.leases.listForAgent(agentId);
+  }
+
+  /** Write-budget accounting for lease-covered proxied writes. */
+  consumeLeaseWrite(leaseId: string): boolean {
+    return this.leases.consumeWrite(leaseId);
+  }
+
+  leaseWritesRemaining(leaseId: string): number {
+    return this.leases.writesRemaining(leaseId);
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Mejora #1: task leases — end                                            */
+  /* ---------------------------------------------------------------------- */
 
   /**
    * Sliding-window rate limit for scopegate_request_capability (H-04.7).

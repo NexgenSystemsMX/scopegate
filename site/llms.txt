@@ -25,7 +25,9 @@
 ## Facts
 
 - Open source, Apache-2.0. Gateway is local-first: the cloud management plane is optional and metadata-only (it never receives secret values).
-- Twelve MCP tools: `scopegate_request_capability`, `scopegate_list_capabilities`, `scopegate_register_upstream`, `scopegate_diagnose`, `scopegate_propose_policy`, `scopegate_vault_status`, `scopegate_collect`, `scopegate_wait`, `scopegate_upstream_health`, `scopegate_can_i`, `scopegate_policy_summary`, `scopegate_recall`.
+- Fourteen MCP tools: `scopegate_request_capability`, `scopegate_list_capabilities`, `scopegate_register_upstream`, `scopegate_diagnose`, `scopegate_propose_policy`, `scopegate_vault_status`, `scopegate_collect`, `scopegate_wait`, `scopegate_upstream_health`, `scopegate_can_i`, `scopegate_policy_summary`, `scopegate_recall`, `scopegate_open_task_lease`, `scopegate_renew_capability`.
+- Task leases: `scopegate_open_task_lease` groups a task's grants under a double budget (total time, hard-clamped by limits.max_lease_total default 4h; write count); the agent renews grants itself with `scopegate_renew_capability` (sliding TTL, never past the deadline) and gets a structured warning at <20% TTL.
+- Idempotent writes: `_sg_idempotency_key` on any proxied call — same key + same args replays the cached result (upstream untouched, 24h); same key + different args is an explicit conflict error.
 - Approval continuation: `execute_on_approval` queues the intended call; the gateway executes it the moment the human approves (CLI or panel) and the agent collects the outcome with `scopegate_collect`/`scopegate_wait` — no polling loops, no abandoned tasks.
 - Policy preflight: `scopegate_can_i` answers allow|needs_approval|deny with zero side effects, and `scopegate_policy_summary` is the session-start digest — plan the task instead of learning from denials.
 - Agent recall: `scopegate_recall` exposes the agent's own signed audit as session memory (recent actions, writes, active grants, pending approvals) — scoped to its agentId only.

@@ -36,6 +36,7 @@ reference material you pull in on demand.
 | [05 — Policies](./05-policies.md) | When a capability is denied, or before proposing a policy change. |
 | [06 — Self-repair](./06-self-repair.md) | On any auth or connection error — before telling the human it failed. |
 | [07 — Security rules](./07-security-rules.md) | Always. The non-negotiables. Re-read whenever unsure. |
+| [08 — Long tasks](./08-long-tasks.md) | Multi-hour work: task leases, grant renewals, idempotent writes, the end-to-end pattern. |
 
 ## The seven guides
 

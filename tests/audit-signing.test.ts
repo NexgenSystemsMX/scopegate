@@ -199,6 +199,8 @@ describe("audit signing (EPIC-07)", () => {
       "honeytoken_triggered", "agent_revoked",
       // Mejoras del agente (append-only, wave A): approval continuation.
       "intent_queued", "intent_executed",
+      // Mejoras del agente (append-only, wave C): task leases.
+      "lease_opened", "lease_renewed", "lease_revoked", "idempotency_replayed",
     ];
     expect([...AUDIT_KINDS].sort()).toEqual(expected.sort());
   });

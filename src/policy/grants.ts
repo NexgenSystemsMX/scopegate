@@ -41,6 +41,8 @@ export interface Grant {
   approvalId?: string;
   /** The policy rule glob that issued the grant (informational). */
   rule?: string;
+  /** Set when the grant belongs to a task lease (mejora #1). */
+  leaseId?: string;
 }
 
 interface GrantsFile {
@@ -99,6 +101,7 @@ export class GrantStore {
     redact?: string[];
     approvalId?: string;
     rule?: string;
+    leaseId?: string;
   }): Grant {
     const now = Date.now();
     const grant: Grant = {
@@ -110,10 +113,39 @@ export class GrantStore {
       ...(input.redact?.length ? { redact: input.redact } : {}),
       ...(input.approvalId ? { approvalId: input.approvalId } : {}),
       ...(input.rule ? { rule: input.rule } : {}),
+      ...(input.leaseId ? { leaseId: input.leaseId } : {}),
     };
     this.grants.push(grant);
     this.save();
     return grant;
+  }
+
+  /** A single grant by id (undefined when absent or expired). */
+  byId(agentId: string, grantId: string, now: number = Date.now()): Grant | undefined {
+    this.purgeExpired(now);
+    return this.grants.find((g) => g.agentId === agentId && g.id === grantId);
+  }
+
+  /**
+   * Slide a grant's expiry forward (mejora #1 renew). The caller computes
+   * the new expiry under every ceiling; this only persists it. grantedAt
+   * stays — the full lease history remains attributable.
+   */
+  updateExpiry(agentId: string, grantId: string, newExpiresAt: number): Grant | undefined {
+    const grant = this.grants.find((g) => g.agentId === agentId && g.id === grantId);
+    if (!grant) return undefined;
+    grant.expiresAt = newExpiresAt;
+    this.save();
+    return grant;
+  }
+
+  /** Revoke every grant bound to a lease; returns how many were dropped. */
+  revokeLease(leaseId: string): number {
+    const before = this.grants.length;
+    this.grants = this.grants.filter((g) => g.leaseId !== leaseId);
+    const removed = before - this.grants.length;
+    if (removed > 0) this.save();
+    return removed;
   }
 
   /**

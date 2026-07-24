@@ -73,6 +73,11 @@ export const AUDIT_KINDS = [
   // Mejoras del agente (append-only, wave A): approval continuation.
   "intent_queued",
   "intent_executed",
+  // Mejoras del agente (append-only, wave C): task leases + idempotency.
+  "lease_opened",
+  "lease_renewed",
+  "lease_revoked",
+  "idempotency_replayed",
 ] as const;
 
 export type AuditKind = (typeof AUDIT_KINDS)[number];

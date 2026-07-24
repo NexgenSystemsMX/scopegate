@@ -40,6 +40,12 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 - `scopegate_can_i` — read-only policy preflight (allow|needs_approval|deny + effective TTL) with zero side effects; plan the task instead of learning from denials.
 - `scopegate_policy_summary` — the session-start policy digest: auto-approve globs, requires-approval globs, hard-limit deny globs, ceilings, team layer.
 - `scopegate_recall` — the agent's own signed audit as session memory (recent actions, writes, active grants with remaining TTL, pending approvals), scoped to its agentId only.
+- `scopegate_open_task_lease` — open a task lease for long-running work: a double budget (total time, hard-clamped by limits.max_lease_total default 4h; write count, default 200). Lease-covered grants renew under the agent's control; revoking the lease revokes every bound grant at once.
+- `scopegate_renew_capability` — renew a lease-covered grant (sliding TTL): new expiry = min(now + original ttl, lease deadline, rule ceilings). Proxied responses warn the agent at <20% TTL so it renews before dying.
+
+## Idempotent writes (`_sg_idempotency_key`)
+
+Any proxied call may carry `_sg_idempotency_key` (stripped before the upstream call). Same key + same args hash: the cached result is replayed without touching the upstream (24 h TTL). Same key + different args: an explicit `idempotency_key_conflict` error — keys name intentions, not attempts. The gateway dedupes, so agent retries after timeouts never duplicate writes.
 
 ## Failure handling (agent-facing)
 
