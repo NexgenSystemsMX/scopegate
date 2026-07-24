@@ -115,6 +115,9 @@ async function main() {
             // approval-continuation fixture (mejora #2) — separate capability
             // so its grant lifecycle never collides with the danger flow
             { match: "fakegit:call:danger2", require: "human_approval", ttl: "10m" },
+            // preflight-only fixture (mejora #3) — never requested, so no
+            // live grant ever covers it in this run
+            { match: "fakegit:call:danger3", require: "human_approval", ttl: "10m" },
             // PII in the RESPONSE is masked under this rule
             { match: "fakegit:call:pii_echo", auto_approve: true, ttl: "5m", redact: ["pii"] },
           ],
@@ -394,6 +397,62 @@ async function main() {
     assert.equal(envParsed.kind, "missing_scope", `expected missing_scope kind: ${envelope.content[0].text}`);
     assert.equal(envParsed.next_action, "request_capability", `expected request_capability action: ${envelope.content[0].text}`);
     pass("failures surface as machine-readable envelopes (kind + next_action)");
+
+    // 16d. Mejora #3 (policy preflight) + mejora #9 (recall as session memory).
+    const canAllow = parse(
+      await client.callTool({ name: "scopegate_can_i", arguments: { capability: "fakegit:call:whoami" } }),
+    );
+    assert.equal(canAllow.decision, "allow", `expected allow: ${JSON.stringify(canAllow)}`);
+    assert.ok(canAllow.ttl_ms > 0, "allow must carry the effective ttl_ms");
+    assert.ok(canAllow.recommended_next, "preflight must recommend the next step");
+    // danger2 is covered by the continuation's live grant (covered branch).
+    const canCovered = parse(
+      await client.callTool({ name: "scopegate_can_i", arguments: { capability: "fakegit:call:danger2" } }),
+    );
+    assert.equal(canCovered.decision, "allow", `expected covered allow: ${JSON.stringify(canCovered)}`);
+    assert.equal(canCovered.covered_by_existing_grant, true);
+    // danger3 is never requested in this run → needs_approval, via local_policy.
+    const canApprove = parse(
+      await client.callTool({ name: "scopegate_can_i", arguments: { capability: "fakegit:call:danger3" } }),
+    );
+    assert.equal(canApprove.decision, "needs_approval", `expected needs_approval: ${JSON.stringify(canApprove)}`);
+    assert.equal(canApprove.via, "local_policy");
+    const canDeny = parse(
+      await client.callTool({ name: "scopegate_can_i", arguments: { capability: "stripe:write:*" } }),
+    );
+    assert.equal(canDeny.decision, "deny", `expected deny: ${JSON.stringify(canDeny)}`);
+    assert.equal(canDeny.code, "no_rule");
+    // Zero side effects: the preflight must NOT have queued an approval for danger2
+    // (the queue file exists from earlier flows, but no new pending line for it).
+    const pendingNow = fs.existsSync(path.join(home, "approvals.pending.jsonl"))
+      ? fs.readFileSync(path.join(home, "approvals.pending.jsonl"), "utf8")
+      : "";
+    assert.ok(
+      !pendingNow.includes("fakegit:call:danger2") || pendingNow.split("fakegit:call:danger2").length <= 2,
+      "preflight must not queue approval requests",
+    );
+    pass("scopegate_can_i preflights allow/needs_approval/deny with zero side effects");
+
+    const summary = parse(await client.callTool({ name: "scopegate_policy_summary", arguments: {} }));
+    assert.ok(summary.auto_approve.includes("fakegit:call:whoami"), `summary auto_approve: ${JSON.stringify(summary)}`);
+    assert.ok(summary.requires_approval.includes("fakegit:call:danger2"), `summary requires_approval: ${JSON.stringify(summary)}`);
+    assert.ok(summary.deny_globs.includes("aws:*:production"), `summary deny_globs: ${JSON.stringify(summary)}`);
+    assert.equal(summary.max_ttl, "30m");
+    pass("scopegate_policy_summary digests rules + ceilings for planning");
+
+    const recall = parse(await client.callTool({ name: "scopegate_recall", arguments: {} }));
+    assert.equal(recall.agentId, "e2e-agent");
+    assert.ok(recall.counts.actions > 0, "recall must see my earlier actions");
+    assert.ok(
+      recall.recent_actions.some((a) => a.kind === "intent_executed" && a.tool === "fakegit__danger2"),
+      `recall must include the continuation execution: ${JSON.stringify(recall.recent_actions.slice(-5))}`,
+    );
+    assert.ok(
+      recall.recent_actions.some((a) => a.kind === "tool_call" && a.tool === "fakegit__whoami"),
+      "recall must include direct tool calls",
+    );
+    assert.ok(Array.isArray(recall.active_grants) && Array.isArray(recall.writes));
+    pass("scopegate_recall returns my actions, writes, grants and pending approvals");
 
     // 17. redact: [pii] masks email/card in the proxied tool RESPONSE.
     const pii = await client.callTool({ name: "fakegit__pii_echo", arguments: {} });

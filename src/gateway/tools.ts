@@ -66,6 +66,38 @@ export const MANAGEMENT_TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "scopegate_can_i",
+    description:
+      "Read-only policy preflight: would this capability be allowed right now? Returns {decision: allow|needs_approval|deny, rule?, via?, ttl_ms?, code?, reason} with NO side effects (nothing issued, nothing queued, nothing audited). Use it to plan a task instead of learning from denials.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        capability: { type: "string", description: "Capability string, e.g. 'github:write:easyorder/*'" },
+        ttl: { type: "string", description: "Optional TTL to evaluate the effective clamp (e.g. '15m')." },
+      },
+      required: ["capability"],
+    },
+  },
+  {
+    name: "scopegate_policy_summary",
+    description:
+      "Your policy digest for session-start planning: which capability globs auto-approve, which require human approval, the hard-limit deny globs, and every ceiling (max_ttl, approval_ttl, rate_limit) plus the team-policy layer when installed. Read-only.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "scopegate_recall",
+    description:
+      "Your session memory: a scoped view of YOUR OWN signed audit trail — recent actions, writes effected, active grants with remaining TTL, and pending approvals. Use it after a restart or context compaction to reconstruct state instead of re-reading or repeating work. Only your agentId is visible.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: { type: "string", description: "ISO 8601 lower bound (e.g. '2026-07-23T00:00:00Z'). Default: last 2 hours." },
+        kinds: { type: "array", items: { type: "string" }, description: "Optional audit-kind filter (e.g. ['tool_call','grant_issued'])." },
+        limit: { type: "number", description: "Max actions returned (default 50, max 200)." },
+      },
+    },
+  },
+  {
     name: "scopegate_list_capabilities",
     description:
       "List the currently active (non-expired) capability grants for this agent, with remaining TTL.",

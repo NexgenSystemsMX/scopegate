@@ -151,7 +151,7 @@
       <div class="fact"><span class="fact-num">&lt;90s</span><span class="fact-lbl">install → first tool call</span></div>
       <div class="fact"><span class="fact-num">&lt;30s</span><span class="fact-lbl">fleet revocation, online</span></div>
       <div class="fact"><span class="fact-num">0</span><span class="fact-lbl">secrets in the model's context</span></div>
-      <div class="fact"><span class="fact-num">9</span><span class="fact-lbl">MCP tools for the agent</span></div>
+      <div class="fact"><span class="fact-num">12</span><span class="fact-lbl">MCP tools for the agent</span></div>
       <div class="fact"><span class="fact-num">5</span><span class="fact-lbl">native connectors</span></div>
       <div class="fact"><span class="fact-num">Apache-2.0</span><span class="fact-lbl">open source, self-hosted</span></div>
     </div>
@@ -361,7 +361,9 @@ first tool call at 87s — zero secrets in context</pre>
         <h3>Policy engine</h3>
         <p>
           Declarative YAML: per-agent scopes, TTL ceilings, rate limits, PII redaction.
-          Hard limits are fail-closed — <code>deny</code> globs beat any rule.
+          Hard limits are fail-closed — <code>deny</code> globs beat any rule. Agents preflight
+          with <code>scopegate_can_i</code> instead of learning from denials, and reconstruct
+          state after restarts with <code>scopegate_recall</code>.
         </p>
       </div>
       <div class="card">

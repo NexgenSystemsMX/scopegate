@@ -26,7 +26,7 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 2. Human deposits secrets once per secret: `scopegate secret add <ref>`.
 3. The agent operates by itself through six MCP tools, holding TTL grants instead of credentials. Time from init to first proxied tool call: under 90 seconds.
 
-## The nine agent tools (MCP)
+## The twelve agent tools (MCP)
 
 - `scopegate_request_capability` — ask for a scoped, TTL-bound grant before a privileged action; returns the grant, a denial with actionable reason, or `pending_human_approval` with an `approval_id`. Accepts `execute_on_approval {tool, args}` (approval continuation).
 - `scopegate_list_capabilities` — active grants and remaining TTL.
@@ -37,6 +37,9 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 - `scopegate_collect` — collect the outcome of an approval continuation (executed/failed/pending) — persisted in the gateway home, survives restarts.
 - `scopegate_wait` — long-poll (max 120 s) for a continuation outcome; the agent never burns turns polling.
 - `scopegate_upstream_health` — per-upstream liveness, tool count, oauth state and circuit-breaker state (closed|open|half_open).
+- `scopegate_can_i` — read-only policy preflight (allow|needs_approval|deny + effective TTL) with zero side effects; plan the task instead of learning from denials.
+- `scopegate_policy_summary` — the session-start policy digest: auto-approve globs, requires-approval globs, hard-limit deny globs, ceilings, team layer.
+- `scopegate_recall` — the agent's own signed audit as session memory (recent actions, writes, active grants with remaining TTL, pending approvals), scoped to its agentId only.
 
 ## Failure handling (agent-facing)
 

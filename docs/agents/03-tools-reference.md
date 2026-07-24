@@ -1,6 +1,6 @@
 # 03 — MCP Tools Reference
 
-Exact reference of the nine `scopegate_*` management tools, plus how proxied
+Exact reference of the twelve `scopegate_*` management tools, plus how proxied
 upstream tools (`<upstream>__<tool>`) work. Every shape here is traceable to
 `src/gateway/tools.ts`, `src/gateway/server.ts` and `src/policy/engine.ts`.
 Read [02 — Agent Protocol](./02-protocol.md) first; use this as its lookup table.
@@ -190,6 +190,91 @@ circuit-breaker state — use it before deciding to retry).
 `circuit.state` is `closed` (healthy), `open` (fail-fast after 5 consecutive failures,
 30 s) or `half_open` (a single probe is deciding).
 
+## scopegate_can_i
+
+Read-only policy preflight — plan a task without learning from denials. **Zero
+side effects**: nothing is issued, queued or audited, so it never dirties your
+trail or the human's queue.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `capability` | string | yes | e.g. `github:write:easyorder/*` |
+| `ttl` | string | no | evaluates the effective clamp too |
+
+**Responses**
+
+```json
+{ "capability": "fakegit:call:whoami", "decision": "allow", "ttl_ms": 600000,
+  "rule": "fakegit:call:whoami", "reason": "Auto-approved by rule 'fakegit:call:whoami'.",
+  "recommended_next": "Proceed — call scopegate_request_capability (or the tool directly)." }
+```
+
+```json
+{ "capability": "fakegit:call:danger3", "decision": "needs_approval", "via": "local_policy",
+  "rule": "fakegit:call:danger3", "recommended_next": "Plan for a human approval — request with execute_on_approval so the work completes on approval." }
+```
+
+```json
+{ "capability": "aws:write:production", "decision": "deny", "code": "ceiling_blocked",
+  "hard": true, "recommended_next": "Hard limit — do NOT attempt this in any form; only a human policy change would allow it." }
+```
+
+`decision: "allow"` may also carry `covered_by_existing_grant: true` (you already
+hold it — call the tool directly). Denials reuse the `request_capability` codes
+(`no_policy | no_rule | ceiling_blocked | invalid_ttl | config_error`).
+
+## scopegate_policy_summary
+
+Your policy digest for session-start planning (read-only).
+
+```json
+{
+  "agentId": "kimi-code",
+  "agent_found": true,
+  "default_ttl": "15m",
+  "auto_approve": ["fakegit:call:whoami", "db:read:*"],
+  "requires_approval": ["fakegit:call:danger"],
+  "deny_globs": ["aws:*:production"],
+  "max_ttl": "30m",
+  "approval_ttl": "10m",
+  "rate_limit": "30/m",
+  "team": { "version": 3, "fetchedAt": "2026-07-23T18:00:00Z" }
+}
+```
+
+Cache it at handshake time and plan the whole task with `scopegate_can_i` for the
+specifics. `team` is null when no team policy is installed (local-first default).
+
+## scopegate_recall
+
+Your own signed audit as session memory — **scoped to your agentId only** (you
+can never read another agent's trail). Use it after a restart or context
+compaction: reconstruct state instead of re-reading the repo or repeating work.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `since` | string | no | ISO 8601 lower bound; default: last 2 hours |
+| `kinds` | string[] | no | audit-kind filter, e.g. `["tool_call","grant_issued"]` |
+| `limit` | number | no | max actions returned (default 50, max 200) |
+
+**Response**
+
+```json
+{
+  "agentId": "kimi-code",
+  "since": "2026-07-23T16:00:00.000Z",
+  "counts": { "actions": 42, "writes": 3, "active_grants": 2, "pending_approvals": 1 },
+  "recent_actions": [ { "ts": "…", "kind": "tool_call", "tool": "huly__create_issue" } ],
+  "writes": [ { "ts": "…", "tool": "huly__create_issue" } ],
+  "active_grants": [ { "id": "g-…", "capability": "fakegit:call:whoami", "remaining_seconds": 512 } ],
+  "pending_approvals": [ { "approval_id": "…", "capability": "aws:deploy:production", "expires_at": "…" } ]
+}
+```
+
+`writes` are classified with the side-effects table (curated bridge writes,
+prefix heuristic, manifest `side_effects` overrides) — answer "did I already do
+this write?" before repeating it (see also `_sg_idempotency_key`).
+
 ## scopegate_list_capabilities
 
 List your active (non-expired) grants with remaining TTL. No arguments.
@@ -330,7 +415,7 @@ Example call: `{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { 
 
 ## Proxied tools: `<upstream>__<tool>`
 
-`tools/list` returns the nine management tools PLUS every tool of every connected upstream,
+`tools/list` returns the twelve management tools PLUS every tool of every connected upstream,
 renamed `<upstream>__<toolName>` (double underscore; description/inputSchema pass through
 unchanged; an upstream config may restrict exposure with an `exposeTools` allowlist).
 

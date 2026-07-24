@@ -129,6 +129,45 @@ export type Decision =
       approvalExpiresAt?: number;
     };
 
+/**
+ * Mejora #3: result of the read-only policy preflight (`evaluate`). Mirrors
+ * the Decision semantics without issuing anything.
+ */
+export interface Evaluation {
+  decision: "allow" | "needs_approval" | "deny";
+  /** "allow": effective TTL after every clamp (rule/default, max_ttl, team). */
+  ttl_ms?: number;
+  /** The matched rule glob, when one exists. */
+  rule?: string;
+  /** Denial classification (same codes as Decision). */
+  code?: DenyCode;
+  /** "needs_approval": which layer demands the human. */
+  via?: "local_policy" | "team_policy";
+  /** True for hard-limit denials (deny globs — non-negotiable). */
+  hard?: boolean;
+  /** True when a live grant already covers the capability. */
+  covered_by_existing_grant?: boolean;
+  reason: string;
+}
+
+/** Mejora #3: the agent-facing digest from `policySummary()`. */
+export interface PolicySummary {
+  agentId: string;
+  agent_found: boolean;
+  default_ttl?: string;
+  /** Rule globs with auto_approve for this agent. */
+  auto_approve: string[];
+  /** Rule globs that escalate to a human. */
+  requires_approval: string[];
+  /** Hard-limit deny globs (non-negotiable). */
+  deny_globs: string[];
+  max_ttl?: string;
+  approval_ttl?: string;
+  rate_limit?: string;
+  /** Installed team policy layer (EPIC-10), when present. */
+  team: { version: number; fetchedAt: string } | null;
+}
+
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
 
 /**
@@ -555,6 +594,144 @@ export class PolicyEngine {
       allow: false,
       code: "no_rule",
       reason: `No auto_approve rule matches '${capability}' for agent '${agentId}'.`,
+    };
+  }
+
+  /**
+   * Mejora #3: read-only policy preflight — `request()`'s decision logic
+   * WITHOUT any side effect (no grant issued, no approval queued, no audit,
+   * no refresh). What the agent uses to plan instead of learning by denials.
+   */
+  evaluate(agentId: string, capability: string, ttl?: string): Evaluation {
+    // Team pre-gate is pure (deny globs / coverage / silence) — reuse it.
+    const teamGateDeny = this.teamGate(agentId, capability);
+    if (teamGateDeny && !teamGateDeny.allow) {
+      return {
+        decision: "deny",
+        code: teamGateDeny.code,
+        hard: teamGateDeny.code === "ceiling_blocked" ? true : undefined,
+        reason: teamGateDeny.reason,
+      };
+    }
+
+    // A live covering grant makes the answer trivially "allow".
+    const now = Date.now();
+    const existing = this.grants.coveringGrant(agentId, capability, now);
+    if (existing) {
+      let ttlMs = Math.max(0, existing.expiresAt - now);
+      const teamCeiling = this.teamTtlCeilingMs(agentId, capability);
+      if (teamCeiling !== null) ttlMs = Math.min(ttlMs, teamCeiling);
+      return {
+        decision: "allow",
+        covered_by_existing_grant: true,
+        ttl_ms: ttlMs,
+        rule: existing.rule ?? "existing_grant",
+        reason: "A live grant already covers this capability.",
+      };
+    }
+
+    const agentKey = agentKeyFor(this.policies, agentId);
+    const agent = agentKey ? this.policies.agents[agentKey] : null;
+    if (!agent) {
+      return {
+        decision: "deny",
+        code: "no_policy",
+        reason: `No policy defined for agent '${agentId}'.`,
+      };
+    }
+
+    const limits = effectiveLimitsFor(this.policies, agentId);
+
+    // Hard limits first (fail-closed), same as request().
+    for (const glob of limits.deny ?? []) {
+      if (picomatch.isMatch(capability, glob)) {
+        return {
+          decision: "deny",
+          code: "ceiling_blocked",
+          hard: true,
+          reason: `Capability '${capability}' is blocked by a hard limit (deny '${glob}').`,
+        };
+      }
+    }
+
+    let requested: number;
+    try {
+      requested = ttl === undefined ? Number.MAX_SAFE_INTEGER : parseTtlStrict(ttl);
+    } catch (e) {
+      return { decision: "deny", code: "invalid_ttl", reason: (e as Error).message };
+    }
+
+    for (const rule of agent.capabilities ?? []) {
+      if (!picomatch.isMatch(capability, rule.match)) continue;
+
+      if (rule.require === "human_approval") {
+        return {
+          decision: "needs_approval",
+          via: "local_policy",
+          rule: rule.match,
+          reason: `Capability '${capability}' matches '${rule.match}' which requires human approval.`,
+        };
+      }
+
+      if (rule.auto_approve) {
+        // Team require:human_approval overrides local auto-approve (restrictive).
+        const teamRule = this.teamRuleFor(agentId, capability);
+        if (teamRule && teamRule.require === "human_approval") {
+          return {
+            decision: "needs_approval",
+            via: "team_policy",
+            rule: teamRule.match,
+            reason: `[team policy] Capability '${capability}' matches team rule '${teamRule.match}' which requires human approval.`,
+          };
+        }
+        try {
+          let ttlMs = this.clampTtl(requested, rule, agent, limits);
+          const teamCeiling = this.teamTtlCeilingMs(agentId, capability);
+          if (teamCeiling !== null) ttlMs = Math.min(ttlMs, teamCeiling);
+          return {
+            decision: "allow",
+            ttl_ms: ttlMs,
+            rule: rule.match,
+            reason: `Auto-approved by rule '${rule.match}'.`,
+          };
+        } catch (e) {
+          return { decision: "deny", code: "config_error", reason: (e as Error).message };
+        }
+      }
+    }
+
+    return {
+      decision: "deny",
+      code: "no_rule",
+      reason: `No auto_approve rule matches '${capability}' for agent '${agentId}'.`,
+    };
+  }
+
+  /**
+   * Mejora #3: the agent-facing policy digest for session-start planning —
+   * which capabilities auto-approve, which need a human, and the hard
+   * ceilings. Read-only, cheap to compute at handshake time.
+   */
+  policySummary(agentId: string): PolicySummary {
+    const agentKey = agentKeyFor(this.policies, agentId);
+    const agent = agentKey ? this.policies.agents[agentKey] : null;
+    const limits = effectiveLimitsFor(this.policies, agentId);
+    const rules = agent?.capabilities ?? [];
+    return {
+      agentId,
+      agent_found: agent !== null,
+      ...(agent?.default_ttl ? { default_ttl: agent.default_ttl } : {}),
+      auto_approve: rules.filter((r) => r.auto_approve).map((r) => r.match),
+      requires_approval: rules
+        .filter((r) => r.require === "human_approval")
+        .map((r) => r.match),
+      deny_globs: [...(limits.deny ?? [])],
+      ...(limits.max_ttl ? { max_ttl: limits.max_ttl } : {}),
+      ...(limits.approval_ttl ? { approval_ttl: limits.approval_ttl } : {}),
+      ...(limits.rate_limit ? { rate_limit: limits.rate_limit } : {}),
+      team: this.teamPolicyMeta
+        ? { version: this.teamPolicyMeta.version, fetchedAt: this.teamPolicyMeta.fetchedAt }
+        : null,
     };
   }
 

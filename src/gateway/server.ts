@@ -49,10 +49,13 @@ import { trackEvent } from "../telemetry/telemetry.js";
 import { UpstreamProxy, log, errorMessage } from "./proxy.js";
 import { MANAGEMENT_TOOLS } from "./tools.js";
 import { classifyError } from "./errors.js";
+import { isWriteTool } from "./side-effects.js";
+import { readAuditEvents } from "../audit/verify.js";
 import {
   queueIntent,
   latestIntentFor,
   resultFor,
+  listApprovals,
   type ApprovalIntent,
 } from "../policy/approvals.js";
 import { audit } from "../audit/log.js";
@@ -687,6 +690,98 @@ function createAgentServer(deps: {
             upstreams[name] = { ...entry, circuit: circuits[name] ?? { state: "closed", failures: 0 } };
           }
           return text({ agentId, upstreams });
+        }
+
+        case "scopegate_can_i": {
+          // Mejora #3: read-only policy preflight — NO side effects by design
+          // (nothing issued, nothing queued, nothing audited).
+          const capability = String(args.capability ?? "");
+          if (!capability) {
+            return err("Missing required argument 'capability' (e.g. 'github:write:org/repo').");
+          }
+          const evaluation = policy.evaluate(agentId, capability, args.ttl as string | undefined);
+          const recommended_next =
+            evaluation.decision === "allow"
+              ? evaluation.covered_by_existing_grant
+                ? "Proceed — a live grant already covers this; call the tool directly."
+                : "Proceed — call scopegate_request_capability (or the tool directly)."
+              : evaluation.decision === "needs_approval"
+                ? "Plan for a human approval — request with execute_on_approval so the work completes on approval."
+                : evaluation.hard
+                  ? "Hard limit — do NOT attempt this in any form; only a human policy change would allow it."
+                  : "Denied by policy — call scopegate_propose_policy with a justification, or pick another path.";
+          return text({ capability, ...evaluation, recommended_next });
+        }
+
+        case "scopegate_policy_summary": {
+          // Mejora #3: session-start digest for planning (read-only).
+          return text(policy.policySummary(agentId));
+        }
+
+        case "scopegate_recall": {
+          // Mejora #9: the agent's own audit as session memory — scoped to the
+          // CALLING agentId only (you can never read another agent's trail).
+          const sinceRaw = typeof args.since === "string" ? args.since : null;
+          let sinceMs = Date.now() - 2 * 3600 * 1000;
+          if (sinceRaw) {
+            const parsed = Date.parse(sinceRaw);
+            if (Number.isNaN(parsed)) return err(`Invalid 'since' (must be ISO 8601): ${sinceRaw}`);
+            sinceMs = parsed;
+          }
+          const kindsFilter = Array.isArray(args.kinds)
+            ? new Set(args.kinds.filter((k) => typeof k === "string"))
+            : null;
+          const limit = Math.min(Math.max(Number(args.limit ?? 50) || 50, 1), 200);
+
+          const mine = readAuditEvents()
+            .filter((e) => e.agentId === agentId)
+            .filter((e) => Date.parse(e.ts) >= sinceMs)
+            .filter((e) => (kindsFilter && kindsFilter.size > 0 ? kindsFilter.has(e.kind) : true));
+
+          const recent = mine.slice(-limit).map((e) => ({
+            ts: e.ts,
+            kind: e.kind,
+            ...(typeof e.detail.tool === "string" ? { tool: e.detail.tool } : {}),
+            ...(typeof e.detail.capability === "string" ? { capability: e.detail.capability } : {}),
+            ...(typeof e.detail.upstream === "string" ? { upstream: e.detail.upstream } : {}),
+          }));
+          const writes = mine
+            .filter(
+              (e) =>
+                e.kind === "tool_call" &&
+                typeof e.detail.tool === "string" &&
+                e.detail.tool.includes("__") &&
+                isWriteTool(
+                  (e.detail.tool as string).split("__")[0],
+                  (e.detail.tool as string).split("__").slice(1).join("__"),
+                ),
+            )
+            .slice(-limit)
+            .map((e) => ({ ts: e.ts, tool: e.detail.tool }));
+
+          const activeGrants = policy.activeGrants(agentId).map((g) => ({
+            id: g.id,
+            capability: g.capability,
+            remaining_seconds: Math.max(0, Math.round((g.expiresAt - Date.now()) / 1000)),
+          }));
+          const pendingApprovals = listApprovals()
+            .filter((a) => a.agentId === agentId && a.effectiveStatus === "pending")
+            .map((a) => ({
+              approval_id: a.id,
+              capability: a.capability,
+              ttl: a.ttl,
+              expires_at: new Date(a.expiresAt).toISOString(),
+            }));
+
+          return text({
+            agentId,
+            since: new Date(sinceMs).toISOString(),
+            counts: { actions: mine.length, writes: writes.length, active_grants: activeGrants.length, pending_approvals: pendingApprovals.length },
+            recent_actions: recent,
+            writes,
+            active_grants: activeGrants,
+            pending_approvals: pendingApprovals,
+          });
         }
 
         case "scopegate_collect": {

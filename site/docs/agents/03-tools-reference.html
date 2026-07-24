@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>03 — MCP Tools Reference — ScopeGate Docs</title>
-<meta name="description" content="Exact reference of the nine scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gatewa">
+<meta name="description" content="Exact reference of the twelve scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gate">
 <link rel="canonical" href="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:title" content="03 — MCP Tools Reference — ScopeGate Docs">
-<meta property="og:description" content="Exact reference of the nine scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gatewa">
+<meta property="og:description" content="Exact reference of the twelve scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gate">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:image" content="https://scopegate.io/og.png">
@@ -37,7 +37,7 @@
   <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>03 — MCP Tools Reference</span></nav>
   <article>
 <h1 id="03-mcp-tools-reference">03 — MCP Tools Reference</h1>
-<p>Exact reference of the nine <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
+<p>Exact reference of the twelve <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
 <h2 id="response-conventions">Response conventions</h2>
 <p>Every management tool returns its payload as pretty-printed JSON in <code>content[0].text</code> — parse it as JSON. Three fail-closed gates can deny ANY call: <strong>agent suspended</strong> (honeytoken) and <strong>agent revoked by ScopeGate Cloud</strong> deny everything until a human intervenes; <strong>audit unavailable</strong> denies the action.</p>
 <p>Failures come in two shapes:</p>
@@ -118,6 +118,47 @@
   }
 }</code></pre>
 <p><code>circuit.state</code> is <code>closed</code> (healthy), <code>open</code> (fail-fast after 5 consecutive failures, 30 s) or <code>half_open</code> (a single probe is deciding).</p>
+<h2 id="scopegate-can-i">scopegate_can_i</h2>
+<p>Read-only policy preflight — plan a task without learning from denials. <strong>Zero side effects</strong>: nothing is issued, queued or audited, so it never dirties your trail or the human&#39;s queue.</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>capability</code></td><td>string</td><td>yes</td><td>e.g. <code>github:write:easyorder/*</code></td></tr><tr><td><code>ttl</code></td><td>string</td><td>no</td><td>evaluates the effective clamp too</td></tr></tbody></table>
+<p><strong>Responses</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;capability&quot;: &quot;fakegit:call:whoami&quot;, &quot;decision&quot;: &quot;allow&quot;, &quot;ttl_ms&quot;: 600000,
+  &quot;rule&quot;: &quot;fakegit:call:whoami&quot;, &quot;reason&quot;: &quot;Auto-approved by rule &#39;fakegit:call:whoami&#39;.&quot;,
+  &quot;recommended_next&quot;: &quot;Proceed — call scopegate_request_capability (or the tool directly).&quot; }</code></pre>
+<pre class="code" data-lang="json"><code>{ &quot;capability&quot;: &quot;fakegit:call:danger3&quot;, &quot;decision&quot;: &quot;needs_approval&quot;, &quot;via&quot;: &quot;local_policy&quot;,
+  &quot;rule&quot;: &quot;fakegit:call:danger3&quot;, &quot;recommended_next&quot;: &quot;Plan for a human approval — request with execute_on_approval so the work completes on approval.&quot; }</code></pre>
+<pre class="code" data-lang="json"><code>{ &quot;capability&quot;: &quot;aws:write:production&quot;, &quot;decision&quot;: &quot;deny&quot;, &quot;code&quot;: &quot;ceiling_blocked&quot;,
+  &quot;hard&quot;: true, &quot;recommended_next&quot;: &quot;Hard limit — do NOT attempt this in any form; only a human policy change would allow it.&quot; }</code></pre>
+<p><code>decision: &quot;allow&quot;</code> may also carry <code>covered_by_existing_grant: true</code> (you already hold it — call the tool directly). Denials reuse the <code>request_capability</code> codes (<code>no_policy | no_rule | ceiling_blocked | invalid_ttl | config_error</code>).</p>
+<h2 id="scopegate-policy-summary">scopegate_policy_summary</h2>
+<p>Your policy digest for session-start planning (read-only).</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;agentId&quot;: &quot;kimi-code&quot;,
+  &quot;agent_found&quot;: true,
+  &quot;default_ttl&quot;: &quot;15m&quot;,
+  &quot;auto_approve&quot;: [&quot;fakegit:call:whoami&quot;, &quot;db:read:*&quot;],
+  &quot;requires_approval&quot;: [&quot;fakegit:call:danger&quot;],
+  &quot;deny_globs&quot;: [&quot;aws:*:production&quot;],
+  &quot;max_ttl&quot;: &quot;30m&quot;,
+  &quot;approval_ttl&quot;: &quot;10m&quot;,
+  &quot;rate_limit&quot;: &quot;30/m&quot;,
+  &quot;team&quot;: { &quot;version&quot;: 3, &quot;fetchedAt&quot;: &quot;2026-07-23T18:00:00Z&quot; }
+}</code></pre>
+<p>Cache it at handshake time and plan the whole task with <code>scopegate_can_i</code> for the specifics. <code>team</code> is null when no team policy is installed (local-first default).</p>
+<h2 id="scopegate-recall">scopegate_recall</h2>
+<p>Your own signed audit as session memory — <strong>scoped to your agentId only</strong> (you can never read another agent&#39;s trail). Use it after a restart or context compaction: reconstruct state instead of re-reading the repo or repeating work.</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>since</code></td><td>string</td><td>no</td><td>ISO 8601 lower bound; default: last 2 hours</td></tr><tr><td><code>kinds</code></td><td>string[]</td><td>no</td><td>audit-kind filter, e.g. <code>[&quot;tool_call&quot;,&quot;grant_issued&quot;]</code></td></tr><tr><td><code>limit</code></td><td>number</td><td>no</td><td>max actions returned (default 50, max 200)</td></tr></tbody></table>
+<p><strong>Response</strong></p>
+<pre class="code" data-lang="json"><code>{
+  &quot;agentId&quot;: &quot;kimi-code&quot;,
+  &quot;since&quot;: &quot;2026-07-23T16:00:00.000Z&quot;,
+  &quot;counts&quot;: { &quot;actions&quot;: 42, &quot;writes&quot;: 3, &quot;active_grants&quot;: 2, &quot;pending_approvals&quot;: 1 },
+  &quot;recent_actions&quot;: [ { &quot;ts&quot;: &quot;…&quot;, &quot;kind&quot;: &quot;tool_call&quot;, &quot;tool&quot;: &quot;huly__create_issue&quot; } ],
+  &quot;writes&quot;: [ { &quot;ts&quot;: &quot;…&quot;, &quot;tool&quot;: &quot;huly__create_issue&quot; } ],
+  &quot;active_grants&quot;: [ { &quot;id&quot;: &quot;g-…&quot;, &quot;capability&quot;: &quot;fakegit:call:whoami&quot;, &quot;remaining_seconds&quot;: 512 } ],
+  &quot;pending_approvals&quot;: [ { &quot;approval_id&quot;: &quot;…&quot;, &quot;capability&quot;: &quot;aws:deploy:production&quot;, &quot;expires_at&quot;: &quot;…&quot; } ]
+}</code></pre>
+<p><code>writes</code> are classified with the side-effects table (curated bridge writes, prefix heuristic, manifest <code>side_effects</code> overrides) — answer &quot;did I already do this write?&quot; before repeating it (see also <code>_sg_idempotency_key</code>).</p>
 <h2 id="scopegate-list-capabilities">scopegate_list_capabilities</h2>
 <p>List your active (non-expired) grants with remaining TTL. No arguments.</p>
 <pre class="code" data-lang="json"><code>{ &quot;agentId&quot;: &quot;kimi-code&quot;,
@@ -170,7 +211,7 @@
 <pre class="code" data-lang="json"><code>{ &quot;secret_refs&quot;: [&quot;github_token&quot;, &quot;grafana_token&quot;, &quot;railway_api_token&quot;] }</code></pre>
 <p>Example call: <code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 6, &quot;method&quot;: &quot;tools/call&quot;, &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_vault_status&quot;, &quot;arguments&quot;: {} } }</code></p>
 <h2 id="proxied-tools-upstream-tool">Proxied tools: <code>&lt;upstream&gt;__&lt;tool&gt;</code></h2>
-<p><code>tools/list</code> returns the nine management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
+<p><code>tools/list</code> returns the twelve management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
 <p>Every proxied call maps to the capability <code>&lt;upstream&gt;:call:&lt;toolName&gt;</code>. The gateway checks a live covering grant first; with none, it attempts an IMPLICIT request that succeeds only via an <code>auto_approve</code> rule. A denied call is a tool error:</p>
 <pre class="code" data-lang="text"><code>ERROR: Capability &#39;grafana:call:query&#39; not granted. Call scopegate_request_capability first (or scopegate_propose_policy if denied). Reason: No auto_approve rule matches &#39;grafana:call:query&#39; for agent &#39;kimi-code&#39;.</code></pre>
 <p>If the denial escalated, it appends <code> Approval request &lt;id&gt; is pending — ask the human to run: scopegate approve &lt;id&gt;</code>. Unknown names yield <code>ERROR: Unknown tool &#39;&lt;name&gt;&#39;</code>. Correct flow — request explicitly FIRST (the reason lands in the audit log), then call:</p>
