@@ -45,6 +45,15 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 - `scopegate_request_plan` — submit a whole task plan at once: auto-approvable capabilities are issued immediately, denials reported, and every needs_approval capability is bundled into ONE aggregated human approval (blast radius visible as a single item). Optional `open_lease` binds the whole plan to a new task lease.
 - `scopegate_result_get` — read a slice of a stored oversized result (result_ref) by dot-path; returns {found, value}.
 - `scopegate_result_grep` — search a stored oversized result by substring or /regex/ (max 50 hits, context-sized).
+- `scopegate_delegate` — delegate a live grant to a child agent with strict attenuation: scope ⊆ parent capability, ttl ≤ parent remaining (any widening refused fail-closed). The child grant carries the attribution chain and dies with the parent.
+
+## Taint tracking (return-path prompt-injection defense)
+
+Upstream responses are scored for injection patterns (ignore-previous, imperative exfiltration, credential collection, pre-granted claims). A tainted response marks the agent's session for 30 minutes (`taint_detected` audit event + panel security events). With `SCOPEGATE_TAINT_MODE=enforce`, any cross-upstream WRITE while tainted degrades automatically to `pending_human_approval` — the exfil shape always gets a human review. Default mode is `alert` (visibility only); `off` disables scoring.
+
+## Hot-reload (no restart)
+
+`scopegate secret add` bumps a vault version file that running gateways watch: stale connections drop and re-inject fresh credentials on the next call. Upstream registration emits `notifications/tools/list_changed`. The only restart ever needed is the one right after `init` (the harness launches the gateway).
 
 ## Result handles (oversized payloads)
 

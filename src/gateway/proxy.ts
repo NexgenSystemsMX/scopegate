@@ -34,11 +34,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import type { PoolConfig, UpstreamConfig } from "../config/config.js";
+import { VAULT_VERSION_PATH } from "../config/config.js";
 import { Vault } from "../vault/vault.js";
 import { Minter, secretRefsOf, type CredentialMode } from "../minter/minter.js";
 import { audit } from "../audit/log.js";
 import { isRateLimitMessage, parseRetryAfterS } from "./errors.js";
+import { markTainted, scoreTaint, taintMode } from "./taint.js";
 import {
   IDEMPOTENCY_ARG,
   hashCallArgs,
@@ -780,6 +783,10 @@ export class UpstreamProxy {
     opts: { grantTtlMs?: number } = {},
   ): Promise<unknown> {
     const ctx: CallContext = { grantTtlMs: opts.grantTtlMs, tool: exposedName };
+    // Quick win (hot-reload): a vault mutation since our last check drops
+    // every connection — the next call re-injects fresh credentials instead
+    // of requiring an agent-session restart.
+    this.refreshVaultVersion();
     let tool = this.resolve(exposedName);
     if (!tool) {
       // An oauth2 upstream whose connection was dropped (401 self-heal) loses
@@ -874,6 +881,28 @@ export class UpstreamProxy {
           // Persist ONLY after a genuine upstream success — a replay never
           // stands in for a result the upstream never produced.
           storeIdempotent(idemKey, tool.upstream, tool.upstreamName, idemArgsHash, result);
+        }
+        // Mejora #10 (taint): score the RETURN path for prompt injection. A
+        // tainted payload marks the agent's session (30 min); in enforce mode
+        // cross-upstream writes degrade to human approval while the mark lives.
+        const mode = taintMode();
+        if (mode !== "off") {
+          try {
+            const serialized = JSON.stringify(result)?.slice(0, 65_536) ?? "";
+            const score = scoreTaint(serialized);
+            if (score.score > 0) {
+              markTainted(this.agentId, tool.upstream, score);
+              audit(this.agentId, "taint_detected", {
+                upstream: tool.upstream,
+                tool: exposedName,
+                score: score.score,
+                hits: score.hits.slice(0, 5),
+                mode,
+              });
+            }
+          } catch {
+            /* taint scoring never breaks a call */
+          }
         }
         return result;
       } catch (e) {
@@ -1006,6 +1035,40 @@ export class UpstreamProxy {
 
   /* ------------------------------------------------------------------ */
   /* Mejora #8: circuit breaker — end                                    */
+  /* ------------------------------------------------------------------ */
+
+  /* ------------------------------------------------------------------ */
+  /* Quick win: vault hot-reload                                          */
+  /* ------------------------------------------------------------------ */
+
+  private lastVaultVersionCheck: { mtimeMs: number | null } = { mtimeMs: null };
+
+  /**
+   * One stat per call: when vault.version changed since the last check,
+   * close and drop every connection — they rebuild with fresh credentials
+   * (secrets deposited while the gateway runs take effect without restart).
+   */
+  private refreshVaultVersion(): void {
+    let mtimeMs: number | null = null;
+    try {
+      mtimeMs = fs.statSync(VAULT_VERSION_PATH).mtimeMs;
+    } catch {
+      mtimeMs = null; // no version file yet — nothing to reload
+    }
+    if (this.lastVaultVersionCheck.mtimeMs === null && mtimeMs === null) return;
+    if (this.lastVaultVersionCheck.mtimeMs === mtimeMs) return;
+    const had = this.lastVaultVersionCheck.mtimeMs !== null;
+    this.lastVaultVersionCheck.mtimeMs = mtimeMs;
+    if (!had) return; // first sight of the file — not a change
+    for (const c of this.connections.values()) {
+      void c.client.close().catch(() => {});
+    }
+    this.connections.clear();
+    log("info", "vault changed — connections dropped; next calls re-inject fresh credentials (hot-reload)", {});
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Quick win: vault hot-reload — end                                   */
   /* ------------------------------------------------------------------ */
 
   /**

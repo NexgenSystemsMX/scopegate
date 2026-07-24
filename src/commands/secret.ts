@@ -6,7 +6,19 @@
  * agent's chat context.
  */
 import readline from "node:readline";
+import fs from "node:fs";
 import { Vault } from "../vault/vault.js";
+import { ensureDir, VAULT_VERSION_PATH } from "../config/config.js";
+
+/**
+ * Quick win (hot-reload): a version file the gateway's proxy watches (mtime).
+ * Any vault mutation bumps it — running gateways drop their connections and
+ * re-inject fresh credentials on the next call, no restart required.
+ */
+function bumpVaultVersion(): void {
+  ensureDir();
+  fs.writeFileSync(VAULT_VERSION_PATH, new Date().toISOString() + "\n", { mode: 0o600 });
+}
 
 export async function secretAdd(ref: string): Promise<void> {
   validateRef(ref);
@@ -16,6 +28,7 @@ export async function secretAdd(ref: string): Promise<void> {
     process.exit(1);
   }
   Vault.open().set(ref, value.trim());
+  bumpVaultVersion();
   console.log(`[scopegate] secret '${ref}' stored (encrypted at rest).`);
 }
 
@@ -27,6 +40,7 @@ export function secretRm(ref: string): void {
     process.exit(1);
   }
   vault.delete(ref);
+  bumpVaultVersion();
   console.log(`[scopegate] secret '${ref}' removed.`);
 }
 

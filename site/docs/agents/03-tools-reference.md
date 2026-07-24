@@ -1,6 +1,6 @@
 # 03 — MCP Tools Reference
 
-Exact reference of the seventeen `scopegate_*` management tools, plus how proxied
+Exact reference of the eighteen `scopegate_*` management tools, plus how proxied
 upstream tools (`<upstream>__<tool>`) work. Every shape here is traceable to
 `src/gateway/tools.ts`, `src/gateway/server.ts` and `src/policy/engine.ts`.
 Read [02 — Agent Protocol](./02-protocol.md) first; use this as its lookup table.
@@ -393,6 +393,30 @@ Search a stored oversized result by substring or `/regex/` (optional flags).
 
 Capped at 50 hits — context-sized by design.
 
+## scopegate_delegate
+
+Delegate one of YOUR live grants to a child agent (subagent) with strict
+attenuation — orchestrating parallel subagents without sharing your identity.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `grant_id` | string | yes | your live grant (see `scopegate_list_capabilities`) |
+| `child_agent_id` | string | yes | the child's agent id — must differ from yours |
+| `scope_subset` | string | yes | capability covered by the parent grant (never broader) |
+| `ttl` | string | no | must not exceed the parent's remaining TTL |
+
+```json
+{ "delegated": true, "child_grant_id": "…", "child_agent_id": "subagent-explorer",
+  "capability": "github:write:easyorder/api", "expires_at": "…",
+  "note": "The child grant is attenuated (subset + shorter ttl) and dies with the parent. The child sees it in its own scopegate_list_capabilities." }
+```
+
+Fail-closed refusals: a scope NOT covered by the parent glob (`Attenuation
+violation`), a ttl longer than the parent's remaining, self-delegation, or a
+dead parent grant. The child grant carries `parentGrantId` — revoking the
+parent (directly or via fleet revocation) kills every child, and the audit
+chain (`grant_delegated` with `parent_grant`) attributes every action.
+
 ## scopegate_list_capabilities
 
 List your active (non-expired) grants with remaining TTL. No arguments.
@@ -533,7 +557,7 @@ Example call: `{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { 
 
 ## Proxied tools: `<upstream>__<tool>`
 
-`tools/list` returns the seventeen management tools PLUS every tool of every connected upstream,
+`tools/list` returns the eighteen management tools PLUS every tool of every connected upstream,
 renamed `<upstream>__<toolName>` (double underscore; description/inputSchema pass through
 unchanged; an upstream config may restrict exposure with an `exposeTools` allowlist).
 

@@ -104,6 +104,8 @@ scopegate init             # do it (idempotent)</code></pre>
 <p>  <code>oauth2:notion</code>).</p>
 <ul><li>Verify afterwards (names only, never values): <code>scopegate secret ls</code>, or</li></ul>
 <p>  the <code>scopegate_vault_status</code> MCP tool once the gateway is live.</p>
+<ul><li><strong>No restart needed for deposits after the first session</strong>: a running</li></ul>
+<p>  gateway watches the vault version — on the next call it drops connections   and re-injects fresh credentials. A restart is only needed ONCE, right   after <code>init</code>, so the harness launches the gateway.</p>
 <h3 id="decision-tree-secrets">Decision tree — secrets</h3>
 <pre class="code" data-lang="text"><code>IF init warned &quot;PENDING auth (oauth2) … scopegate secret add &lt;ref&gt;&quot;
     → hand the human that exact command; wait for confirmation; re-verify

@@ -79,6 +79,21 @@ export const MANAGEMENT_TOOLS: Tool[] = [
     },
   },
   {
+    name: "scopegate_delegate",
+    description:
+      "Delegate one of YOUR live grants to a child agent (subagent) with strict attenuation: scope_subset must be covered by the parent grant's capability and ttl must not exceed the parent's remaining TTL (any widening is refused fail-closed). The child grant carries the parent chain — revoking the parent kills every child.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        grant_id: { type: "string", description: "Your live grant id (see scopegate_list_capabilities)." },
+        child_agent_id: { type: "string", description: "The child agent's id (its SCOPEGATE_AGENT_ID) — must differ from yours." },
+        scope_subset: { type: "string", description: "Capability covered by the parent grant (never broader)." },
+        ttl: { type: "string", description: "Optional TTL like '15m' — must not exceed the parent's remaining TTL." },
+      },
+      required: ["grant_id", "child_agent_id", "scope_subset"],
+    },
+  },
+  {
     name: "scopegate_request_plan",
     description:
       "Submit a whole task plan at once: auto-approvable capabilities are issued immediately, denials are reported, and every needs_approval capability is bundled into ONE aggregated human approval (blast radius visible as a single item). Set open_lease: true to bind the whole plan to a new task lease (mejora #1).",

@@ -58,7 +58,13 @@ async function main() {
 
   // 1. Isolated throwaway home. NOTHING touches the real ~/.scopegate.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "scopegate-e2e-"));
-  const env = { ...process.env, SCOPEGATE_HOME: home, SCOPEGATE_AGENT_ID: "e2e-agent" };
+  const env = {
+    ...process.env,
+    SCOPEGATE_HOME: home,
+    SCOPEGATE_AGENT_ID: "e2e-agent",
+    // Mejora #10 e2e: the enforce gate degrades cross-upstream writes while tainted.
+    SCOPEGATE_TAINT_MODE: "enforce",
+  };
   console.log(`e2e home: ${home}`);
 
   const client = new Client({ name: "e2e-harness", version: "1.0.0" }, { capabilities: {} });
@@ -606,6 +612,81 @@ async function main() {
       `bundled grant must materialize: ${JSON.stringify(capsAfterPlan.active_grants)}`,
     );
     pass("one approval issues every bundled capability at once");
+
+    // 16g. Mejora #5 (delegation) + #10 (taint) + quick win (hot-reload).
+    // Delegation: the whoami grant delegates attenuated to a subagent.
+    const capsForDeleg = parse(await client.callTool({ name: "scopegate_list_capabilities", arguments: {} }));
+    const parentGrant = capsForDeleg.active_grants.find((g) => g.capability === "fakegit:call:whoami");
+    assert.ok(parentGrant, "parent grant must exist");
+    const delegated = parse(
+      await client.callTool({
+        name: "scopegate_delegate",
+        arguments: {
+          grant_id: parentGrant.id,
+          child_agent_id: "e2e-subagent",
+          scope_subset: "fakegit:call:whoami",
+          ttl: "5m",
+        },
+      }),
+    );
+    assert.equal(delegated.delegated, true, `expected delegation: ${JSON.stringify(delegated)}`);
+    assert.equal(delegated.child_agent_id, "e2e-subagent");
+    // Widening is refused fail-closed.
+    const widen = await client.callTool({
+      name: "scopegate_delegate",
+      arguments: {
+        grant_id: parentGrant.id,
+        child_agent_id: "e2e-subagent",
+        scope_subset: "fakegit:call:danger",
+      },
+    });
+    assert.equal(widen.isError, true, "widening delegation must be refused");
+    assert.match(widen.content[0].text, /Attenuation violation/);
+    // The child grant exists with the parent chain; revoking the parent cascades.
+    const grantsFile = JSON.parse(fs.readFileSync(path.join(home, "grants.json"), "utf8"));
+    const childEntry = grantsFile.grants.find((g) => g.agentId === "e2e-subagent");
+    assert.ok(childEntry, "child grant must persist");
+    assert.equal(childEntry.parentGrantId, parentGrant.id);
+    pass("delegation: attenuated child grant + widening refused + parent chain recorded");
+
+    // Taint: hot-add the leaky rule (the response must EXECUTE to be scanned),
+    // then the injected payload marks the session and a cross-upstream write degrades.
+    const taintDoc = structuredClone(policiesDoc);
+    taintDoc.agents["e2e-agent"].capabilities.push({ match: "fakegit:call:leaky", auto_approve: true, ttl: "5m" });
+    fs.writeFileSync(path.join(home, "policies.yaml"), JSON.stringify(taintDoc, null, 2));
+    let leakyOk = false;
+    const taintDeadline = Date.now() + 3000;
+    while (Date.now() < taintDeadline && !leakyOk) {
+      const r = await client.callTool({ name: "fakegit__leaky", arguments: {} });
+      leakyOk = !r.isError;
+      if (!leakyOk) await new Promise((res) => setTimeout(res, 150));
+    }
+    assert.ok(leakyOk, "leaky must execute after the hot-added rule (response gets scanned)");
+    const taintedReq = parse(
+      await client.callTool({
+        name: "scopegate_request_capability",
+        arguments: { capability: "huly:write:issue", ttl: "5m", reason: "exfil-shaped write after tainted content" },
+      }),
+    );
+    assert.equal(taintedReq.status, "pending_human_approval",
+      `cross-upstream write while tainted must degrade: ${JSON.stringify(taintedReq)}`);
+    const auditRawTaint = fs.readFileSync(path.join(home, "audit.jsonl"), "utf8");
+    assert.ok(auditRawTaint.includes('"taint_detected"'), "taint_detected must be audited");
+    assert.ok(auditRawTaint.includes('"via":"taint_guard"'), "the degradation must carry via taint_guard");
+    pass("taint: injected response marks the session; cross-upstream write degrades to approval");
+
+    // Quick win: a NEW secret deposit hot-reloads — the gateway keeps serving
+    // (stale connections are dropped and rebuilt on the next call).
+    const add2 = spawnSync(process.execPath, [CLI, "secret", "add", "fake_token2"], {
+      input: "anothersecret456\n",
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(add2.status, 0, `second secret add failed: ${add2.stderr || add2.stdout}`);
+    const afterAdd = await client.callTool({ name: "fakegit__whoami", arguments: {} });
+    assert.notEqual(afterAdd.isError, true, `call after vault mutation failed: ${afterAdd.content[0].text}`);
+    assert.match(afterAdd.content[0].text, /authenticated=true/);
+    pass("hot-reload: secret add while running drops stale connections; the gateway keeps serving");
 
     // 17. redact: [pii] masks email/card in the proxied tool RESPONSE.
     const pii = await client.callTool({ name: "fakegit__pii_echo", arguments: {} });

@@ -49,8 +49,11 @@ scopegate secret add github_pat                      # hidden prompt
 echo "$TOKEN" | scopegate secret add notion_token    # or piped
 ```
 
-Then restart the agent session. From there, the agent operates ScopeGate by
-itself through the `scopegate_*` MCP tools (see [SKILL.md](SKILL.md)).
+Then restart the agent session (once — the harness launches the gateway on
+startup). From there, the agent operates ScopeGate by itself through the
+`scopegate_*` MCP tools (see [SKILL.md](SKILL.md)). **Later** `secret add`
+deposits hot-reload: the running gateway drops its connections and re-injects
+fresh credentials on the next call — no restart, no context loss.
 
 ## CLI
 

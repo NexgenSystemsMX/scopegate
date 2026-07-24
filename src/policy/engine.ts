@@ -1076,6 +1076,89 @@ export class PolicyEngine {
   /* Mejora #4: capability plan — end                                        */
   /* ---------------------------------------------------------------------- */
 
+  /* ---------------------------------------------------------------------- */
+  /* Mejora #5: attenuated delegation for subagents                          */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Delegate a grant to a child agent (subagent orchestration) with STRICT
+   * attenuation, fail-closed on any widening:
+   *   - scope_subset must be covered by the parent grant's capability glob
+   *     (a child can never exceed what the parent holds);
+   *   - ttl must not exceed the parent's REMAINING ttl;
+   *   - the child grant carries parentGrantId — revoking the parent (directly
+   *     or via fleet revocation) kills every child with it.
+   * The child's identity lives in the audit chain (parent_grant), so a
+   * subagent's actions are attributable separately from the orchestrator's.
+   */
+  delegate(
+    agentId: string,
+    input: {
+      grant_id: string;
+      child_agent_id: string;
+      scope_subset: string;
+      ttl?: string;
+    },
+  ): { grantId: string; childAgentId: string; capability: string; expiresAt: number } {
+    const parent = this.grants.byId(agentId, input.grant_id);
+    if (!parent) {
+      throw new Error(
+        `No live grant '${input.grant_id}' for agent '${agentId}' — delegation requires a live parent grant.`,
+      );
+    }
+    if (!input.child_agent_id || input.child_agent_id === agentId) {
+      throw new Error(
+        "child_agent_id must be a different agent id — delegating to yourself is just a renew (use scopegate_renew_capability or re-request).",
+      );
+    }
+    // Scope attenuation: the subset must MATCH INTO the parent glob.
+    if (!picomatch.isMatch(input.scope_subset, parent.capability)) {
+      throw new Error(
+        `Attenuation violation: '${input.scope_subset}' is not covered by the parent capability '${parent.capability}' — a child can never exceed its parent (fail-closed).`,
+      );
+    }
+    const now = Date.now();
+    const parentRemaining = Math.max(0, parent.expiresAt - now);
+    let ttlMs = parentRemaining;
+    if (input.ttl !== undefined) {
+      const asked = parseTtlStrict(input.ttl, "ttl");
+      if (asked > parentRemaining) {
+        throw new Error(
+          `Attenuation violation: ttl '${input.ttl}' exceeds the parent's remaining ttl (${Math.ceil(parentRemaining / 1000)}s) — a child can never outlive its parent (fail-closed).`,
+        );
+      }
+      ttlMs = asked;
+    }
+    const child = this.grants.issue({
+      agentId: input.child_agent_id,
+      capability: input.scope_subset,
+      ttlMs,
+      parentGrantId: parent.id,
+      rule: "delegated",
+      ...(parent.leaseId ? { leaseId: parent.leaseId } : {}),
+    });
+    bestEffortAudit(agentId, "grant_delegated", {
+      parent_grant: parent.id,
+      parent_capability: parent.capability,
+      child_grant: child.id,
+      child_agent_id: input.child_agent_id,
+      capability: child.capability,
+      ttlMs,
+      expiresAt: new Date(child.expiresAt).toISOString(),
+      ...(parent.leaseId ? { leaseId: parent.leaseId } : {}),
+    });
+    return {
+      grantId: child.id,
+      childAgentId: input.child_agent_id,
+      capability: child.capability,
+      expiresAt: child.expiresAt,
+    };
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Mejora #5: delegation — end                                             */
+  /* ---------------------------------------------------------------------- */
+
   /** Mejora #7: inline-payload ceiling for the agent (limits.max_inline_bytes). */
   maxInlineBytesFor(agentId: string): number | undefined {
     return effectiveLimitsFor(this.policies, agentId).max_inline_bytes;

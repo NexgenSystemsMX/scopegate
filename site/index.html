@@ -151,7 +151,7 @@
       <div class="fact"><span class="fact-num">&lt;90s</span><span class="fact-lbl">install → first tool call</span></div>
       <div class="fact"><span class="fact-num">&lt;30s</span><span class="fact-lbl">fleet revocation, online</span></div>
       <div class="fact"><span class="fact-num">0</span><span class="fact-lbl">secrets in the model's context</span></div>
-      <div class="fact"><span class="fact-num">17</span><span class="fact-lbl">MCP tools for the agent</span></div>
+      <div class="fact"><span class="fact-num">18</span><span class="fact-lbl">MCP tools for the agent</span></div>
       <div class="fact"><span class="fact-num">5</span><span class="fact-lbl">native connectors</span></div>
       <div class="fact"><span class="fact-num">Apache-2.0</span><span class="fact-lbl">open source, self-hosted</span></div>
     </div>
@@ -470,6 +470,62 @@ first tool call at 87s — zero secrets in context</pre>
           escalations — from their terminal, from Slack, or from the Cloud panel.
           That asymmetry is the heart of the security model.
         </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="agent-experience">
+  <div class="wrap">
+    <h2>Built for long agentic tasks</h2>
+    <p class="section-lede">
+      ScopeGate solves <em>"the agent must never hold secrets"</em> — and the second half too:
+      <em>"and it must still finish the task."</em> Every one of these ships in the gateway today.
+    </p>
+    <div class="grid-3">
+      <div class="card">
+        <h3><span class="num">01</span> Task leases</h3>
+        <p>Grants survive hours-long work: a double budget (total time, hard-clamped; write count) with agent-driven renewal and a 20%-TTL warning.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">02</span> Approval continuation</h3>
+        <p><code>execute_on_approval</code> queues the call; the gateway runs it the moment a human approves — the task completes instead of waiting.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">03</span> Policy preflight</h3>
+        <p><code>scopegate_can_i</code> answers allow / needs-approval / deny with zero side effects — the agent plans instead of learning from denials.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">04</span> One approval per plan</h3>
+        <p>The whole task submitted at once; guarded capabilities become a single aggregated human decision with the full blast radius.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">05</span> Subagent delegation</h3>
+        <p>Attenuated child grants (scope ⊆ parent, TTL ≤ parent) with the attribution chain — revoking the parent kills every child.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">06</span> Idempotent writes</h3>
+        <p>One idempotency key per intention; the gateway dedupes retries for 24 h — no duplicate issues, no double deploys.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">07</span> Result handles</h3>
+        <p>Oversized payloads truncate to a <code>result_ref</code> with preview + stats; the agent pages with <code>result_get</code>/<code>result_grep</code> instead of burning context.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">08</span> Error taxonomy + health</h3>
+        <p>Every failure is a machine-readable envelope (<code>kind, next_action, retry_after</code>) — plus a per-upstream circuit breaker and health as an MCP tool.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">09</span> Audit recall</h3>
+        <p>The agent's own signed audit becomes session memory: actions, writes, grants, pending approvals — rebuild state after any restart or compaction.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">10</span> Taint tracking</h3>
+        <p>Return-path prompt-injection defense: tainted responses mark the session, and cross-upstream writes degrade to human review automatically.</p>
+      </div>
+      <div class="card">
+        <h3><span class="num">+1</span> Hot-reload</h3>
+        <p><code>scopegate secret add</code> while running re-injects fresh credentials on the next call — no agent-session restart, no context loss.</p>
       </div>
     </div>
   </div>

@@ -19,6 +19,8 @@ export const POLICIES_PATH = path.join(SCOPEGATE_DIR, "policies.yaml");
 export const VAULT_PATH = path.join(SCOPEGATE_DIR, "vault.enc");
 export const MASTER_KEY_PATH = path.join(SCOPEGATE_DIR, "master.key");
 export const AUDIT_LOG_PATH = path.join(SCOPEGATE_DIR, "audit.jsonl");
+/** Quick win (hot-reload): bumped on every vault mutation; the proxy watches it. */
+export const VAULT_VERSION_PATH = path.join(SCOPEGATE_DIR, "vault.version");
 export const PENDING_POLICIES_PATH = path.join(
   SCOPEGATE_DIR,
   "policies.pending.yaml",

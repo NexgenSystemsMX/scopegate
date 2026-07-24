@@ -43,6 +43,8 @@ export interface Grant {
   rule?: string;
   /** Set when the grant belongs to a task lease (mejora #1). */
   leaseId?: string;
+  /** Set on a CHILD grant delegated from this one (mejora #5). */
+  parentGrantId?: string;
 }
 
 interface GrantsFile {
@@ -102,6 +104,7 @@ export class GrantStore {
     approvalId?: string;
     rule?: string;
     leaseId?: string;
+    parentGrantId?: string;
   }): Grant {
     const now = Date.now();
     const grant: Grant = {
@@ -114,6 +117,7 @@ export class GrantStore {
       ...(input.approvalId ? { approvalId: input.approvalId } : {}),
       ...(input.rule ? { rule: input.rule } : {}),
       ...(input.leaseId ? { leaseId: input.leaseId } : {}),
+      ...(input.parentGrantId ? { parentGrantId: input.parentGrantId } : {}),
     };
     this.grants.push(grant);
     this.save();
@@ -190,10 +194,20 @@ export class GrantStore {
     return this.grants.filter((g) => g.agentId === agentId);
   }
 
-  /** Revoke every grant of an agent; returns how many were dropped. */
+  /**
+   * Revoke every grant of an agent — with cascade (mejora #5): child grants
+   * delegated FROM the revoked grants die with their parents.
+   */
   revokeAgent(agentId: string): number {
+    const revokedIds = new Set(
+      this.grants.filter((g) => g.agentId === agentId).map((g) => g.id),
+    );
     const before = this.grants.length;
-    this.grants = this.grants.filter((g) => g.agentId !== agentId);
+    this.grants = this.grants.filter(
+      (g) =>
+        g.agentId !== agentId &&
+        !(g.parentGrantId !== undefined && revokedIds.has(g.parentGrantId)),
+    );
     const removed = before - this.grants.length;
     if (removed > 0) this.save();
     return removed;

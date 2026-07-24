@@ -164,6 +164,10 @@ Tell the human EXACTLY this (copy-paste, substituting the ref):
   `oauth2:notion`).
 - Verify afterwards (names only, never values): `scopegate secret ls`, or
   the `scopegate_vault_status` MCP tool once the gateway is live.
+- **No restart needed for deposits after the first session**: a running
+  gateway watches the vault version — on the next call it drops connections
+  and re-injects fresh credentials. A restart is only needed ONCE, right
+  after `init`, so the harness launches the gateway.
 
 ### Decision tree — secrets
 

@@ -51,6 +51,7 @@ import { MANAGEMENT_TOOLS } from "./tools.js";
 import { classifyError } from "./errors.js";
 import { isWriteTool } from "./side-effects.js";
 import { readAuditEvents } from "../audit/verify.js";
+import { taintOf, taintMode } from "./taint.js";
 import {
   buildPreview,
   DEFAULT_MAX_INLINE_BYTES,
@@ -66,6 +67,7 @@ import {
   latestIntentFor,
   resultFor,
   listApprovals,
+  createApprovalRequest,
   type ApprovalIntent,
 } from "../policy/approvals.js";
 import { audit } from "../audit/log.js";
@@ -312,6 +314,42 @@ function createAgentServer(deps: {
     return text(buildPreview(stored));
   };
 
+  /**
+   * Mejora #10 (taint guard, enforce mode): a cross-upstream WRITE while the
+   * agent's session is tainted degrades to needs_approval — never a hard
+   * deny, always a human review of the exfil-shaped action. Returns the
+   * approval when the gate fires, null otherwise.
+   */
+  const taintGate = (capability: string): { approvalId: string; expiresAt: number } | null => {
+    if (taintMode() !== "enforce") return null;
+    const rec = taintOf(agentId);
+    if (!rec) return null;
+    const parts = capability.split(":");
+    if (parts.length < 3) return null;
+    const [up, action, ...rest] = parts;
+    // Only cross-upstream WRITES degrade; reads stay free (they caused the taint).
+    const isWrite =
+      action === "call" ? isWriteTool(up, rest.join(":")) : /^(write|deploy|delete|admin)/.test(action);
+    if (!isWrite || up === rec.source) return null;
+    const { request: ap } = createApprovalRequest({
+      agentId,
+      capability,
+      ttl: null,
+      reason:
+        `[taint guard] cross-upstream write while the session is tainted by content from '${rec.source}' ` +
+        `(score ${rec.score}, hits: ${rec.hits.join(", ")}). A human reviews this exfil-shaped action.`,
+    });
+    auditOrThrow(agentId, "approval_requested", {
+      id: ap.id,
+      capability,
+      via: "taint_guard",
+      taintSource: rec.source,
+      score: rec.score,
+      expiresAt: new Date(ap.expiresAt).toISOString(),
+    });
+    return { approvalId: ap.id, expiresAt: ap.expiresAt };
+  };
+
   const server = new Server(
     { name: "scopegate", version: "0.1.0" },
     { capabilities: { tools: {} } },
@@ -401,6 +439,21 @@ function createAgentServer(deps: {
               reason: rl.reason,
               next_step:
                 "Back off and retry after the rate window resets. Do NOT loop requests.",
+            });
+          }
+          // Mejora #10: taint guard (enforce mode) — a cross-upstream write
+          // while tainted degrades to human approval before any evaluation.
+          const tg = taintGate(capability);
+          if (tg) {
+            return text({
+              granted: false,
+              status: "pending_human_approval",
+              approval_id: tg.approvalId,
+              approval_expires_at: new Date(tg.expiresAt).toISOString(),
+              reason:
+                "[taint guard] cross-upstream write while the session is tainted — a human reviews the exfil-shaped action.",
+              next_step:
+                "Ask the human to review the tainted content and approve (or scopegate deny). Never route around it.",
             });
           }
           const decision = policy.request(
@@ -592,8 +645,7 @@ function createAgentServer(deps: {
 
         case "scopegate_request_plan": {
           // Mejora #4: one task plan, one aggregated human decision.
-          const goal = String(args.goal ?? "").trim();
-          if (!goal) return err("Missing required argument 'goal' — one line naming the task (lands in the audit log).");
+          const goal = String(args.goal ?? "").trim();if (!goal) return err("Missing required argument 'goal' — one line naming the task (lands in the audit log).");
           const caps = Array.isArray(args.capabilities) ? args.capabilities : null;
           if (!caps || caps.length === 0) return err("Missing required argument 'capabilities' (non-empty array).");
           if (caps.length > 20) return err("Too many capabilities in one plan (max 20).");
@@ -623,6 +675,34 @@ function createAgentServer(deps: {
                       `capability is issued at once (your next request materializes them).`,
                   }
                 : { instructions: "Everything in the plan was auto-approved — no human needed." }),
+            });
+          } catch (e) {
+            return err(errorMessage(e));
+          }
+        }
+
+        case "scopegate_delegate": {
+          // Mejora #5: attenuated delegation to a child agent (subagent).
+          const grantId = String(args.grant_id ?? "");
+          const childId = String(args.child_agent_id ?? "");
+          const scope = String(args.scope_subset ?? "");
+          if (!grantId || !childId || !scope) {
+            return err("Missing required arguments 'grant_id', 'child_agent_id' and 'scope_subset'.");
+          }
+          try {
+            const delegated = policy.delegate(agentId, {
+              grant_id: grantId,
+              child_agent_id: childId,
+              scope_subset: scope,
+              ttl: typeof args.ttl === "string" ? args.ttl : undefined,
+            });
+            return text({
+              delegated: true,
+              child_grant_id: delegated.grantId,
+              child_agent_id: delegated.childAgentId,
+              capability: delegated.capability,
+              expires_at: new Date(delegated.expiresAt).toISOString(),
+              note: "The child grant is attenuated (subset + shorter ttl) and dies with the parent. The child sees it in its own scopegate_list_capabilities.",
             });
           } catch (e) {
             return err(errorMessage(e));
@@ -806,6 +886,9 @@ function createAgentServer(deps: {
           const probe = new UpstreamProxy([up], vault, { agentId });
           try {
             const diag = await probe.connectAll();
+            // Quick win: tell the harness the tool list changed — new proxied
+            // tools appear without an agent-session restart.
+            void server.sendToolListChanged().catch(() => {});
             return text({ registered: up.name, connection: diag[up.name] });
           } finally {
             await probe.closeAll().catch(() => {});
@@ -1060,6 +1143,21 @@ function createAgentServer(deps: {
           const tool = proxy.resolve(name);
           if (!tool) return err(`Unknown tool '${name}'`);
           const capability = `${tool.upstream}:call:${tool.upstreamName}`;
+          // Mejora #10: taint guard (enforce mode) — cross-upstream write
+          // while tainted degrades to human approval.
+          const tg = taintGate(capability);
+          if (tg) {
+            return text({
+              granted: false,
+              status: "pending_human_approval",
+              approval_id: tg.approvalId,
+              approval_expires_at: new Date(tg.expiresAt).toISOString(),
+              reason:
+                "[taint guard] cross-upstream write while the session is tainted — a human reviews the exfil-shaped action.",
+              next_step:
+                "Ask the human to review the tainted content and approve (or scopegate deny). Never route around it.",
+            });
+          }
           if (!policy.isGranted(agentId, capability)) {
             // Implicit request: succeeds only if an auto_approve rule matches.
             const d = policy.request(agentId, capability);

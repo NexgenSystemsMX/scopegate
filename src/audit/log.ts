@@ -81,6 +81,9 @@ export const AUDIT_KINDS = [
   // Mejoras del agente (append-only, wave D): plans + result handles.
   "plan_requested",
   "result_stored",
+  // Mejoras del agente (append-only, wave E): delegation + taint.
+  "grant_delegated",
+  "taint_detected",
 ] as const;
 
 export type AuditKind = (typeof AUDIT_KINDS)[number];

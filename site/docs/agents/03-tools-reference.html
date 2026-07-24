@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>03 — MCP Tools Reference — ScopeGate Docs</title>
-<meta name="description" content="Exact reference of the seventeen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/g">
+<meta name="description" content="Exact reference of the eighteen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/ga">
 <link rel="canonical" href="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:title" content="03 — MCP Tools Reference — ScopeGate Docs">
-<meta property="og:description" content="Exact reference of the seventeen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/g">
+<meta property="og:description" content="Exact reference of the eighteen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/ga">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:image" content="https://scopegate.io/og.png">
@@ -37,7 +37,7 @@
   <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>03 — MCP Tools Reference</span></nav>
   <article>
 <h1 id="03-mcp-tools-reference">03 — MCP Tools Reference</h1>
-<p>Exact reference of the seventeen <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
+<p>Exact reference of the eighteen <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
 <h2 id="response-conventions">Response conventions</h2>
 <p>Every management tool returns its payload as pretty-printed JSON in <code>content[0].text</code> — parse it as JSON. Three fail-closed gates can deny ANY call: <strong>agent suspended</strong> (honeytoken) and <strong>agent revoked by ScopeGate Cloud</strong> deny everything until a human intervenes; <strong>audit unavailable</strong> denies the action.</p>
 <p>Failures come in two shapes:</p>
@@ -209,6 +209,13 @@
 <pre class="code" data-lang="json"><code>{ &quot;ref&quot;: &quot;r-…&quot;, &quot;pattern&quot;: &quot;item-42&quot;, &quot;count&quot;: 2,
   &quot;hits&quot;: [ { &quot;path&quot;: &quot;items&quot;, &quot;line&quot;: &quot;\&quot;title\&quot;: \&quot;item-42 — …\&quot;&quot; } ] }</code></pre>
 <p>Capped at 50 hits — context-sized by design.</p>
+<h2 id="scopegate-delegate">scopegate_delegate</h2>
+<p>Delegate one of YOUR live grants to a child agent (subagent) with strict attenuation — orchestrating parallel subagents without sharing your identity.</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>grant_id</code></td><td>string</td><td>yes</td><td>your live grant (see <code>scopegate_list_capabilities</code>)</td></tr><tr><td><code>child_agent_id</code></td><td>string</td><td>yes</td><td>the child&#39;s agent id — must differ from yours</td></tr><tr><td><code>scope_subset</code></td><td>string</td><td>yes</td><td>capability covered by the parent grant (never broader)</td></tr><tr><td><code>ttl</code></td><td>string</td><td>no</td><td>must not exceed the parent&#39;s remaining TTL</td></tr></tbody></table>
+<pre class="code" data-lang="json"><code>{ &quot;delegated&quot;: true, &quot;child_grant_id&quot;: &quot;…&quot;, &quot;child_agent_id&quot;: &quot;subagent-explorer&quot;,
+  &quot;capability&quot;: &quot;github:write:easyorder/api&quot;, &quot;expires_at&quot;: &quot;…&quot;,
+  &quot;note&quot;: &quot;The child grant is attenuated (subset + shorter ttl) and dies with the parent. The child sees it in its own scopegate_list_capabilities.&quot; }</code></pre>
+<p>Fail-closed refusals: a scope NOT covered by the parent glob (<code>Attenuation violation</code>), a ttl longer than the parent&#39;s remaining, self-delegation, or a dead parent grant. The child grant carries <code>parentGrantId</code> — revoking the parent (directly or via fleet revocation) kills every child, and the audit chain (<code>grant_delegated</code> with <code>parent_grant</code>) attributes every action.</p>
 <h2 id="scopegate-list-capabilities">scopegate_list_capabilities</h2>
 <p>List your active (non-expired) grants with remaining TTL. No arguments.</p>
 <pre class="code" data-lang="json"><code>{ &quot;agentId&quot;: &quot;kimi-code&quot;,
@@ -261,7 +268,7 @@
 <pre class="code" data-lang="json"><code>{ &quot;secret_refs&quot;: [&quot;github_token&quot;, &quot;grafana_token&quot;, &quot;railway_api_token&quot;] }</code></pre>
 <p>Example call: <code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 6, &quot;method&quot;: &quot;tools/call&quot;, &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_vault_status&quot;, &quot;arguments&quot;: {} } }</code></p>
 <h2 id="proxied-tools-upstream-tool">Proxied tools: <code>&lt;upstream&gt;__&lt;tool&gt;</code></h2>
-<p><code>tools/list</code> returns the seventeen management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
+<p><code>tools/list</code> returns the eighteen management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
 <p>Every proxied call maps to the capability <code>&lt;upstream&gt;:call:&lt;toolName&gt;</code>. The gateway checks a live covering grant first; with none, it attempts an IMPLICIT request that succeeds only via an <code>auto_approve</code> rule. A denied call is a tool error:</p>
 <pre class="code" data-lang="text"><code>ERROR: Capability &#39;grafana:call:query&#39; not granted. Call scopegate_request_capability first (or scopegate_propose_policy if denied). Reason: No auto_approve rule matches &#39;grafana:call:query&#39; for agent &#39;kimi-code&#39;.</code></pre>
 <p>If the denial escalated, it appends <code> Approval request &lt;id&gt; is pending — ask the human to run: scopegate approve &lt;id&gt;</code>. Unknown names yield <code>ERROR: Unknown tool &#39;&lt;name&gt;&#39;</code>. Correct flow — request explicitly FIRST (the reason lands in the audit log), then call:</p>
