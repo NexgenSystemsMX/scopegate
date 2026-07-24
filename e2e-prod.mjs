@@ -118,16 +118,23 @@ async function main() {
   assert.equal(diag.upstreams?.fakegit?.ok, true, `diagnose: ${JSON.stringify(diag)}`);
   pass("scopegate_diagnose responds (fakegit ok)");
 
-  // 8. A call WITHOUT a capability must be denied WITH an actionable
-  // instruction (demo seed: fakegit:call:danger requires human approval).
-  const blocked = await client.callTool({ name: "fakegit__danger", arguments: {} });
-  assert.equal(blocked.isError, true, "ungranted proxied call must be an error");
-  assert.match(
-    blocked.content[0].text,
-    /scopegate_request_capability/,
-    `denial must point to request_capability: ${blocked.content[0].text}`,
+  // 8. A capability with no coverage is denied deterministically on ANY
+  // environment (rule coverage and deny globs legitimately vary per
+  // deployment): no auto_approve rule + an actionable next step.
+  const deniedCap = parse(
+    await client.callTool({
+      name: "scopegate_request_capability",
+      arguments: { capability: "nonexistent:call:thing", reason: "e2e deny path" },
+    }),
   );
-  pass("proxied call without capability denied with actionable instruction");
+  assert.equal(deniedCap.granted, false, `uncovered capability must be denied: ${JSON.stringify(deniedCap)}`);
+  assert.equal(deniedCap.code, "no_rule", `expected no_rule: ${JSON.stringify(deniedCap)}`);
+  assert.match(
+    deniedCap.next_step ?? "",
+    /propose_policy|human/i,
+    `denial must point to the human path: ${JSON.stringify(deniedCap)}`,
+  );
+  pass("uncovered capability denied with actionable next step on any environment");
 
   await client.close().catch(() => {});
   console.log("\ne2e-prod: ALL ASSERTIONS PASSED");
