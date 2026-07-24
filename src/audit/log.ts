@@ -78,6 +78,9 @@ export const AUDIT_KINDS = [
   "lease_renewed",
   "lease_revoked",
   "idempotency_replayed",
+  // Mejoras del agente (append-only, wave D): plans + result handles.
+  "plan_requested",
+  "result_stored",
 ] as const;
 
 export type AuditKind = (typeof AUDIT_KINDS)[number];

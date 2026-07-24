@@ -80,6 +80,10 @@ export interface ApprovalRequest {
   expiresAt: number;
   status?: ApprovalStatus;
   resolvedAt?: number;
+  /** Capability-plan bundle (mejora #4): the items a single decision covers. */
+  plan?: { capability: string; ttl?: string }[];
+  /** Lease every plan grant binds to on approval (mejora #1 + #4). */
+  leaseId?: string;
 }
 
 export interface ApprovalDecision {
@@ -188,6 +192,9 @@ export function createApprovalRequest(input: {
   ttl?: string | null;
   reason?: string;
   approvalTtlMs?: number;
+  /** Capability-plan bundle (mejora #4): one decision covers every item. */
+  plan?: { capability: string; ttl?: string }[];
+  leaseId?: string;
 }): { request: ApprovalRequest; created: boolean } {
   const now = Date.now();
   const decisions = readDecisions();
@@ -209,6 +216,8 @@ export function createApprovalRequest(input: {
     reason: input.reason ?? "",
     requestedAt: now,
     expiresAt: now + (input.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS),
+    ...(input.plan?.length ? { plan: input.plan } : {}),
+    ...(input.leaseId ? { leaseId: input.leaseId } : {}),
   };
   ensureDir();
   fs.appendFileSync(APPROVALS_PENDING_PATH, JSON.stringify(request) + "\n", {

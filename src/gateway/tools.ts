@@ -79,6 +79,59 @@ export const MANAGEMENT_TOOLS: Tool[] = [
     },
   },
   {
+    name: "scopegate_request_plan",
+    description:
+      "Submit a whole task plan at once: auto-approvable capabilities are issued immediately, denials are reported, and every needs_approval capability is bundled into ONE aggregated human approval (blast radius visible as a single item). Set open_lease: true to bind the whole plan to a new task lease (mejora #1).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        goal: { type: "string", description: "One line — the task this plan covers (lands in the audit log)." },
+        capabilities: {
+          type: "array",
+          description: "The capabilities the task needs (max 20).",
+          items: {
+            type: "object",
+            properties: {
+              capability: { type: "string" },
+              ttl: { type: "string" },
+            },
+            required: ["capability"],
+          },
+        },
+        open_lease: { type: "boolean", description: "Also open a task lease and bind every grant of this plan to it." },
+        max_total: { type: "string", description: "Lease total (with open_lease), clamped by limits.max_lease_total." },
+        max_writes: { type: "number", description: "Lease write budget (with open_lease)." },
+      },
+      required: ["goal", "capabilities"],
+    },
+  },
+  {
+    name: "scopegate_result_get",
+    description:
+      "Read a slice of a stored oversized result (result_ref from a truncated response) by dot-path, e.g. 'content.0.text' or 'items.3.title'. Returns {found, value} — adjust the path instead of re-calling the tool.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "The result_ref (r-...)." },
+        path: { type: "string", description: "Dot-path into the payload." },
+      },
+      required: ["ref", "path"],
+    },
+  },
+  {
+    name: "scopegate_result_grep",
+    description:
+      "Search a stored oversized result by substring or /regex/. Returns matching lines with their path (max 50) — context-sized by design.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "The result_ref (r-...)." },
+        pattern: { type: "string", description: "Plain substring or /regex/ (with optional flags)." },
+      },
+      required: ["ref", "pattern"],
+    },
+  },
+  {
     name: "scopegate_open_task_lease",
     description:
       "Open a task lease for long-running work: a double budget — total time (clamped by the hard limits.max_lease_total ceiling, default 4h) and write count (default 200). While the lease lives, renew your grants yourself with scopegate_renew_capability instead of dying mid-task. Request capabilities with lease_id to bind them; revoking the lease revokes every bound grant at once.",

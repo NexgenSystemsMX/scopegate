@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>03 — MCP Tools Reference — ScopeGate Docs</title>
-<meta name="description" content="Exact reference of the fourteen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/ga">
+<meta name="description" content="Exact reference of the seventeen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/g">
 <link rel="canonical" href="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:title" content="03 — MCP Tools Reference — ScopeGate Docs">
-<meta property="og:description" content="Exact reference of the fourteen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/ga">
+<meta property="og:description" content="Exact reference of the seventeen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/g">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:image" content="https://scopegate.io/og.png">
@@ -37,7 +37,7 @@
   <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>03 — MCP Tools Reference</span></nav>
   <article>
 <h1 id="03-mcp-tools-reference">03 — MCP Tools Reference</h1>
-<p>Exact reference of the fourteen <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
+<p>Exact reference of the seventeen <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
 <h2 id="response-conventions">Response conventions</h2>
 <p>Every management tool returns its payload as pretty-printed JSON in <code>content[0].text</code> — parse it as JSON. Three fail-closed gates can deny ANY call: <strong>agent suspended</strong> (honeytoken) and <strong>agent revoked by ScopeGate Cloud</strong> deny everything until a human intervenes; <strong>audit unavailable</strong> denies the action.</p>
 <p>Failures come in two shapes:</p>
@@ -55,6 +55,15 @@
 }</code></pre>
 <table><thead><tr><th><code>kind</code></th><th>you should</th></tr></thead><tbody><tr><td><code>expired_grant</code></td><td><code>scopegate_renew_capability</code> (or request a fresh grant)</td></tr><tr><td><code>missing_scope</code></td><td><code>scopegate_request_capability</code> with the SAME capability</td></tr><tr><td><code>policy_denied</code></td><td>stop — human path only (<code>scopegate_propose_policy</code> or ask)</td></tr><tr><td><code>rate_limited</code></td><td>wait <code>retry_after_s</code>, never loop</td></tr><tr><td><code>upstream_down</code></td><td>wait briefly, retry once, then <code>scopegate_diagnose</code></td></tr><tr><td><code>auth_broken</code></td><td><code>scopegate_diagnose</code> for the self-repair path</td></tr></tbody></table>
 <p>Upstream availability is additionally guarded by a per-upstream <strong>circuit breaker</strong>: after 5 consecutive failures the circuit opens for 30 s (calls fail fast with an <code>upstream_down</code> envelope), then a half-open probe decides. See <code>scopegate_upstream_health</code> for the live states.</p>
+<p><strong>Oversized results (result handles).</strong> A proxied payload larger than <code>limits.max_inline_bytes</code> (default 16 KiB) never floods your context: the gateway persists it (AFTER policy redaction) and returns a preview + handle instead:</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;truncated&quot;: true,
+  &quot;result_ref&quot;: &quot;r-d215da552957e6f1&quot;,
+  &quot;preview&quot;: &quot;{ \&quot;items\&quot;: [ …first 2 KiB…&quot;,
+  &quot;stats&quot;: { &quot;bytes&quot;: 14230, &quot;shape&quot;: &quot;object&quot;, &quot;top_keys&quot;: [&quot;items&quot;, &quot;generated_at&quot;], &quot;items&quot;: 120 },
+  &quot;hint&quot;: &quot;Full payload stored (14230 bytes). Page it with scopegate_result_get {ref: …, path: …} or search it with scopegate_result_grep {ref: …, pattern: …} — do NOT re-call the tool for the rest.&quot;
+}</code></pre>
+<p>Refs live 2h and are per-agent (you can only read your own). Page with <code>scopegate_result_get</code> / search with <code>scopegate_result_grep</code>.</p>
 <h2 id="scopegate-request-capability">scopegate_request_capability</h2>
 <p>Request an ephemeral grant before privileged work. Capability format: <code>&lt;upstream&gt;:&lt;action&gt;:&lt;resource&gt;</code>. Request the MINIMUM scope and SHORTEST TTL.</p>
 <table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>capability</code></td><td>string</td><td>yes</td><td>e.g. <code>github:write:easyorder/*</code></td></tr><tr><td><code>ttl</code></td><td>string</td><td>no</td><td><code>&#39;&lt;n&gt;s&#39;</code>, <code>&#39;&lt;n&gt;m&#39;</code> or <code>&#39;&lt;n&gt;h&#39;</code>; the policy ceiling always wins</td></tr><tr><td><code>reason</code></td><td>string</td><td>yes</td><td>one line; recorded in the audit log</td></tr><tr><td><code>lease_id</code></td><td>string</td><td>no</td><td>bind the grant to a task lease (validated: live + upstream scope)</td></tr><tr><td><code>execute_on_approval</code></td><td>object</td><td>no</td><td><code>{tool, args}</code> continuation — see below</td></tr></tbody></table>
@@ -171,6 +180,35 @@
   &quot;pending_approvals&quot;: [ { &quot;approval_id&quot;: &quot;…&quot;, &quot;capability&quot;: &quot;aws:deploy:production&quot;, &quot;expires_at&quot;: &quot;…&quot; } ]
 }</code></pre>
 <p><code>writes</code> are classified with the side-effects table (curated bridge writes, prefix heuristic, manifest <code>side_effects</code> overrides) — answer &quot;did I already do this write?&quot; before repeating it (see also <code>_sg_idempotency_key</code>).</p>
+<h2 id="scopegate-request-plan">scopegate_request_plan</h2>
+<p>One task plan, ONE aggregated human decision (see <a href="/docs/agents/08-long-tasks">08 — Long tasks</a>). Auto-approvable capabilities are issued immediately, denials are reported, and every needs_approval capability is bundled into a single approval with the whole blast radius visible as one item.</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>goal</code></td><td>string</td><td>yes</td><td>one line naming the task (audited)</td></tr><tr><td><code>capabilities</code></td><td>array</td><td>yes</td><td><code>[{capability, ttl?}]</code> — max 20</td></tr><tr><td><code>open_lease</code></td><td>boolean</td><td>no</td><td>also open a task lease and bind every grant of the plan</td></tr><tr><td><code>max_total</code></td><td>string</td><td>no</td><td>lease total (with open_lease)</td></tr><tr><td><code>max_writes</code></td><td>number</td><td>no</td><td>lease write budget (with open_lease)</td></tr></tbody></table>
+<p><strong>Response</strong></p>
+<pre class="code" data-lang="json"><code>{
+  &quot;goal&quot;: &quot;read repo X, write branch Y, deploy staging&quot;,
+  &quot;lease_id&quot;: &quot;f47ac10b-…&quot;,
+  &quot;auto&quot;: [
+    { &quot;capability&quot;: &quot;github:read:easyorder&quot;, &quot;granted&quot;: true, &quot;ttlMs&quot;: 600000 },
+    { &quot;capability&quot;: &quot;aws:write:production&quot;, &quot;granted&quot;: false, &quot;code&quot;: &quot;ceiling_blocked&quot;, &quot;reason&quot;: &quot;…&quot; }
+  ],
+  &quot;pending&quot;: {
+    &quot;approvalId&quot;: &quot;3f6b8c2e-…&quot;,
+    &quot;items&quot;: [ { &quot;capability&quot;: &quot;github:write:fix-x&quot; }, { &quot;capability&quot;: &quot;railway:call:deploy&quot;, &quot;ttl&quot;: &quot;5m&quot; } ],
+    &quot;approvalExpiresAt&quot;: 1823400000000
+  },
+  &quot;instructions&quot;: &quot;The auto-approvable part is already granted. The rest is ONE aggregated approval: ask the human to run scopegate approve 3f6b8c2e-… — on approval every bundled capability is issued at once (your next request materializes them).&quot;
+}</code></pre>
+<p>On approval, every bundled capability is issued at once (each clamped per its own rule ceilings; bound to the plan&#39;s lease when <code>open_lease</code> was set).</p>
+<h2 id="scopegate-result-get">scopegate_result_get</h2>
+<p>Slice a stored oversized result by dot-path.</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>ref</code></td><td>string</td><td>yes</td><td>the <code>result_ref</code> (r-…)</td></tr><tr><td><code>path</code></td><td>string</td><td>yes</td><td>e.g. <code>items.3.title</code> or <code>content.0.text</code></td></tr></tbody></table>
+<pre class="code" data-lang="json"><code>{ &quot;found&quot;: true, &quot;ref&quot;: &quot;r-…&quot;, &quot;path&quot;: &quot;items.0.title&quot;, &quot;value&quot;: &quot;item-0 — …&quot; }</code></pre>
+<p><code>{found: false}</code> means a bad path (adjust it — <code>top_keys</code> comes in the response), not an error. Unknown/expired refs are a tool error (refs live 2h, per-agent).</p>
+<h2 id="scopegate-result-grep">scopegate_result_grep</h2>
+<p>Search a stored oversized result by substring or <code>/regex/</code> (optional flags).</p>
+<pre class="code" data-lang="json"><code>{ &quot;ref&quot;: &quot;r-…&quot;, &quot;pattern&quot;: &quot;item-42&quot;, &quot;count&quot;: 2,
+  &quot;hits&quot;: [ { &quot;path&quot;: &quot;items&quot;, &quot;line&quot;: &quot;\&quot;title\&quot;: \&quot;item-42 — …\&quot;&quot; } ] }</code></pre>
+<p>Capped at 50 hits — context-sized by design.</p>
 <h2 id="scopegate-list-capabilities">scopegate_list_capabilities</h2>
 <p>List your active (non-expired) grants with remaining TTL. No arguments.</p>
 <pre class="code" data-lang="json"><code>{ &quot;agentId&quot;: &quot;kimi-code&quot;,
@@ -223,7 +261,7 @@
 <pre class="code" data-lang="json"><code>{ &quot;secret_refs&quot;: [&quot;github_token&quot;, &quot;grafana_token&quot;, &quot;railway_api_token&quot;] }</code></pre>
 <p>Example call: <code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 6, &quot;method&quot;: &quot;tools/call&quot;, &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_vault_status&quot;, &quot;arguments&quot;: {} } }</code></p>
 <h2 id="proxied-tools-upstream-tool">Proxied tools: <code>&lt;upstream&gt;__&lt;tool&gt;</code></h2>
-<p><code>tools/list</code> returns the fourteen management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
+<p><code>tools/list</code> returns the seventeen management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
 <p>Every proxied call maps to the capability <code>&lt;upstream&gt;:call:&lt;toolName&gt;</code>. The gateway checks a live covering grant first; with none, it attempts an IMPLICIT request that succeeds only via an <code>auto_approve</code> rule. A denied call is a tool error:</p>
 <pre class="code" data-lang="text"><code>ERROR: Capability &#39;grafana:call:query&#39; not granted. Call scopegate_request_capability first (or scopegate_propose_policy if denied). Reason: No auto_approve rule matches &#39;grafana:call:query&#39; for agent &#39;kimi-code&#39;.</code></pre>
 <p>If the denial escalated, it appends <code> Approval request &lt;id&gt; is pending — ask the human to run: scopegate approve &lt;id&gt;</code>. Unknown names yield <code>ERROR: Unknown tool &#39;&lt;name&gt;&#39;</code>. Correct flow — request explicitly FIRST (the reason lands in the audit log), then call:</p>

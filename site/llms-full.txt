@@ -42,6 +42,13 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 - `scopegate_recall` — the agent's own signed audit as session memory (recent actions, writes, active grants with remaining TTL, pending approvals), scoped to its agentId only.
 - `scopegate_open_task_lease` — open a task lease for long-running work: a double budget (total time, hard-clamped by limits.max_lease_total default 4h; write count, default 200). Lease-covered grants renew under the agent's control; revoking the lease revokes every bound grant at once.
 - `scopegate_renew_capability` — renew a lease-covered grant (sliding TTL): new expiry = min(now + original ttl, lease deadline, rule ceilings). Proxied responses warn the agent at <20% TTL so it renews before dying.
+- `scopegate_request_plan` — submit a whole task plan at once: auto-approvable capabilities are issued immediately, denials reported, and every needs_approval capability is bundled into ONE aggregated human approval (blast radius visible as a single item). Optional `open_lease` binds the whole plan to a new task lease.
+- `scopegate_result_get` — read a slice of a stored oversized result (result_ref) by dot-path; returns {found, value}.
+- `scopegate_result_grep` — search a stored oversized result by substring or /regex/ (max 50 hits, context-sized).
+
+## Result handles (oversized payloads)
+
+A proxied result over `limits.max_inline_bytes` (default 16 KiB) is persisted by the gateway (AFTER policy redaction, never before) and returned as `{truncated: true, result_ref, preview, stats, hint}`. Refs live 2h and are per-agent. The agent pages with `scopegate_result_get {ref, path}` and searches with `scopegate_result_grep {ref, pattern}` instead of swallowing the payload or re-calling the tool — the context window is protected by construction.
 
 ## Idempotent writes (`_sg_idempotency_key`)
 

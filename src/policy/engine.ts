@@ -94,6 +94,8 @@ export interface PolicyLimits {
   rate_limit?: string;
   /** Absolute ceiling for a task-lease total duration (mejora #1; e.g. "4h"). */
   max_lease_total?: string;
+  /** Max bytes of a proxied payload returned inline (mejora #7; default 16384). */
+  max_inline_bytes?: number;
   /** Lifetime of a pending human-approval request (default 10m). */
   approval_ttl?: string;
 }
@@ -217,7 +219,7 @@ export class PolicyConfigError extends Error {}
 /* ------------------------------------------------------------------------ */
 
 const RULE_KEYS = new Set(["match", "auto_approve", "ttl", "require", "redact"]);
-const LIMIT_KEYS = new Set(["max_ttl", "deny", "rate_limit", "approval_ttl", "max_lease_total"]);
+const LIMIT_KEYS = new Set(["max_ttl", "deny", "rate_limit", "approval_ttl", "max_lease_total", "max_inline_bytes"]);
 
 function assertCompilableGlob(glob: unknown, where: string): asserts glob is string {
   if (typeof glob !== "string" || !glob.trim()) {
@@ -261,6 +263,11 @@ function validateLimits(raw: unknown, where: string): void {
   if (lim.max_ttl !== undefined) strictTtlAt(lim.max_ttl, `${where}.max_ttl`);
   if (lim.max_lease_total !== undefined) strictTtlAt(lim.max_lease_total, `${where}.max_lease_total`);
   if (lim.approval_ttl !== undefined) strictTtlAt(lim.approval_ttl, `${where}.approval_ttl`);
+  if (lim.max_inline_bytes !== undefined) {
+    if (!Number.isInteger(lim.max_inline_bytes) || (lim.max_inline_bytes as number) < 256) {
+      throw new PolicyConfigError(`${where}.max_inline_bytes: must be an integer >= 256`);
+    }
+  }
   if (lim.deny !== undefined) {
     if (!Array.isArray(lim.deny)) {
       throw new PolicyConfigError(`${where}.deny: must be an array of globs`);
@@ -972,6 +979,108 @@ export class PolicyEngine {
   /* Mejora #1: task leases — end                                            */
   /* ---------------------------------------------------------------------- */
 
+  /* ---------------------------------------------------------------------- */
+  /* Mejora #4: capability plan (one plan, one human decision)               */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Evaluate a whole task plan at once: auto-approvable capabilities are
+   * issued immediately (with their audit trail), denials are reported, and
+   * every needs_approval capability is bundled into ONE aggregated approval
+   * request — one informed human decision instead of N popups.
+   */
+  requestPlan(
+    agentId: string,
+    input: {
+      goal: string;
+      capabilities: { capability: string; ttl?: string }[];
+      open_lease?: boolean;
+      max_total?: string;
+      max_writes?: number;
+    },
+  ): {
+    goal: string;
+    leaseId?: string;
+    auto: { capability: string; granted: boolean; ttlMs?: number; code?: string; reason?: string }[];
+    pending?: { approvalId: string; items: { capability: string; ttl?: string }[]; approvalExpiresAt: number };
+  } {
+    let leaseId: string | undefined;
+    if (input.open_lease) {
+      leaseId = this.openLease(agentId, {
+        goal: input.goal,
+        upstreams: [],
+        max_total: input.max_total,
+        max_writes: input.max_writes,
+      }).lease.leaseId;
+    }
+
+    const auto: { capability: string; granted: boolean; ttlMs?: number; code?: string; reason?: string }[] = [];
+    const bundle: { capability: string; ttl?: string }[] = [];
+
+    for (const item of input.capabilities) {
+      const evaluation = this.evaluate(agentId, item.capability, item.ttl);
+      if (evaluation.decision === "needs_approval") {
+        bundle.push(item);
+        continue;
+      }
+      if (evaluation.decision === "deny") {
+        auto.push({ capability: item.capability, granted: false, code: evaluation.code, reason: evaluation.reason });
+        continue;
+      }
+      // Pre-flight says allow → issue through the real path (audited, lease-bound).
+      const d = this.request(agentId, item.capability, item.ttl, `plan: ${input.goal}`, {
+        leaseId,
+      });
+      auto.push(
+        d.allow
+          ? { capability: item.capability, granted: true, ttlMs: d.ttlMs }
+          : { capability: item.capability, granted: false, code: d.code, reason: d.reason },
+      );
+    }
+
+    let pending: { approvalId: string; items: { capability: string; ttl?: string }[]; approvalExpiresAt: number } | undefined;
+    if (bundle.length > 0) {
+      const limits = effectiveLimitsFor(this.policies, agentId);
+      let approvalTtlMs = DEFAULT_APPROVAL_TTL_MS;
+      try {
+        approvalTtlMs = limits.approval_ttl
+          ? parseTtlStrict(limits.approval_ttl, "limits.approval_ttl")
+          : DEFAULT_APPROVAL_TTL_MS;
+      } catch {
+        /* validated at load */
+      }
+      const { request: ap } = createApprovalRequest({
+        agentId,
+        capability: `plan:${input.goal.slice(0, 60)}`,
+        ttl: null,
+        reason: input.goal,
+        approvalTtlMs,
+        plan: bundle,
+        ...(leaseId ? { leaseId } : {}),
+      });
+      bestEffortAudit(agentId, "plan_requested", {
+        id: ap.id,
+        goal: input.goal,
+        items: bundle,
+        autoGranted: auto.filter((a) => a.granted).map((a) => a.capability),
+        denied: auto.filter((a) => !a.granted).map((a) => a.capability),
+        ...(leaseId ? { leaseId } : {}),
+      });
+      pending = { approvalId: ap.id, items: bundle, approvalExpiresAt: ap.expiresAt };
+    }
+
+    return { goal: input.goal, ...(leaseId ? { leaseId } : {}), auto, ...(pending ? { pending } : {}) };
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Mejora #4: capability plan — end                                        */
+  /* ---------------------------------------------------------------------- */
+
+  /** Mejora #7: inline-payload ceiling for the agent (limits.max_inline_bytes). */
+  maxInlineBytesFor(agentId: string): number | undefined {
+    return effectiveLimitsFor(this.policies, agentId).max_inline_bytes;
+  }
+
   /**
    * Sliding-window rate limit for scopegate_request_capability (H-04.7).
    * Counted here, enforced by server.ts before evaluating the request.
@@ -1259,6 +1368,45 @@ export class PolicyEngine {
       const dec = decisions.get(req.id);
       if (dec) {
         updates.set(req.id, { status: dec.decision, resolvedAt: now });
+        if (dec.decision === "approved" && req.plan && req.plan.length > 0) {
+          // Mejora #4: a plan approval issues EVERY bundled capability in one
+          // shot (each clamped per its own rule ceilings; bound to the plan's
+          // lease when it carries one).
+          bestEffortAudit(agentId, "approval_approved", {
+            id: req.id,
+            capability: req.capability,
+            decidedBy: dec.decidedBy,
+            planSize: req.plan.length,
+          });
+          for (const item of req.plan) {
+            try {
+              const ttlMs = this.materializedTtlFor(agentId, item.capability, item.ttl);
+              const grant = this.grants.issue({
+                agentId,
+                capability: item.capability,
+                ttlMs,
+                approvalId: req.id,
+                rule: "human_approval",
+                ...(req.leaseId ? { leaseId: req.leaseId } : {}),
+              });
+              bestEffortAudit(agentId, "grant_issued", {
+                id: grant.id,
+                capability: item.capability,
+                ttlMs,
+                expiresAt: new Date(grant.expiresAt).toISOString(),
+                via: "human_approval",
+                approvalId: req.id,
+                plan: true,
+                ...(req.leaseId ? { leaseId: req.leaseId } : {}),
+              });
+            } catch (e) {
+              console.error(
+                `[scopegate] error: failed to materialize plan item '${item.capability}' of ${req.id}: ${(e as Error).message}`,
+              );
+            }
+          }
+          continue;
+        }
         if (dec.decision === "approved") {
           try {
             const ttlMs = this.materializedTtl(agentId, req);
@@ -1379,6 +1527,41 @@ export class PolicyEngine {
     // EPIC-10: the team layer's ceiling also clamps approval-materialized
     // one-shot grants (min) — a human approval can never widen the team cap.
     const teamCeiling = this.teamTtlCeilingMs(agentId, req.capability);
+    if (teamCeiling !== null) ttlMs = Math.min(ttlMs, teamCeiling);
+    return ttlMs;
+  }
+
+  /**
+   * Per-capability materialization TTL for approvals (mejora #4): the same
+   * clamp materializedTtl applies to a single approval, generalized for plan
+   * items — min(agent's ask, matching-rule ceiling, default_ttl, max_ttl,
+   * team ceiling). Falls back to the strict require-rule lookup of the
+   * original single-approval path.
+   */
+  private materializedTtlFor(agentId: string, capability: string, ttl?: string): number {
+    const agentKey = agentKeyFor(this.policies, agentId);
+    const agent = agentKey ? this.policies.agents[agentKey] : null;
+    const limits = effectiveLimitsFor(this.policies, agentId);
+    let requested = Number.MAX_SAFE_INTEGER;
+    if (ttl) {
+      requested = parseTtlStrict(ttl, "plan item ttl");
+    }
+    let ceiling = DEFAULT_TTL_MS;
+    // Prefer a matching require:human_approval rule (the plan's own kind);
+    // fall back to any matching rule's ttl for ceiling purposes.
+    const rules = agent?.capabilities?.filter((r) => picomatch.isMatch(capability, r.match)) ?? [];
+    const requireRule = rules.find((r) => r.require === "human_approval");
+    const anyRule = requireRule ?? rules[0];
+    if (anyRule?.ttl !== undefined) {
+      ceiling = parseTtlStrict(anyRule.ttl, `ttl of rule '${anyRule.match}'`);
+    } else if (agent?.default_ttl !== undefined) {
+      ceiling = parseTtlStrict(agent.default_ttl, "default_ttl");
+    }
+    let ttlMs = Math.min(requested, ceiling);
+    if (limits.max_ttl !== undefined) {
+      ttlMs = Math.min(ttlMs, parseTtlStrict(limits.max_ttl, "limits.max_ttl"));
+    }
+    const teamCeiling = this.teamTtlCeilingMs(agentId, capability);
     if (teamCeiling !== null) ttlMs = Math.min(ttlMs, teamCeiling);
     return ttlMs;
   }

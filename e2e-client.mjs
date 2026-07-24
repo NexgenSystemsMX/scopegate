@@ -97,6 +97,7 @@ async function main() {
       version: 1,
       limits: {
         max_ttl: "30m", // absolute ceiling: nothing outlives 30m
+        max_inline_bytes: 1024, // mejora #7: oversized payloads truncate to handles
         deny: [
           "aws:*:production", // prod is off-limits no matter what rules say
           "\\*:*", // literal '*:*' injection asks (escaped glob, matches nothing else)
@@ -121,6 +122,8 @@ async function main() {
             // lease fixture (mejora #1) — fresh capability, never requested
             // outside the lease section (lease binding applies to NEW grants)
             { match: "fakegit:call:leased", auto_approve: true, ttl: "10m" },
+            // oversized-payload fixture (mejora #7)
+            { match: "fakegit:call:big_report", auto_approve: true, ttl: "10m" },
             // PII in the RESPONSE is masked under this rule
             { match: "fakegit:call:pii_echo", auto_approve: true, ttl: "5m", redact: ["pii"] },
           ],
@@ -517,6 +520,92 @@ async function main() {
     assert.equal(w3.isError, true, "same key + different args must conflict");
     assert.match(w3.content[0].text, /idempotency_key_conflict/);
     pass("idempotency: same key+args replays, same key+different args conflicts");
+
+    // 16f. Mejora #7 (result handles) + mejora #4 (capability plan).
+    // fakegit__big_report returns >1KB; limits.max_inline_bytes is 1024.
+    // An auto rule does not exist for big_report → implicit request fails… so
+    // grant it first via the leased fakegit:call:* coverage? No: request it.
+    const bigGrant = parse(
+      await client.callTool({
+        name: "scopegate_request_capability",
+        arguments: { capability: "fakegit:call:big_report", ttl: "5m", reason: "result handles e2e" },
+      }),
+    );
+    // big_report has no explicit rule; the fakegit:call:* glob… none either.
+    // The e2e policy auto-approves only specific tools — request must deny.
+    // Use pii_echo instead for the oversized path: it's auto-approved.
+    void bigGrant;
+    const big = parse(await client.callTool({ name: "fakegit__big_report", arguments: {} }));
+    assert.equal(big.isError ?? false, false);
+    assert.equal(big.truncated, true, `expected truncation: ${JSON.stringify(big).slice(0, 200)}`);
+    assert.ok(big.result_ref, "truncation must carry result_ref");
+    assert.ok(big.stats.bytes > 1024, `stats must report the real size: ${JSON.stringify(big.stats)}`);
+    const got = parse(
+      await client.callTool({
+        name: "scopegate_result_get",
+        arguments: { ref: big.result_ref, path: "items.0.title" },
+      }),
+    );
+    assert.equal(got.found, true, `expected found: ${JSON.stringify(got)}`);
+    assert.match(got.value, /item-0/);
+    const grepd = parse(
+      await client.callTool({
+        name: "scopegate_result_grep",
+        arguments: { ref: big.result_ref, pattern: "item-42" },
+      }),
+    );
+    assert.ok(grepd.count >= 1, `expected hits: ${JSON.stringify(grepd)}`);
+    const missed = parse(
+      await client.callTool({
+        name: "scopegate_result_get",
+        arguments: { ref: big.result_ref, path: "items.999.title" },
+      }),
+    );
+    assert.equal(missed.found, false);
+    pass("oversized payloads truncate to result_ref; get/grep page through them");
+
+    // Capability plan: auto (pii_echo), needs_approval (danger3), hard deny (aws prod).
+    const plan = parse(
+      await client.callTool({
+        name: "scopegate_request_plan",
+        arguments: {
+          goal: "e2e plan: redact read + guarded write + denied prod",
+          capabilities: [
+            { capability: "fakegit:call:pii_echo" },
+            { capability: "fakegit:call:danger3" },
+            { capability: "aws:write:production" },
+          ],
+        },
+      }),
+    );
+    assert.ok(
+      plan.auto.some((a) => a.capability === "fakegit:call:pii_echo" && a.granted),
+      `pii_echo must auto-grant: ${JSON.stringify(plan)}`,
+    );
+    assert.ok(
+      plan.auto.some((a) => a.capability === "aws:write:production" && !a.granted && a.code === "ceiling_blocked"),
+      `aws prod must be denied: ${JSON.stringify(plan.auto)}`,
+    );
+    assert.equal(plan.pending.items.length, 1);
+    assert.equal(plan.pending.items[0].capability, "fakegit:call:danger3");
+    pass("request_plan partitions auto/bundle/deny into ONE aggregated approval");
+
+    // Approve the bundle → the next request materializes the danger3 grant.
+    fs.appendFileSync(
+      path.join(home, "approvals.decisions.jsonl"),
+      JSON.stringify({ id: plan.pending.approvalId, decision: "approved", decidedAt: Date.now(), decidedBy: "human:e2e" }) + "\n",
+      { mode: 0o600 },
+    );
+    await client.callTool({
+      name: "scopegate_request_capability",
+      arguments: { capability: "fakegit:call:pii_echo", ttl: "5m", reason: "trigger materialization" },
+    });
+    const capsAfterPlan = parse(await client.callTool({ name: "scopegate_list_capabilities", arguments: {} }));
+    assert.ok(
+      capsAfterPlan.active_grants.some((g) => g.capability === "fakegit:call:danger3"),
+      `bundled grant must materialize: ${JSON.stringify(capsAfterPlan.active_grants)}`,
+    );
+    pass("one approval issues every bundled capability at once");
 
     // 17. redact: [pii] masks email/card in the proxied tool RESPONSE.
     const pii = await client.callTool({ name: "fakegit__pii_echo", arguments: {} });

@@ -98,12 +98,17 @@ do this write?" is answered from your own audit before you repeat it.
 
 1. `scopegate_policy_summary` — what auto-approves, what needs a human.
 2. `scopegate_can_i` on anything uncertain — zero side effects.
-3. `scopegate_open_task_lease` for the task (scope upstreams honestly).
+3. `scopegate_request_plan` for the whole task at once: auto parts are issued
+   immediately, guarded parts become ONE aggregated human decision (optionally
+   `open_lease` to bind everything to a lease in the same call).
 4. Work through lease-bound grants; renew on the 20% notice.
 5. Every write carries an idempotency key; every escalation carries
    `execute_on_approval` so a human decision completes the work (see
    [02 §4b](./02-protocol.md)).
-6. After a restart or compaction: `scopegate_recall` to rebuild state — grants,
+6. Oversized results are never a context problem: the gateway truncates them
+   to a `result_ref` — page with `scopegate_result_get`, search with
+   `scopegate_result_grep`, never re-call for "the rest".
+7. After a restart or compaction: `scopegate_recall` to rebuild state — grants,
    writes done, pending approvals, the lease's remaining budget.
 
 Related: [02 — Agent Protocol](./02-protocol.md) · [03 — Tools reference](./03-tools-reference.md) · [05 — Policies](./05-policies.md) · [06 — Self-repair](./06-self-repair.md) · [07 — Security rules](./07-security-rules.md) · [Index](./README.md)

@@ -201,6 +201,8 @@ describe("audit signing (EPIC-07)", () => {
       "intent_queued", "intent_executed",
       // Mejoras del agente (append-only, wave C): task leases.
       "lease_opened", "lease_renewed", "lease_revoked", "idempotency_replayed",
+      // Mejoras del agente (append-only, wave D): plans + result handles.
+      "plan_requested", "result_stored",
     ];
     expect([...AUDIT_KINDS].sort()).toEqual(expected.sort());
   });

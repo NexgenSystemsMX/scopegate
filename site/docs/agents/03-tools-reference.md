@@ -1,6 +1,6 @@
 # 03 — MCP Tools Reference
 
-Exact reference of the fourteen `scopegate_*` management tools, plus how proxied
+Exact reference of the seventeen `scopegate_*` management tools, plus how proxied
 upstream tools (`<upstream>__<tool>`) work. Every shape here is traceable to
 `src/gateway/tools.ts`, `src/gateway/server.ts` and `src/policy/engine.ts`.
 Read [02 — Agent Protocol](./02-protocol.md) first; use this as its lookup table.
@@ -43,6 +43,23 @@ Upstream availability is additionally guarded by a per-upstream **circuit breake
 after 5 consecutive failures the circuit opens for 30 s (calls fail fast with an
 `upstream_down` envelope), then a half-open probe decides. See
 `scopegate_upstream_health` for the live states.
+
+**Oversized results (result handles).** A proxied payload larger than
+`limits.max_inline_bytes` (default 16 KiB) never floods your context: the gateway
+persists it (AFTER policy redaction) and returns a preview + handle instead:
+
+```json
+{
+  "truncated": true,
+  "result_ref": "r-d215da552957e6f1",
+  "preview": "{ \"items\": [ …first 2 KiB…",
+  "stats": { "bytes": 14230, "shape": "object", "top_keys": ["items", "generated_at"], "items": 120 },
+  "hint": "Full payload stored (14230 bytes). Page it with scopegate_result_get {ref: …, path: …} or search it with scopegate_result_grep {ref: …, pattern: …} — do NOT re-call the tool for the rest."
+}
+```
+
+Refs live 2h and are per-agent (you can only read your own). Page with
+`scopegate_result_get` / search with `scopegate_result_grep`.
 
 
 ## scopegate_request_capability
@@ -312,6 +329,70 @@ compaction: reconstruct state instead of re-reading the repo or repeating work.
 prefix heuristic, manifest `side_effects` overrides) — answer "did I already do
 this write?" before repeating it (see also `_sg_idempotency_key`).
 
+## scopegate_request_plan
+
+One task plan, ONE aggregated human decision (see [08 — Long tasks](./08-long-tasks.md)).
+Auto-approvable capabilities are issued immediately, denials are reported, and every
+needs_approval capability is bundled into a single approval with the whole blast
+radius visible as one item.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `goal` | string | yes | one line naming the task (audited) |
+| `capabilities` | array | yes | `[{capability, ttl?}]` — max 20 |
+| `open_lease` | boolean | no | also open a task lease and bind every grant of the plan |
+| `max_total` | string | no | lease total (with open_lease) |
+| `max_writes` | number | no | lease write budget (with open_lease) |
+
+**Response**
+
+```json
+{
+  "goal": "read repo X, write branch Y, deploy staging",
+  "lease_id": "f47ac10b-…",
+  "auto": [
+    { "capability": "github:read:easyorder", "granted": true, "ttlMs": 600000 },
+    { "capability": "aws:write:production", "granted": false, "code": "ceiling_blocked", "reason": "…" }
+  ],
+  "pending": {
+    "approvalId": "3f6b8c2e-…",
+    "items": [ { "capability": "github:write:fix-x" }, { "capability": "railway:call:deploy", "ttl": "5m" } ],
+    "approvalExpiresAt": 1823400000000
+  },
+  "instructions": "The auto-approvable part is already granted. The rest is ONE aggregated approval: ask the human to run scopegate approve 3f6b8c2e-… — on approval every bundled capability is issued at once (your next request materializes them)."
+}
+```
+
+On approval, every bundled capability is issued at once (each clamped per its own
+rule ceilings; bound to the plan's lease when `open_lease` was set).
+
+## scopegate_result_get
+
+Slice a stored oversized result by dot-path.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `ref` | string | yes | the `result_ref` (r-…) |
+| `path` | string | yes | e.g. `items.3.title` or `content.0.text` |
+
+```json
+{ "found": true, "ref": "r-…", "path": "items.0.title", "value": "item-0 — …" }
+```
+
+`{found: false}` means a bad path (adjust it — `top_keys` comes in the response),
+not an error. Unknown/expired refs are a tool error (refs live 2h, per-agent).
+
+## scopegate_result_grep
+
+Search a stored oversized result by substring or `/regex/` (optional flags).
+
+```json
+{ "ref": "r-…", "pattern": "item-42", "count": 2,
+  "hits": [ { "path": "items", "line": "\"title\": \"item-42 — …\"" } ] }
+```
+
+Capped at 50 hits — context-sized by design.
+
 ## scopegate_list_capabilities
 
 List your active (non-expired) grants with remaining TTL. No arguments.
@@ -452,7 +533,7 @@ Example call: `{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { 
 
 ## Proxied tools: `<upstream>__<tool>`
 
-`tools/list` returns the fourteen management tools PLUS every tool of every connected upstream,
+`tools/list` returns the seventeen management tools PLUS every tool of every connected upstream,
 renamed `<upstream>__<toolName>` (double underscore; description/inputSchema pass through
 unchanged; an upstream config may restrict exposure with an `exposeTools` allowlist).
 

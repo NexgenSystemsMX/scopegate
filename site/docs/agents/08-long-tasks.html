@@ -80,8 +80,12 @@
 <p>  are reusing a key for a different intention. Mint a fresh one.</p>
 <p>Combine with <a href="/docs/agents/03-tools-reference#scopegate_recall">recall</a>: &quot;did I already do this write?&quot; is answered from your own audit before you repeat it.</p>
 <h2 id="5-the-pattern-end-to-end">5. The pattern, end to end</h2>
-<ol><li><code>scopegate_policy_summary</code> — what auto-approves, what needs a human.</li><li><code>scopegate_can_i</code> on anything uncertain — zero side effects.</li><li><code>scopegate_open_task_lease</code> for the task (scope upstreams honestly).</li><li>Work through lease-bound grants; renew on the 20% notice.</li><li>Every write carries an idempotency key; every escalation carries</li></ol>
+<ol><li><code>scopegate_policy_summary</code> — what auto-approves, what needs a human.</li><li><code>scopegate_can_i</code> on anything uncertain — zero side effects.</li><li><code>scopegate_request_plan</code> for the whole task at once: auto parts are issued</li></ol>
+<p>   immediately, guarded parts become ONE aggregated human decision (optionally    <code>open_lease</code> to bind everything to a lease in the same call).</p>
+<ol><li>Work through lease-bound grants; renew on the 20% notice.</li><li>Every write carries an idempotency key; every escalation carries</li></ol>
 <p>   <code>execute_on_approval</code> so a human decision completes the work (see    <a href="/docs/agents/02-protocol">02 §4b</a>).</p>
+<ol><li>Oversized results are never a context problem: the gateway truncates them</li></ol>
+<p>   to a <code>result_ref</code> — page with <code>scopegate_result_get</code>, search with    <code>scopegate_result_grep</code>, never re-call for &quot;the rest&quot;.</p>
 <ol><li>After a restart or compaction: <code>scopegate_recall</code> to rebuild state — grants,</li></ol>
 <p>   writes done, pending approvals, the lease&#39;s remaining budget.</p>
 <p>Related: <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> · <a href="/docs/agents/03-tools-reference">03 — Tools reference</a> · <a href="/docs/agents/05-policies">05 — Policies</a> · <a href="/docs/agents/06-self-repair">06 — Self-repair</a> · <a href="/docs/agents/07-security-rules">07 — Security rules</a> · <a href="/docs/agents/">Index</a></p>

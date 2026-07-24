@@ -151,7 +151,7 @@
       <div class="fact"><span class="fact-num">&lt;90s</span><span class="fact-lbl">install → first tool call</span></div>
       <div class="fact"><span class="fact-num">&lt;30s</span><span class="fact-lbl">fleet revocation, online</span></div>
       <div class="fact"><span class="fact-num">0</span><span class="fact-lbl">secrets in the model's context</span></div>
-      <div class="fact"><span class="fact-num">14</span><span class="fact-lbl">MCP tools for the agent</span></div>
+      <div class="fact"><span class="fact-num">17</span><span class="fact-lbl">MCP tools for the agent</span></div>
       <div class="fact"><span class="fact-num">5</span><span class="fact-lbl">native connectors</span></div>
       <div class="fact"><span class="fact-num">Apache-2.0</span><span class="fact-lbl">open source, self-hosted</span></div>
     </div>
@@ -425,6 +425,22 @@ first tool call at 87s — zero secrets in context</pre>
           One <code>_sg_idempotency_key</code> per intention: the gateway dedupes retries
           for 24 h — replayed results without a second upstream write, and an explicit
           conflict when a key is reused for a different intention.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Result handles</h3>
+        <p>
+          An 80 KB tool response never floods the context window: the gateway persists
+          it (after policy redaction) and returns a preview + <code>result_ref</code>.
+          The agent pages with <code>result_get</code> and searches with <code>result_grep</code>.
+        </p>
+      </div>
+      <div class="card">
+        <h3>One approval per plan</h3>
+        <p>
+          <code>scopegate_request_plan</code> submits the whole task at once: auto parts are
+          issued, guarded parts become a single aggregated approval with the full blast
+          radius — one informed human decision instead of seven popups.
         </p>
       </div>
     </div>

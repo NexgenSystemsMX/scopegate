@@ -52,6 +52,16 @@ import { classifyError } from "./errors.js";
 import { isWriteTool } from "./side-effects.js";
 import { readAuditEvents } from "../audit/verify.js";
 import {
+  buildPreview,
+  DEFAULT_MAX_INLINE_BYTES,
+  getByPath,
+  grepPayload,
+  loadResult,
+  payloadBytes,
+  storeResult,
+  unwrapMcpResult,
+} from "./results.js";
+import {
   queueIntent,
   latestIntentFor,
   resultFor,
@@ -275,6 +285,31 @@ function createAgentServer(deps: {
       });
       return { ok: false, error: errorMessage(e) };
     }
+  };
+
+  /**
+   * Mejora #7: context-window protection. A proxied payload larger than
+   * limits.max_inline_bytes (default 16 KiB) is persisted (AFTER policy
+   * redaction, never before) and returned as preview + result_ref + stats.
+   * The agent pages through it with scopegate_result_get/_grep.
+   */
+  const handleOversizedResult = (payload: unknown, toolName: string): ReturnType<typeof text> => {
+    const maxInline = policy.maxInlineBytesFor(agentId) ?? DEFAULT_MAX_INLINE_BYTES;
+    if (payloadBytes(payload) <= maxInline) return payload as ReturnType<typeof text>;
+    const upstreamName = toolName.includes("__") ? toolName.split("__")[0] : "(unknown)";
+    const stored = storeResult({
+      agentId,
+      upstream: upstreamName,
+      tool: toolName,
+      payload: unwrapMcpResult(payload),
+    });
+    auditOrThrow(agentId, "result_stored", {
+      tool: toolName,
+      upstream: upstreamName,
+      ref: stored.ref,
+      bytes: stored.bytes,
+    });
+    return text(buildPreview(stored));
   };
 
   const server = new Server(
@@ -553,6 +588,87 @@ function createAgentServer(deps: {
           } catch (e) {
             return err(errorMessage(e));
           }
+        }
+
+        case "scopegate_request_plan": {
+          // Mejora #4: one task plan, one aggregated human decision.
+          const goal = String(args.goal ?? "").trim();
+          if (!goal) return err("Missing required argument 'goal' — one line naming the task (lands in the audit log).");
+          const caps = Array.isArray(args.capabilities) ? args.capabilities : null;
+          if (!caps || caps.length === 0) return err("Missing required argument 'capabilities' (non-empty array).");
+          if (caps.length > 20) return err("Too many capabilities in one plan (max 20).");
+          const items: { capability: string; ttl?: string }[] = [];
+          for (const c of caps) {
+            if (typeof c !== "object" || c === null) return err("Each plan item must be an object {capability, ttl?}.");
+            const capability = String((c as Record<string, unknown>).capability ?? "");
+            if (!capability) return err("Each plan item requires a non-empty 'capability' string.");
+            const ttl = (c as Record<string, unknown>).ttl;
+            items.push({ capability, ...(typeof ttl === "string" ? { ttl } : {}) });
+          }
+          try {
+            const plan = policy.requestPlan(agentId, {
+              goal,
+              capabilities: items,
+              open_lease: args.open_lease === true,
+              max_total: typeof args.max_total === "string" ? args.max_total : undefined,
+              max_writes: typeof args.max_writes === "number" ? args.max_writes : undefined,
+            });
+            return text({
+              ...plan,
+              ...(plan.pending
+                ? {
+                    instructions:
+                      `The auto-approvable part is already granted. The rest is ONE aggregated approval: ` +
+                      `ask the human to run scopegate approve ${plan.pending.approvalId} — on approval every bundled ` +
+                      `capability is issued at once (your next request materializes them).`,
+                  }
+                : { instructions: "Everything in the plan was auto-approved — no human needed." }),
+            });
+          } catch (e) {
+            return err(errorMessage(e));
+          }
+        }
+
+        case "scopegate_result_get": {
+          // Mejora #7: slice a stored oversized payload by dot-path.
+          const ref = String(args.ref ?? "");
+          const path = String(args.path ?? "");
+          if (!ref || !path) return err("Missing required arguments 'ref' and 'path'.");
+          const stored = loadResult(ref, agentId);
+          if (!stored) {
+            return err(
+              `Unknown or expired result_ref '${ref}' — refs live 2h and are per-agent. Re-run the tool call if you truly need it.`,
+            );
+          }
+          const got = getByPath(stored.payload, path);
+          if (!got.found) {
+            return text({
+              found: false,
+              ref,
+              path,
+              note: "Path not present in the payload — adjust it (see the preview's stats.top_keys) instead of re-calling the tool.",
+              top_keys:
+                stored.payload !== null && typeof stored.payload === "object" && !Array.isArray(stored.payload)
+                  ? Object.keys(stored.payload as Record<string, unknown>).slice(0, 20)
+                  : undefined,
+            });
+          }
+          return text({ found: true, ref, path, value: got.value });
+        }
+
+        case "scopegate_result_grep": {
+          // Mejora #7: search a stored oversized payload.
+          const ref = String(args.ref ?? "");
+          const pattern = String(args.pattern ?? "");
+          if (!ref || !pattern) return err("Missing required arguments 'ref' and 'pattern'.");
+          const stored = loadResult(ref, agentId);
+          if (!stored) {
+            return err(
+              `Unknown or expired result_ref '${ref}' — refs live 2h and are per-agent. Re-run the tool call if you truly need it.`,
+            );
+          }
+          const hits = grepPayload(stored.payload, pattern);
+          return text({ ref, pattern, count: hits.length, hits });
         }
 
         case "scopegate_register_upstream": {
@@ -1040,9 +1156,9 @@ function createAgentServer(deps: {
                 counts,
               });
             }
-            return redacted as ReturnType<typeof text>;
+            return handleOversizedResult(redacted, name);
           }
-          return result as ReturnType<typeof text>;
+          return handleOversizedResult(result as unknown, name);
         }
       }
     } catch (e) {
