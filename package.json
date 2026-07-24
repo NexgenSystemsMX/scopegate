@@ -21,9 +21,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nexgen/scopegate.git"
+    "url": "git+https://github.com/NexgenSystemsMX/scopegate.git"
   },
-  "homepage": "https://scopegate.dev",
+  "homepage": "https://scopegate.io",
   "publishConfig": {
     "access": "public"
   },
