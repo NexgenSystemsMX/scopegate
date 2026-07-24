@@ -20,10 +20,22 @@ import { SCOPEGATE_DIR } from "../config/config.js";
 
 export const NOTIFY_CONFIG_PATH = path.join(SCOPEGATE_DIR, "notify.json");
 
+export interface NotifyChannel {
+  type: "slack" | "webhook" | "huly";
+  /** slack: vault ref with the webhook URL. webhook: vault ref with the HMAC signing secret. huly: vault ref with the huly blob {email,password,workspace}. */
+  ref?: string;
+  /** webhook only: target URL (an endpoint, not a credential — HMAC signed). */
+  url?: string;
+  /** huly only: channel title or id to post approvals into. */
+  channel?: string;
+}
+
 export interface NotifyConfig {
   enabled: boolean;
   /** Vault secretRef holding the webhook URL. Undefined when disabled. */
   slackWebhookRef?: string;
+  /** M5: pluggable channels (additive — slackWebhookRef keeps working). */
+  notifiers?: NotifyChannel[];
 }
 
 /** Debug log, gated on SCOPEGATE_LOG_LEVEL=debug (same convention as vault). */
@@ -62,18 +74,37 @@ export function loadNotifyConfig(): NotifyConfig {
     notifyWarn(`${NOTIFY_CONFIG_PATH} must be a JSON object — notifications disabled`);
     return { enabled: false };
   }
-  const cfg = parsed as { enabled?: unknown; slackWebhookRef?: unknown };
+  const cfg = parsed as { enabled?: unknown; slackWebhookRef?: unknown; notifiers?: unknown };
   if (cfg.enabled !== true) {
     notifyDebug("enabled != true — notifications disabled");
     return { enabled: false };
   }
+  // M5: the notifiers array is additive — validate its shape when present.
+  let notifiers: NotifyChannel[] | undefined;
+  if (cfg.notifiers !== undefined) {
+    if (!Array.isArray(cfg.notifiers)) {
+      notifyWarn(`'notifiers' in ${NOTIFY_CONFIG_PATH} must be an array — ignored`);
+    } else {
+      notifiers = cfg.notifiers.filter((c): c is NotifyChannel => {
+        const ok =
+          !!c &&
+          typeof c === "object" &&
+          ["slack", "webhook", "huly"].includes((c as NotifyChannel).type);
+        if (!ok) notifyWarn(`invalid notifier entry ignored: ${JSON.stringify(c)}`);
+        return ok;
+      });
+    }
+  }
   if (typeof cfg.slackWebhookRef !== "string" || !cfg.slackWebhookRef.trim()) {
-    notifyWarn(
-      `enabled but no 'slackWebhookRef' in ${NOTIFY_CONFIG_PATH} — notifications disabled. ` +
-        `Store the webhook URL in the vault (scopegate secret add slack_webhook_url) ` +
-        `and reference it by name.`,
-    );
-    return { enabled: false };
+    if ((notifiers ?? []).length === 0) {
+      notifyWarn(
+        `enabled but no 'slackWebhookRef' or valid 'notifiers' in ${NOTIFY_CONFIG_PATH} — notifications disabled. ` +
+          `Store the webhook URL in the vault (scopegate secret add slack_webhook_url) ` +
+          `and reference it by name.`,
+      );
+      return { enabled: false };
+    }
+    return { enabled: true, notifiers };
   }
   const ref = cfg.slackWebhookRef.trim();
   if (/^https?:\/\//i.test(ref)) {
@@ -83,5 +114,5 @@ export function loadNotifyConfig(): NotifyConfig {
     );
     return { enabled: false };
   }
-  return { enabled: true, slackWebhookRef: ref };
+  return { enabled: true, slackWebhookRef: ref, notifiers };
 }

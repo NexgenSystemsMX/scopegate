@@ -87,6 +87,19 @@ requests live in `approvals.pending.jsonl`, agent policy proposals in
 work — see [EPIC-08](../../docs/Implementacion/EPIC-08-human-approval-channels.md);
 the gateway-side `pending_human_approval` contract is already live.)
 
+## `scopegate git-credential`
+
+Native git credential-helper — configure once with
+`git config --global credential.helper "!scopegate git-credential"` and every
+`git clone/fetch/push` over HTTPS gets a freshly minted GitHub App installation
+token straight from the gateway (the token goes to git, never through the
+agent's context, never into `.git/config`). The capability
+`git:credential:<repo/path>` is evaluated by the same policy engine
+(auto-approve per repo glob, `require: human_approval` for the rest); a denial
+exits 1 with an actionable stderr message that git surfaces. Non-GitHub hosts
+and store/erase are silent no-ops. Every mint is audited
+(`git_credential_minted`). Requires a `github_app` upstream in `scopegate.yaml`.
+
 ## Exit codes
 
 `0` success · `1` error (e.g. audit tamper, vaultd unreachable) · e2e scripts

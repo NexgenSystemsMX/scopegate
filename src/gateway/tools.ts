@@ -30,6 +30,14 @@ export const MANAGEMENT_TOOLS: Tool[] = [
           },
           required: ["tool", "args"],
         },
+        wait: {
+          type: "boolean",
+          description: "Optional: when the request escalates to human approval, block (long-poll) until the human decides or timeout_s elapses — returns the granted capability inline on approval. Prefer this over re-calling in a loop.",
+        },
+        timeout_s: {
+          type: "number",
+          description: "Max seconds to wait when wait=true (default 60, max 120).",
+        },
       },
       required: ["capability", "reason"],
     },

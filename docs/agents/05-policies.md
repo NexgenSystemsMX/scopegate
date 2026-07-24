@@ -87,6 +87,35 @@ Practical consequence: before requesting, compute the exact capability string
 and request that — not a broader one "just in case". A denied broad request
 teaches you nothing a narrow one wouldn't, and `deny` hits are audited.
 
+## 2b. `when:` — guards over the call's arguments
+
+A rule may carry a `when` clause that constrains the *arguments of the tool
+call*, not just the capability string:
+
+```yaml
+capabilities:
+  - match: "github:call:create_or_update_file"
+    auto_approve: true
+    ttl: 5m
+    when: { branch: "kimi/*" }        # auto-approve ONLY on kimi/* branches
+  - match: "github:call:create_or_update_file"
+    require: human_approval           # everything else (main, release/*) escalates
+```
+
+- String values are picomatch globs; numbers and booleans match by strict
+  equality. Every entry must match.
+- A call **without** the guarded argument (or with no args at all) never
+  satisfies a `when` — the rule is skipped (fail-closed) and evaluation
+  continues with the next rule.
+- The guard sticks to the issued grant: a grant minted for `branch: kimi/x`
+  does **not** cover a later call with `branch: main` — that call re-evaluates
+  and escalates.
+- `when` also applies to approvals: a human approves a guarded request for the
+  exact arguments shown, and the materialized grant keeps the guard.
+
+Use it for branch/environment/severity-shaped decisions. What you cannot
+express with args still belongs in separate capabilities or `require` rules.
+
 ## 3. TTLs: you can shorten, never extend
 
 Resolution for an auto-approved request:

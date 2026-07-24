@@ -142,6 +142,11 @@ async function main() {
             { match: "fakegit:call:big_report", auto_approve: true, ttl: "10m" },
             // env-hygiene fixture (M8)
             { match: "fakegit:call:env_probe", auto_approve: true, ttl: "10m" },
+            // M5 wait:true fixture — fresh capability, only used by the wait section
+            { match: "fakegit:call:danger4", require: "human_approval", ttl: "10m" },
+            // M6 when:-guard fixtures — branch kimi/* auto-approves, the rest escalates
+            { match: "fakegit:call:branch_push", auto_approve: true, ttl: "10m", when: { branch: "kimi/*" } },
+            { match: "fakegit:call:branch_push", require: "human_approval", ttl: "10m" },
             // PII in the RESPONSE is masked under this rule
             { match: "fakegit:call:pii_echo", auto_approve: true, ttl: "5m", redact: ["pii"] },
           ],
@@ -421,6 +426,55 @@ async function main() {
     assert.equal(envParsed.kind, "missing_scope", `expected missing_scope kind: ${envelope.content[0].text}`);
     assert.equal(envParsed.next_action, "request_capability", `expected request_capability action: ${envelope.content[0].text}`);
     pass("failures surface as machine-readable envelopes (kind + next_action)");
+
+    // 16c2. M5 (native approvals): request_capability wait:true long-polls the
+    // human decision inline — the approval on disk materializes the grant in
+    // the SAME call (no re-request, no continuation).
+    const waitPromise = client.callTool({
+      name: "scopegate_request_capability",
+      arguments: { capability: "fakegit:call:danger4", ttl: "10m", reason: "wait e2e", wait: true, timeout_s: 30 },
+    });
+    // Wait for the pending approval to land on disk, then approve it.
+    let waitApprovalId;
+    {
+      const pendingPath = path.join(home, "approvals.pending.jsonl");
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && !waitApprovalId) {
+        if (fs.existsSync(pendingPath)) {
+          const hit = fs.readFileSync(pendingPath, "utf8")
+            .trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
+            .find((r) => r.capability === "fakegit:call:danger4" && (!r.status || r.status === "pending"));
+          if (hit) waitApprovalId = hit.id;
+        }
+        if (!waitApprovalId) await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+    assert.ok(waitApprovalId, "wait:true must queue a pending approval");
+    fs.appendFileSync(
+      path.join(home, "approvals.decisions.jsonl"),
+      JSON.stringify({ id: waitApprovalId, decision: "approved", decidedAt: Date.now(), decidedBy: "human:e2e" }) + "\n",
+      { mode: 0o600 },
+    );
+    const waited = parse(await waitPromise);
+    assert.equal(waited.granted, true, `wait:true must return the grant inline, got: ${JSON.stringify(waited)}`);
+    assert.equal(waited.via, "human_approval", `expected via human_approval: ${JSON.stringify(waited)}`);
+    assert.equal(waited.expires_in_seconds, 600, "wait-grant TTL = min(10m requested, 10m rule, 30m max_ttl)");
+    pass("request_capability wait:true — approval on disk returns the grant inline (via human_approval)");
+    const d4 = await client.callTool({ name: "fakegit__danger4", arguments: {} });
+    assert.notEqual(d4.isError, true, `danger4 after the wait-grant failed: ${d4.content[0].text}`);
+    assert.ok(
+      fs.readFileSync(path.join(home, "audit.jsonl"), "utf8").includes('"approval_waited"'),
+      "approval_waited must be audited",
+    );
+
+    // 16c3. M6 (when: guards): kimi/* branches auto-approve; main escalates.
+    const kimiPush = await client.callTool({ name: "fakegit__branch_push", arguments: { branch: "kimi/feat-x" } });
+    assert.notEqual(kimiPush.isError, true, `kimi/* push must auto-approve: ${kimiPush.content[0].text}`);
+    assert.match(kimiPush.content[0].text, /pushed kimi\/feat-x/);
+    const mainPush = await client.callTool({ name: "fakegit__branch_push", arguments: { branch: "main" } });
+    assert.equal(mainPush.isError, true, "main push must escalate, not pass");
+    assert.match(mainPush.content[0].text, /scopegate approve/);
+    pass("when: guard — branch kimi/* auto-approves, branch main escalates to human approval");
 
     // 16d. Mejora #3 (policy preflight) + mejora #9 (recall as session memory).
     const canAllow = parse(

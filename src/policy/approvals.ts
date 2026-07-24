@@ -263,6 +263,14 @@ export function resolveApproval(
   fs.appendFileSync(APPROVALS_DECISIONS_PATH, JSON.stringify(entry) + "\n", {
     mode: 0o600,
   });
+  // M5.3: push the decision to the channels (fire-and-forget — the host
+  // resumes the paused task; delivery never blocks or breaks the decision).
+  const req = readPendingRequests().find((r) => r.id === id);
+  if (req) {
+    void import("../notify/notifier.js")
+      .then((m) => m.notifyApprovalDecided(id, req.agentId, req.capability, decision, decidedBy))
+      .catch(() => {});
+  }
   return entry;
 }
 

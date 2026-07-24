@@ -83,6 +83,17 @@ program
   });
 
 program
+  .command("git-credential")
+  .description(
+    "Git credential-helper (M3): mint an ephemeral GitHub App token per fill, " +
+      "governed by the git:credential:<path> capability — no tokens in remote URLs",
+  )
+  .action(async () => {
+    const { runGitCredential } = await import("./commands/git-credential.js");
+    await runGitCredential();
+  });
+
+program
   .command("start")
   .description("Run the gateway MCP server (stdio by default; --http for networked deployments)")
   .option(

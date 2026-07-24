@@ -47,6 +47,7 @@ import {
 } from "../config/config.js";
 import { audit, type AuditKind } from "../audit/log.js";
 import { GrantStore } from "./grants.js";
+import { matchesWhen } from "./when.js";
 import {
   LeaseStore,
   DEFAULT_LEASE_TOTAL_MS,
@@ -82,6 +83,14 @@ export interface PolicyRule {
   require?: "human_approval";
   /** Redaction categories applied to proxied responses under this rule. */
   redact?: string[];
+  /**
+   * M6: optional arg guard — the rule matches ONLY when the tool call's args
+   * satisfy every entry (string values as picomatch globs, non-strings by
+   * strict equality). Absent = matches always. A non-matching `when` means
+   * the RULE doesn't match (evaluation continues first-match-wins) — `when`
+   * only ever RESTRICTS, it can never widen what plain `match` would allow.
+   */
+  when?: Record<string, string | number | boolean>;
 }
 
 /** Hard, non-negotiable limits. Global and per-agent; the per-agent wins. */
@@ -218,7 +227,7 @@ export class PolicyConfigError extends Error {}
 /* Schema validation (schema v1 + Sprint-2 extensions, backward compatible)  */
 /* ------------------------------------------------------------------------ */
 
-const RULE_KEYS = new Set(["match", "auto_approve", "ttl", "require", "redact"]);
+const RULE_KEYS = new Set(["match", "auto_approve", "ttl", "require", "redact", "when"]);
 const LIMIT_KEYS = new Set(["max_ttl", "deny", "rate_limit", "approval_ttl", "max_lease_total", "max_inline_bytes"]);
 
 function assertCompilableGlob(glob: unknown, where: string): asserts glob is string {
@@ -299,6 +308,20 @@ function validateRule(raw: unknown, where: string): void {
   }
   const rule = raw as PolicyRule;
   assertCompilableGlob(rule.match, `${where}.match`);
+  if (rule.when !== undefined) {
+    if (!rule.when || typeof rule.when !== "object" || Array.isArray(rule.when)) {
+      throw new PolicyConfigError(`${where}.when: must be an object of arg globs (fail-closed)`);
+    }
+    for (const [argName, v] of Object.entries(rule.when)) {
+      if (!argName) throw new PolicyConfigError(`${where}.when: empty arg name`);
+      if (typeof v === "string") assertCompilableGlob(v, `${where}.when.${argName}`);
+      else if (typeof v !== "number" && typeof v !== "boolean") {
+        throw new PolicyConfigError(
+          `${where}.when.${argName}: must be a string glob, number or boolean`,
+        );
+      }
+    }
+  }
   if (rule.auto_approve !== undefined && typeof rule.auto_approve !== "boolean") {
     throw new PolicyConfigError(`${where}.auto_approve: must be a boolean`);
   }
@@ -458,7 +481,7 @@ export class PolicyEngine {
     capability: string,
     ttl?: string,
     reason = "",
-    opts?: { leaseId?: string },
+    opts?: { leaseId?: string; args?: Record<string, unknown> },
   ): Decision {
     // Pick up human decisions first: an approved request materializes its
     // one-shot grant here (fresh read by mtime — no cross-process watchers).
@@ -482,9 +505,10 @@ export class PolicyEngine {
     }
 
     // Idempotent re-request: a live covering grant (including one just
-    // materialized from an approval) is returned, not duplicated.
+    // materialized from an approval) is returned, not duplicated. For M6
+    // `when`-guarded grants the call's args must satisfy the guard too.
     const now = Date.now();
-    const existing = this.grants.coveringGrant(agentId, capability, now);
+    const existing = this.grants.coveringGrant(agentId, capability, now, opts?.args);
     if (existing) {
       let ttlMs = Math.max(0, existing.expiresAt - now);
       // A tightened team policy re-clamps (never extends) live grants.
@@ -532,6 +556,9 @@ export class PolicyEngine {
 
     for (const rule of agent.capabilities ?? []) {
       if (!picomatch.isMatch(capability, rule.match)) continue;
+      // M6: arg guard — a `when` that the call's args don't satisfy makes the
+      // RULE not match (evaluation continues first-match-wins; never widens).
+      if (rule.when && !matchesWhen(rule.when, opts?.args)) continue;
 
       if (rule.require === "human_approval") {
         let approvalTtlMs = DEFAULT_APPROVAL_TTL_MS;
@@ -614,6 +641,7 @@ export class PolicyEngine {
           ttlMs,
           redact: rule.redact,
           rule: rule.match,
+          ...(rule.when ? { when: rule.when } : {}),
           ...(opts?.leaseId ? { leaseId: opts.leaseId } : {}),
         });
         bestEffortAudit(agentId, "grant_issued", {
@@ -640,7 +668,7 @@ export class PolicyEngine {
    * WITHOUT any side effect (no grant issued, no approval queued, no audit,
    * no refresh). What the agent uses to plan instead of learning by denials.
    */
-  evaluate(agentId: string, capability: string, ttl?: string): Evaluation {
+  evaluate(agentId: string, capability: string, ttl?: string, args?: Record<string, unknown>): Evaluation {
     // Team pre-gate is pure (deny globs / coverage / silence) — reuse it.
     const teamGateDeny = this.teamGate(agentId, capability);
     if (teamGateDeny && !teamGateDeny.allow) {
@@ -654,7 +682,7 @@ export class PolicyEngine {
 
     // A live covering grant makes the answer trivially "allow".
     const now = Date.now();
-    const existing = this.grants.coveringGrant(agentId, capability, now);
+    const existing = this.grants.coveringGrant(agentId, capability, now, args);
     if (existing) {
       let ttlMs = Math.max(0, existing.expiresAt - now);
       const teamCeiling = this.teamTtlCeilingMs(agentId, capability);
@@ -701,6 +729,7 @@ export class PolicyEngine {
 
     for (const rule of agent.capabilities ?? []) {
       if (!picomatch.isMatch(capability, rule.match)) continue;
+      if (rule.when && !matchesWhen(rule.when, args)) continue;
 
       if (rule.require === "human_approval") {
         return {
@@ -794,10 +823,10 @@ export class PolicyEngine {
   }
 
   /** Check an existing (non-expired) grant covering the capability. */
-  isGranted(agentId: string, capability: string): boolean {
+  isGranted(agentId: string, capability: string, args?: Record<string, unknown>): boolean {
     this.refreshApprovals(agentId);
     this.purgeAndAudit();
-    return this.grants.isGranted(agentId, capability);
+    return this.grants.isGranted(agentId, capability, Date.now(), args);
   }
 
   /**
@@ -805,10 +834,10 @@ export class PolicyEngine {
    * covering grant wins" rule), carrying redact categories and remaining TTL.
    * Used by server.ts for the token-TTL clamp and response redaction.
    */
-  coveringGrant(agentId: string, capability: string) {
+  coveringGrant(agentId: string, capability: string, args?: Record<string, unknown>) {
     this.refreshApprovals(agentId);
     this.purgeAndAudit();
-    return this.grants.coveringGrant(agentId, capability);
+    return this.grants.coveringGrant(agentId, capability, Date.now(), args);
   }
 
   activeGrants(agentId: string) {
@@ -1162,6 +1191,11 @@ export class PolicyEngine {
   /** Mejora #7: inline-payload ceiling for the agent (limits.max_inline_bytes). */
   maxInlineBytesFor(agentId: string): number | undefined {
     return effectiveLimitsFor(this.policies, agentId).max_inline_bytes;
+  }
+
+  /** M4: logical agent identities known to this engine (policies sections). */
+  agentIds(): string[] {
+    return Object.keys(this.policies.agents);
   }
 
   /**

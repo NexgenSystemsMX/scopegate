@@ -61,6 +61,7 @@ export const AUDIT_KINDS = [
   "approval_approved",
   "approval_denied",
   "approval_expired",
+  "approval_waited",
   "policy_accepted",
   "policy_rejected",
   "grant_issued",
@@ -84,6 +85,8 @@ export const AUDIT_KINDS = [
   // Mejoras del agente (append-only, wave E): delegation + taint.
   "grant_delegated",
   "taint_detected",
+  // M3: git credential-helper mints.
+  "git_credential_minted",
 ] as const;
 
 export type AuditKind = (typeof AUDIT_KINDS)[number];

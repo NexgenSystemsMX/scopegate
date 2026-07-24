@@ -30,6 +30,15 @@ agents:
       #   redact: [pii]
       - match: "aws:*:production"                       # producción: humano siempre
         require: human_approval                         #   → solicitud en approvals.pending.jsonl
+      # - match: "github:call:create_or_update_file"    # when: guarda por ARGUMENTOS de la llamada (M6).
+      #   auto_approve: true                            #   Los strings son globs (picomatch), números y
+      #   ttl: 5m                                       #   booleanos igualdad estricta. Sin args → la regla
+      #   when: { branch: "kimi/*" }                    #   NO matchea (fail-closed) y sigue la siguiente.
+      # - match: "github:call:create_or_update_file"    #   → kimi/* auto; cualquier otra rama escala:
+      #   require: human_approval
+      # - match: "git:credential:easyorder/*"           # scopegate git-credential (M3): git pide credencial
+      #   auto_approve: true                            #   → token de GitHub App minteado al momento, TTL
+      #   ttl: 10m                                      #   corto, nunca en .git/config. Audit: git_credential_minted
   "*":                                                  # fallback para agentes nuevos
     default_ttl: 5m
     capabilities:

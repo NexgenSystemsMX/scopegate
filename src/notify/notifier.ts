@@ -55,8 +55,32 @@ export async function notifyApprovalRequested(
 ): Promise<void> {
   try {
     const cfg = loadNotifyConfig();
-    if (!cfg.enabled || !cfg.slackWebhookRef) {
+    if (!cfg.enabled) {
       notifyDebug(`approval ${req.id}: notifications disabled — skipping`);
+      return;
+    }
+
+    // M5: pluggable channels first (slack/webhook/huly), then the legacy
+    // single-slack path (unchanged behavior for existing configs).
+    if (cfg.notifiers && cfg.notifiers.length > 0) {
+      const { dispatchApprovalEvent } = await import("./channels.js");
+      await dispatchApprovalEvent(
+        cfg.notifiers,
+        {
+          kind: "approval_requested",
+          approval_id: req.id,
+          agentId: req.agentId,
+          capability: req.capability,
+          ttl: req.ttl,
+          reason: req.reason,
+          expiresAt: req.expiresAt,
+          ts: new Date().toISOString(),
+        },
+        buildApprovalText(req),
+      );
+    }
+
+    if (!cfg.slackWebhookRef) {
       return;
     }
 
@@ -97,5 +121,41 @@ export async function notifyApprovalRequested(
       `approval ${req.id}: webhook notification failed (${(e as Error).message}) — ` +
         `the request stays pending and will expire normally`,
     );
+  }
+}
+
+/**
+ * M5.3: push the DECISION back to the channels (the host resumes the paused
+ * task the moment the human decides). Same fire-and-forget discipline.
+ */
+export async function notifyApprovalDecided(
+  approvalId: string,
+  agentId: string,
+  capability: string,
+  decision: "approved" | "denied",
+  decidedBy: string,
+): Promise<void> {
+  try {
+    const cfg = loadNotifyConfig();
+    if (!cfg.enabled) return;
+    const channels = cfg.notifiers ?? [];
+    const slackRef = cfg.slackWebhookRef
+      ? [{ type: "slack" as const, ref: cfg.slackWebhookRef }]
+      : [];
+    const all = [...channels, ...slackRef];
+    if (all.length === 0) return;
+    const { dispatchApprovalEvent, buildDecisionText } = await import("./channels.js");
+    const event = {
+      kind: "approval_decided" as const,
+      approval_id: approvalId,
+      agentId,
+      capability,
+      decision,
+      decidedBy,
+      ts: new Date().toISOString(),
+    };
+    await dispatchApprovalEvent(all, event, buildDecisionText(event));
+  } catch (e) {
+    notifyWarn(`approval ${approvalId}: decision notification failed (${(e as Error).message})`);
   }
 }

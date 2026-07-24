@@ -26,9 +26,9 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 2. Human deposits secrets once per secret: `scopegate secret add <ref>`.
 3. The agent operates by itself through six MCP tools, holding TTL grants instead of credentials. Time from init to first proxied tool call: under 90 seconds.
 
-## The twelve agent tools (MCP)
+## The eighteen agent tools (MCP)
 
-- `scopegate_request_capability` — ask for a scoped, TTL-bound grant before a privileged action; returns the grant, a denial with actionable reason, or `pending_human_approval` with an `approval_id`. Accepts `execute_on_approval {tool, args}` (approval continuation).
+- `scopegate_request_capability` — ask for a scoped, TTL-bound grant before a privileged action; returns the grant, a denial with actionable reason, or `pending_human_approval` with an `approval_id`. Accepts `execute_on_approval {tool, args}` (approval continuation) and `wait: true` + `timeout_s` (inline long-poll of the human decision, returns the grant in the same call).
 - `scopegate_list_capabilities` — active grants and remaining TTL.
 - `scopegate_register_upstream` — connect a new service (never accepts secret values, only `secretRef` names; also installs from the signed registry with `from_registry`).
 - `scopegate_diagnose` — health check of every upstream; self-repair hints with `action_required`.
@@ -77,6 +77,10 @@ Every failure is a machine-readable envelope `{error, kind, message, retry_after
 - **Honeytokens** — canary credentials that trigger surgical revocation when touched.
 - **Raw-secret guard** — `looksLikeSecret()` rejects secret-shaped values smuggled as refs, at the gateway and at cloud ingest.
 - **Attestation** — EdDSA JWT (≤ 60 s) so third-party MCPs can tell agents apart.
+- **Git credential helper** — `scopegate git-credential` mints GitHub App installation tokens straight into `git credential fill` (capability `git:credential:<path>`, same policy engine, audit `git_credential_minted`); tokens never sit in remote URLs or `.git/config`.
+- **Arg-aware policies (`when:`)** — rules can guard the call's arguments (globs for strings, strict equality for numbers/booleans): `kimi/*` branches auto-approve while `main` escalates; the guard sticks to the issued grant.
+- **Native approval channels** — Slack, HMAC-signed webhooks and Huly via `notify.json notifiers[]`; decisions are pushed back to the same channel, and `wait: true` on `scopegate_request_capability` long-polls the decision inline (max 120 s, audited `approval_waited`).
+- **Multi-identity HTTP gateway** — the `X-ScopeGate-Agent` header selects the logical agent per request (validated against the policies allowlist, 403 otherwise); one gateway serves many threads with separate grants, audit and approval queues.
 
 ## Native connectors (signed registry, one command to install)
 

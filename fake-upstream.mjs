@@ -443,6 +443,12 @@ if (process.argv.includes("--oauth")) {
       { name: "whoami", description: "Returns auth status", inputSchema: { type: "object", properties: {} } },
       { name: "danger", description: "Privileged operation (never auto-approved in e2e)", inputSchema: { type: "object", properties: {} } },
       { name: "danger2", description: "Second privileged operation (approval-continuation fixture)", inputSchema: { type: "object", properties: {} } },
+      { name: "danger4", description: "wait:true approval fixture (M5)", inputSchema: { type: "object", properties: {} } },
+      {
+        name: "branch_push",
+        description: "when:-guard fixture (M6) — pushes a branch",
+        inputSchema: { type: "object", properties: { branch: { type: "string" } } },
+      },
       BIG_REPORT_TOOL,
       ENV_PROBE_TOOL,
       PII_TOOL,
@@ -456,6 +462,13 @@ if (process.argv.includes("--oauth")) {
     }
     if (req.params.name === "danger2") {
       return { content: [{ type: "text", text: "danger2 executed" }] };
+    }
+    if (req.params.name === "danger4") {
+      return { content: [{ type: "text", text: "danger4 executed" }] };
+    }
+    if (req.params.name === "branch_push") {
+      const b = String(req.params.arguments?.branch ?? "");
+      return { content: [{ type: "text", text: `pushed ${b}` }] };
     }
     if (req.params.name === "env_probe") {
       const n = String(req.params.arguments?.name ?? "");

@@ -68,6 +68,7 @@ import {
   resultFor,
   listApprovals,
   createApprovalRequest,
+  checkDecision,
   type ApprovalIntent,
 } from "../policy/approvals.js";
 import { audit } from "../audit/log.js";
@@ -207,8 +208,11 @@ export async function runGateway(
     // runs the same cleanup as stdio mode.
     const handle = await startHttpGateway(
       {
-        createAgentServer: () =>
-          createAgentServer({ cfg, proxy, policy, vault, agentId }),
+        createAgentServer: (requestAgentId?: string) =>
+          createAgentServer({ cfg, proxy, policy, vault, agentId: requestAgentId ?? agentId }),
+        // M4: logical identities accepted on X-ScopeGate-Agent (policies
+        // sections + the gateway default).
+        allowedAgents: () => [agentId, ...policy.agentIds().filter((a) => a !== agentId)],
         connectedUpstreams: () =>
           Object.values(status).filter((s) => s.ok).length,
         shutdown: async () => {
@@ -490,6 +494,82 @@ function createAgentServer(deps: {
             });
           }
           if (decision.escalation === "human_approval") {
+            // M5 (native approvals): wait=true long-polls the human decision
+            // inline (max 120s) instead of returning pending and forcing the
+            // agent to re-call. On approval the grant materializes through the
+            // normal idempotent re-request path — no parallel code path.
+            if (args.wait === true) {
+              const timeoutS = Math.min(
+                Math.max(Number(args.timeout_s ?? 60) || 60, 1),
+                120,
+              );
+              const approvalId = decision.approvalId!;
+              const deadline = Date.now() + timeoutS * 1000;
+              let outcome: "approved" | "denied" | "timeout" = "timeout";
+              while (Date.now() < deadline) {
+                const d = checkDecision(approvalId);
+                if (d) {
+                  outcome = d.decision === "approved" ? "approved" : "denied";
+                  break;
+                }
+                await new Promise((r) => setTimeout(r, 500));
+              }
+              auditOrThrow(agentId, "approval_waited", {
+                approvalId,
+                capability,
+                outcome,
+                timeout_s: timeoutS,
+              });
+              if (outcome === "approved") {
+                const leaseId =
+                  typeof args.lease_id === "string" && args.lease_id.length > 0
+                    ? args.lease_id
+                    : undefined;
+                const granted = policy.request(
+                  agentId,
+                  capability,
+                  args.ttl as string | undefined,
+                  String(args.reason),
+                  { leaseId },
+                );
+                if (granted.allow) {
+                  return text({
+                    granted: true,
+                    capability,
+                    expires_in_seconds: Math.round(granted.ttlMs / 1000),
+                    matched_rule: granted.rule,
+                    via: "human_approval",
+                    approval_id: approvalId,
+                    ...(leaseId ? { lease_id: leaseId, renewable: true } : {}),
+                  });
+                }
+                return text({
+                  granted: false,
+                  status: "approved_unmaterialized",
+                  approval_id: approvalId,
+                  reason: granted.reason,
+                  next_step:
+                    "The human approved but the grant did not materialize (policy may have changed). Re-call scopegate_request_capability with the SAME capability.",
+                });
+              }
+              if (outcome === "denied") {
+                return text({
+                  granted: false,
+                  status: "denied",
+                  approval_id: approvalId,
+                  reason: "A human denied this request.",
+                  next_step:
+                    "Do NOT retry the same capability. Ask the human what to change, or call scopegate_propose_policy with a narrower scope.",
+                });
+              }
+              return text({
+                granted: false,
+                status: "approval_timeout",
+                approval_id: approvalId,
+                reason: `No human decision after ${timeoutS}s — the approval is still pending.`,
+                next_step: `Re-call scopegate_request_capability with the SAME capability and wait:true to keep waiting, or ask the human to run: scopegate approve ${approvalId}`,
+              });
+            }
             // H-04.3: a pending request now exists in approvals.pending.jsonl.
             // Additive to the previous {granted:false, reason, next_step}
             // contract — older clients keep working.
@@ -1158,9 +1238,11 @@ function createAgentServer(deps: {
                 "Ask the human to review the tainted content and approve (or scopegate deny). Never route around it.",
             });
           }
-          if (!policy.isGranted(agentId, capability)) {
+          if (!policy.isGranted(agentId, capability, args as Record<string, unknown>)) {
             // Implicit request: succeeds only if an auto_approve rule matches.
-            const d = policy.request(agentId, capability);
+            const d = policy.request(agentId, capability, undefined, "", {
+              args: args as Record<string, unknown>,
+            });
             if (!d.allow) {
               auditOrThrow(
                 agentId,
@@ -1187,7 +1269,7 @@ function createAgentServer(deps: {
           // Remaining TTL of the covering grant → clamps any token the minter
           // mints for this call (token_ttl = min(provider ceiling, grant TTL)).
           // The same grant carries the redact categories of its issuing rule.
-          const grant = policy.coveringGrant(agentId, capability);
+          const grant = policy.coveringGrant(agentId, capability, args as Record<string, unknown>);
           // Mejora #1: lease write budget — a lease-covered WRITE consumes one
           // unit of the task budget; exhausted (or dead) lease denies the call.
           if (grant?.leaseId && isWriteTool(tool.upstream, tool.upstreamName)) {

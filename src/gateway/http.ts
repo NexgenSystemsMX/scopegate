@@ -35,8 +35,18 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const MCP_PATH = "/mcp";
 
 export interface HttpGatewayContext {
-  /** Factory for the configured agent-facing MCP server (one per request). */
-  createAgentServer: () => Server;
+  /**
+   * Factory for the configured agent-facing MCP server (one per request).
+   * M4: receives the per-request logical agent identity (from the validated
+   * `X-ScopeGate-Agent` header, or undefined for the gateway default).
+   */
+  createAgentServer: (agentId?: string) => Server;
+  /**
+   * M4: the logical agent ids accepted on `X-ScopeGate-Agent` (the policies'
+   * agent sections + the gateway default). Unknown ids are 403 — the header
+   * names work units (thread/task), it is not an auth credential.
+   */
+  allowedAgents: () => string[];
   /** Live count of connected upstreams, surfaced by /health. */
   connectedUpstreams: () => number;
   /** Transport-independent cleanup (cloud sync, policy watcher, proxy). */
@@ -175,6 +185,24 @@ export async function startHttpGateway(
       return;
     }
 
+    // M4: per-request logical identity. `X-ScopeGate-Agent` names the work
+    // unit (thread/task) for grants, audit and approvals — validated against
+    // the gateway's allowlist (it is attribution, not authentication: the
+    // bearer remains the perimeter).
+    let agentId: string | undefined;
+    const agentHeader = req.headers["x-scopegate-agent"];
+    if (typeof agentHeader === "string" && agentHeader.trim().length > 0) {
+      const candidate = agentHeader.trim();
+      if (!ctx.allowedAgents().includes(candidate)) {
+        sendJson(res, 403, {
+          error: "unknown_agent",
+          message: `Agent '${candidate}' is not in this gateway's allowlist (see policies.yaml agents + the default identity).`,
+        });
+        return;
+      }
+      agentId = candidate;
+    }
+
     if (url.pathname !== MCP_PATH) {
       sendJson(res, 404, {
         error: "not_found",
@@ -210,8 +238,9 @@ export async function startHttpGateway(
 
     // Stateless mode: the SDK forbids reusing a stateless transport across
     // requests — fresh Server + transport per request, closed with the
-    // response (same pattern as fake-upstream.mjs --http).
-    const server = ctx.createAgentServer();
+    // response (same pattern as fake-upstream.mjs --http). M4: the server is
+    // built with the request's logical identity (or the gateway default).
+    const server = ctx.createAgentServer(agentId);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });

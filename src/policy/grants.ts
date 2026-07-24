@@ -25,6 +25,7 @@ import crypto from "node:crypto";
 import picomatch from "picomatch";
 import { SCOPEGATE_DIR, ensureDir } from "../config/config.js";
 import { atomicWriteFileSync } from "./fsutil.js";
+import { matchesWhen } from "./when.js";
 
 export const GRANTS_PATH = path.join(SCOPEGATE_DIR, "grants.json");
 
@@ -45,6 +46,9 @@ export interface Grant {
   leaseId?: string;
   /** Set on a CHILD grant delegated from this one (mejora #5). */
   parentGrantId?: string;
+  /** Arg guard of the issuing rule (M6) — the grant covers a call only when
+   *  its args satisfy it too. */
+  when?: Record<string, string | number | boolean>;
 }
 
 interface GrantsFile {
@@ -105,6 +109,7 @@ export class GrantStore {
     rule?: string;
     leaseId?: string;
     parentGrantId?: string;
+    when?: Record<string, string | number | boolean>;
   }): Grant {
     const now = Date.now();
     const grant: Grant = {
@@ -118,6 +123,7 @@ export class GrantStore {
       ...(input.rule ? { rule: input.rule } : {}),
       ...(input.leaseId ? { leaseId: input.leaseId } : {}),
       ...(input.parentGrantId ? { parentGrantId: input.parentGrantId } : {}),
+      ...(input.when ? { when: input.when } : {}),
     };
     this.grants.push(grant);
     this.save();
@@ -164,27 +170,41 @@ export class GrantStore {
     return expired;
   }
 
-  /** True when a live grant covers the capability (exact or as a glob). */
-  isGranted(agentId: string, capability: string, now: number = Date.now()): boolean {
+  /** True when a live grant covers the capability (exact or as a glob) — and,
+   *  for M6 `when`-guarded grants, when the call's args satisfy the guard. */
+  isGranted(
+    agentId: string,
+    capability: string,
+    now: number = Date.now(),
+    args?: Record<string, unknown>,
+  ): boolean {
     this.purgeExpired(now);
     return this.grants.some(
       (g) =>
         g.agentId === agentId &&
-        (g.capability === capability || picomatch.isMatch(capability, g.capability)),
+        (g.capability === capability || picomatch.isMatch(capability, g.capability)) &&
+        (!g.when || matchesWhen(g.when, args)),
     );
   }
 
   /**
    * The latest live grant covering the capability (matches the historical
    * "latest covering grant wins" rule server.ts relied on). Carries the
-   * redact categories and remaining TTL the server needs post-call.
+   * redact categories and remaining TTL the server needs post-call — and, for
+   * M6 `when`-guarded grants, only matches when the call's args satisfy them.
    */
-  coveringGrant(agentId: string, capability: string, now: number = Date.now()): Grant | undefined {
+  coveringGrant(
+    agentId: string,
+    capability: string,
+    now: number = Date.now(),
+    args?: Record<string, unknown>,
+  ): Grant | undefined {
     this.purgeExpired(now);
     return [...this.grants].reverse().find(
       (g) =>
         g.agentId === agentId &&
-        (g.capability === capability || picomatch.isMatch(capability, g.capability)),
+        (g.capability === capability || picomatch.isMatch(capability, g.capability)) &&
+        (!g.when || matchesWhen(g.when, args)),
     );
   }
 

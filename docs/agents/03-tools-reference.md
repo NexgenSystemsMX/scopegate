@@ -74,6 +74,16 @@ Request an ephemeral grant before privileged work. Capability format:
 | `reason` | string | yes | one line; recorded in the audit log |
 | `lease_id` | string | no | bind the grant to a task lease (validated: live + upstream scope) |
 | `execute_on_approval` | object | no | `{tool, args}` continuation — see below |
+| `wait` | boolean | no | on escalation, block until the human decides (returns the grant inline) |
+| `timeout_s` | number | no | max seconds for `wait` (default 60, max 120) |
+
+**Inline wait (`wait: true`).** When the request escalates to human approval,
+`wait: true` long-polls the decision instead of returning `pending_human_approval`:
+the call blocks (up to `timeout_s`, max 120 s) and resolves to the granted
+capability (`via: "human_approval"`) the moment the human approves, to
+`{status: "denied"}` on a denial, or to `{status: "approval_timeout"}` (the
+approval is still pending — re-call with the SAME capability to keep waiting).
+Prefer this over re-calling in a loop. Every wait is audited (`approval_waited`).
 
 **Approval continuation (`execute_on_approval`).** When a request escalates, you
 may attach the exact call you intend to make: `{tool: '<upstream>__<tool>', args: {...}}`.

@@ -443,6 +443,38 @@ first tool call at 87s — zero secrets in context</pre>
           radius — one informed human decision instead of seven popups.
         </p>
       </div>
+      <div class="card">
+        <h3>Git credential helper</h3>
+        <p>
+          <code>scopegate git-credential</code> plugs into <code>git credential fill</code>:
+          every clone/push gets a freshly minted GitHub App installation token — never in
+          the remote URL, never in <code>.git/config</code>, governed by the same policies.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Arg-aware policies</h3>
+        <p>
+          <code>when:</code> clauses guard the call's <em>arguments</em>, not just the tool:
+          pushes to <code>kimi/*</code> branches auto-approve while <code>main</code>
+          escalates to a human. The guard sticks to the issued grant.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Approvals that don't break flow</h3>
+        <p>
+          <code>wait: true</code> long-polls the human decision inline and returns the grant
+          in the same call. Requests and decisions push to Slack, HMAC webhooks or Huly —
+          the human answers where they already are.
+        </p>
+      </div>
+      <div class="card">
+        <h3>One gateway, many identities</h3>
+        <p>
+          The <code>X-ScopeGate-Agent</code> header selects the logical agent per request
+          (validated against the policies allowlist): one gateway serves many threads with
+          separate grants, audit trails and approval queues.
+        </p>
+      </div>
     </div>
   </div>
 </section>

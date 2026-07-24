@@ -205,6 +205,10 @@ describe("audit signing (EPIC-07)", () => {
       "plan_requested", "result_stored",
       // Mejoras del agente (append-only, wave E): delegation + taint.
       "grant_delegated", "taint_detected",
+      // M3: git credential-helper mints.
+      "git_credential_minted",
+      // M5: native approval wait.
+      "approval_waited",
     ];
     expect([...AUDIT_KINDS].sort()).toEqual(expected.sort());
   });

@@ -91,6 +91,24 @@ agents:
 <p>  after a broad <code>auto_approve</code> rule is dead. This is why examples put   <code>require: human_approval</code> rules <em>before</em> the wildcard ones.</p>
 <ul><li><code>limits.deny</code> globs are checked <strong>before</strong> any rule. They always win.</li></ul>
 <p>Practical consequence: before requesting, compute the exact capability string and request that — not a broader one &quot;just in case&quot;. A denied broad request teaches you nothing a narrow one wouldn&#39;t, and <code>deny</code> hits are audited.</p>
+<h2 id="2b-when-guards-over-the-call-s-arguments">2b. <code>when:</code> — guards over the call&#39;s arguments</h2>
+<p>A rule may carry a <code>when</code> clause that constrains the <em>arguments of the tool call</em>, not just the capability string:</p>
+<pre class="code" data-lang="yaml"><code>capabilities:
+  - match: &quot;github:call:create_or_update_file&quot;
+    auto_approve: true
+    ttl: 5m
+    when: { branch: &quot;kimi/*&quot; }        # auto-approve ONLY on kimi/* branches
+  - match: &quot;github:call:create_or_update_file&quot;
+    require: human_approval           # everything else (main, release/*) escalates</code></pre>
+<ul><li>String values are picomatch globs; numbers and booleans match by strict</li></ul>
+<p>  equality. Every entry must match.</p>
+<ul><li>A call <strong>without</strong> the guarded argument (or with no args at all) never</li></ul>
+<p>  satisfies a <code>when</code> — the rule is skipped (fail-closed) and evaluation   continues with the next rule.</p>
+<ul><li>The guard sticks to the issued grant: a grant minted for <code>branch: kimi/x</code></li></ul>
+<p>  does <strong>not</strong> cover a later call with <code>branch: main</code> — that call re-evaluates   and escalates.</p>
+<ul><li><code>when</code> also applies to approvals: a human approves a guarded request for the</li></ul>
+<p>  exact arguments shown, and the materialized grant keeps the guard.</p>
+<p>Use it for branch/environment/severity-shaped decisions. What you cannot express with args still belongs in separate capabilities or <code>require</code> rules.</p>
 <h2 id="3-ttls-you-can-shorten-never-extend">3. TTLs: you can shorten, never extend</h2>
 <p>Resolution for an auto-approved request:</p>
 <pre class="code"><code>ceiling  = rule.ttl ?? agent.default_ttl ?? 15m      # built-in default is 15 minutes
