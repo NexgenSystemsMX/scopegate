@@ -64,6 +64,10 @@ async function main() {
     SCOPEGATE_AGENT_ID: "e2e-agent",
     // Mejora #10 e2e: the enforce gate degrades cross-upstream writes while tainted.
     SCOPEGATE_TAINT_MODE: "enforce",
+    // M8 e2e: decoys that must NOT reach the upstream child (the vault wins
+    // for FAKE_TOKEN via the composite env; DECOY_SECRET must never arrive).
+    FAKE_TOKEN: "WRONG-DECOY",
+    DECOY_SECRET: "must-not-leak",
   };
   console.log(`e2e home: ${home}`);
 
@@ -83,7 +87,13 @@ async function main() {
             {
               name: "fakegit",
               transport: { kind: "stdio", command: process.execPath, args: [FAKE_UPSTREAM] },
-              auth: { type: "env", env: { FAKE_TOKEN: "fake_token" } },
+              // M1: composite auth — static vault ref + a jwt mint, fused into
+              // ONE stdio upstream. The whole suite runs over composite.
+              auth: {
+                type: "composite",
+                env: { FAKE_TOKEN: "fake_token" },
+                mint: [{ type: "jwt", secretRef: "jwt_signing_key" }],
+              },
             },
             {
               name: "jwtupstream",
@@ -130,6 +140,8 @@ async function main() {
             { match: "fakegit:call:leased", auto_approve: true, ttl: "10m" },
             // oversized-payload fixture (mejora #7)
             { match: "fakegit:call:big_report", auto_approve: true, ttl: "10m" },
+            // env-hygiene fixture (M8)
+            { match: "fakegit:call:env_probe", auto_approve: true, ttl: "10m" },
             // PII in the RESPONSE is masked under this rule
             { match: "fakegit:call:pii_echo", auto_approve: true, ttl: "5m", redact: ["pii"] },
           ],
@@ -687,6 +699,28 @@ async function main() {
     assert.notEqual(afterAdd.isError, true, `call after vault mutation failed: ${afterAdd.content[0].text}`);
     assert.match(afterAdd.content[0].text, /authenticated=true/);
     pass("hot-reload: secret add while running drops stale connections; the gateway keeps serving");
+
+    // 16h. M1 (composite auth) + M8 (env hygiene). The suite booted with
+    // fakegit on composite auth (static ref + jwt mint) and decoys in env.
+    const whoamiComp = await client.callTool({ name: "fakegit__whoami", arguments: {} });
+    assert.notEqual(whoamiComp.isError, true, `composite whoami failed: ${whoamiComp.content[0].text}`);
+    assert.match(
+      whoamiComp.content[0].text,
+      /authenticated=true/,
+      `the vault ref must win over the WRONG-DECOY in process env: ${whoamiComp.content[0].text}`,
+    );
+    pass("M1: composite auth fuses static ref + mint; vault value wins over the decoy env");
+    const probeDecoy = await client.callTool({ name: "fakegit__env_probe", arguments: { name: "DECOY_SECRET" } });
+    assert.match(probeDecoy.content[0].text, /DECOY_SECRET=absent/, `decoy leaked into the child: ${probeDecoy.content[0].text}`);
+    const probeToken = await client.callTool({ name: "fakegit__env_probe", arguments: { name: "FAKE_TOKEN" } });
+    assert.match(probeToken.content[0].text, /FAKE_TOKEN=present/, `vault ref not injected: ${probeToken.content[0].text}`);
+    const probeMinted = await client.callTool({ name: "fakegit__env_probe", arguments: { name: "FAKEGIT_ACCESS_TOKEN" } });
+    assert.match(
+      probeMinted.content[0].text,
+      /FAKEGIT_ACCESS_TOKEN=present/,
+      `jwt mint not injected as <NAME>_ACCESS_TOKEN: ${probeMinted.content[0].text}`,
+    );
+    pass("M8: gateway secrets never reach the child (scrub) — only vault refs and minted env");
 
     // 17. redact: [pii] masks email/card in the proxied tool RESPONSE.
     const pii = await client.callTool({ name: "fakegit__pii_echo", arguments: {} });

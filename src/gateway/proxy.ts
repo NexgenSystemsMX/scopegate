@@ -662,19 +662,56 @@ export class UpstreamProxy {
       await client.connect(transport);
     } else {
       // stdio: inject secret env vars at spawn — invisible to the agent.
-      const env: Record<string, string> = {
-        ...(process.env as Record<string, string>),
-        ...(up.transport.env ?? {}),
-      };
-      if (this.minter.providerFor(up.auth)) {
+      const env = this.buildSpawnEnv(up);
+      if (up.auth.type === "composite") {
+        // M1 (composite): static refs + every mint, fused in order.
+        for (const [envName, secretRef] of Object.entries(up.auth.env ?? {})) {
+          env[envName] = this.vault.get(secretRef);
+        }
+        for (const mintAuth of up.auth.mint ?? []) {
+          const subUp = { ...up, auth: mintAuth };
+          const res = await this.mintOrThrow(subUp, ctx);
+          Object.assign(env, res.cred.env ?? {});
+          // M14.2: header-only mints (jwt) also reach the child as
+          // <NAME>_ACCESS_TOKEN in composite mode.
+          if (!res.cred.env && res.cred.headers?.Authorization) {
+            env[this.accessTokenEnvName(up.name)] = res.cred.headers.Authorization.replace(
+              /^Bearer\s+/i,
+              "",
+            );
+          }
+          this.scheduleMintRefresh(up.name, res.cred.expiresAt);
+        }
+        this.auditSecretRefsUsed(up, ctx);
+      } else if (this.minter.providerFor(up.auth)) {
         // Provider-backed (e.g. aws_sts): inject minted session credentials.
         const res = await this.mintOrThrow(up, ctx);
         this.auditSecretRefsUsed(up, ctx);
         Object.assign(env, res.cred.env ?? {});
+        // M14.2: a header-only minted credential (jwt) also reaches stdio
+        // bridges as <NAME>_ACCESS_TOKEN.
+        if (!res.cred.env && res.cred.headers?.Authorization) {
+          env[this.accessTokenEnvName(up.name)] = res.cred.headers.Authorization.replace(
+            /^Bearer\s+/i,
+            "",
+          );
+        }
+        this.scheduleMintRefresh(up.name, res.cred.expiresAt);
       } else if (up.auth.type === "env") {
         for (const [envName, secretRef] of Object.entries(up.auth.env)) {
           env[envName] = this.vault.get(secretRef);
         }
+        this.auditSecretRefsUsed(up, ctx);
+      } else if (up.auth.type === "oauth2") {
+        // M14.2: the daemon keeps the blob fresh — inject the CURRENT access
+        // token as <NAME>_ACCESS_TOKEN for stdio bridges that read it from env.
+        env[this.accessTokenEnvName(up.name)] = accessTokenFromOAuthBlob(
+          this.vault.get(up.auth.secretRef),
+        );
+        this.auditSecretRefsUsed(up, ctx);
+      } else if (up.auth.type === "bearer") {
+        // M14.2: static bearer also injects as <NAME>_ACCESS_TOKEN on stdio.
+        env[this.accessTokenEnvName(up.name)] = this.vault.get(up.auth.secretRef);
         this.auditSecretRefsUsed(up, ctx);
       }
       const transport = new StdioClientTransport({
@@ -876,6 +913,20 @@ export class UpstreamProxy {
           arguments: callArgs,
         });
         if (handle && poolUp && pool) this.releasePoolEntry(poolUp, pool, handle, true);
+        // M2.2: an in-band auth failure (isError) on a minted/oauth2 upstream
+        // invalidates the mint cache and heals with a fresh credential — never
+        // stored as idempotent, never counted as a circuit success.
+        if (this.isAuthErrorResult(result, up) && !refreshedAfter401) {
+          refreshedAfter401 = true;
+          if (daemon && oauthAuth) {
+            const res = await daemon.refreshNow(tool.upstream);
+            if (!res.ok) throw new Error(res.error);
+          }
+          this.minter.invalidate(tool.upstream);
+          throw new Error(
+            `upstream auth error (in-band isError) from '${tool.upstream}' — mint cache invalidated, reconnecting with fresh credentials`,
+          );
+        }
         this.circuitSuccess(tool.upstream);
         if (idemKey && idemArgsHash) {
           // Persist ONLY after a genuine upstream success — a replay never
@@ -1071,6 +1122,140 @@ export class UpstreamProxy {
   /* Quick win: vault hot-reload — end                                   */
   /* ------------------------------------------------------------------ */
 
+  /* ------------------------------------------------------------------ */
+  /* M8: env hygiene for spawned children                                 */
+  /* ------------------------------------------------------------------ */
+
+  private static readonly SPAWN_ENV_ALLOW = [
+    "PATH",
+    "HOME",
+    "LANG",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "SystemRoot",
+    "WINDIR",
+    "NODE_OPTIONS",
+  ];
+  private static readonly SPAWN_ENV_SECRET_RE =
+    /(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|CREDENTIAL|AUTH)/i;
+
+  /**
+   * Minimal, secret-scrubbed env for spawned upstream children (M8): the
+   * gateway's whole environment is NO LONGER inherited by default — only the
+   * safe base set, LC_* vars, `transport.envPassthrough`, `transport.env`
+   * and the auth injections (added by the caller). Anything matching a
+   * secret shape is dropped unless explicitly declared. Legacy full-inherit
+   * behavior stays available via SCOPEGATE_ENV_PASSTHROUGH=1.
+   */
+  private buildSpawnEnv(up: UpstreamConfig): Record<string, string> {
+    const env: Record<string, string> = {};
+    const legacy = process.env.SCOPEGATE_ENV_PASSTHROUGH === "1";
+    if (legacy) {
+      Object.assign(env, process.env as Record<string, string>);
+    } else {
+      for (const key of UpstreamProxy.SPAWN_ENV_ALLOW) {
+        if (process.env[key] !== undefined) env[key] = process.env[key] as string;
+      }
+      for (const [key, value] of Object.entries(process.env)) {
+        if (key.startsWith("LC_")) env[key] = value as string;
+      }
+      const passthrough =
+        up.transport.kind === "stdio" ? (up.transport.envPassthrough ?? []) : [];
+      for (const name of passthrough) {
+        if (process.env[name] !== undefined) env[name] = process.env[name] as string;
+      }
+      const declared = new Set([
+        ...Object.keys(up.transport.kind === "stdio" ? (up.transport.env ?? {}) : {}),
+        ...passthrough,
+      ]);
+      for (const key of Object.keys(env)) {
+        if (UpstreamProxy.SPAWN_ENV_SECRET_RE.test(key) && !declared.has(key)) {
+          delete env[key];
+        }
+      }
+    }
+    Object.assign(env, up.transport.kind === "stdio" ? (up.transport.env ?? {}) : {});
+    return env;
+  }
+
+  /** M14.2: env var a stdio bridge reads its access token from. */
+  private accessTokenEnvName(upstreamName: string): string {
+    return upstreamName.toUpperCase().replace(/[^A-Z0-9]/g, "_") + "_ACCESS_TOKEN";
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* M2: proactive mint refresh for stdio connections                     */
+  /* ------------------------------------------------------------------ */
+
+  private mintRespawnTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /**
+   * After minting for a stdio spawn, schedule the proactive respawn at 80%
+   * of the credential's TTL — the connection is rebuilt with a fresh mint
+   * BEFORE the old token dies, so long sessions never stall (C2).
+   */
+  private scheduleMintRefresh(name: string, expiresAt: number): void {
+    const existing = this.mintRespawnTimers.get(name);
+    if (existing) clearTimeout(existing);
+    const remaining = expiresAt - Date.now();
+    if (remaining <= 0) return;
+    const delay = Math.max(1000, Math.floor(remaining * 0.8));
+    const timer = setTimeout(() => {
+      void this.respawnMintedConnection(name).catch((e) => {
+        log("warn", `proactive mint respawn of '${name}' failed: ${errorMessage(e)} — bounded retry continues`, {});
+      });
+    }, delay);
+    timer.unref?.();
+    this.mintRespawnTimers.set(name, timer);
+  }
+
+  /**
+   * Connect fresh FIRST, swap the connection map, then close the old
+   * transport after a grace period (in-flight calls finish on the old one).
+   */
+  private async respawnMintedConnection(name: string): Promise<void> {
+    const up = this.upstreams.find((u) => u.name === name && u.enabled !== false);
+    if (!up) return;
+    const fresh = await this.connect(up, {});
+    const old = this.connections.get(name);
+    this.connections.set(name, fresh);
+    if (old && old !== fresh) {
+      setTimeout(() => {
+        void old.client.close().catch(() => {});
+      }, 15_000).unref?.();
+    }
+    log("info", `stdio connection to '${name}' respawned proactively (mint refresh)`, {});
+  }
+
+  /**
+   * M2.2: true when an MCP RESULT is an in-band auth failure (isError with
+   * an auth-shaped message) on a minted/oauth2 upstream — the caller
+   * invalidates the mint cache and retries with a fresh credential.
+   */
+  private isAuthErrorResult(result: unknown, up: UpstreamConfig | undefined): boolean {
+    if (result === null || typeof result !== "object") return false;
+    if ((result as { isError?: unknown }).isError !== true) return false;
+    if (!up) return false;
+    const mintedOrOauth = up.auth.type === "oauth2" || this.minter.providerFor(up.auth) !== undefined;
+    if (!mintedOrOauth) return false;
+    const custom = up.auth.type === "oauth2" ? up.auth.authErrorPattern : undefined;
+    const pattern = custom
+      ? new RegExp(custom, "i")
+      : /401|unauthorized|invalid[_ ]?token|token[_ ]?expired|expired[_ ]?token|forbidden/i;
+    let message = "";
+    try {
+      message = JSON.stringify(result).slice(0, 2048);
+    } catch {
+      message = String(result);
+    }
+    return pattern.test(message);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* M2: proactive mint refresh — end                                     */
+  /* ------------------------------------------------------------------ */
+
   /**
    * Health check used by scopegate_diagnose. Never rejects. For oauth2
    * upstreams the entry additionally carries the daemon's health snapshot
@@ -1148,6 +1333,8 @@ export class UpstreamProxy {
 
   async closeAll(): Promise<void> {
     this.oauthDaemon?.stop();
+    for (const t of this.mintRespawnTimers.values()) clearTimeout(t);
+    this.mintRespawnTimers.clear();
     for (const c of this.connections.values()) {
       await c.client.close().catch(() => {});
     }

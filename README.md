@@ -112,12 +112,16 @@ upstreams:
 ```
 
 All auth types: `bearer` (header injection), `env` (env vars into spawned
-stdio servers), `oauth2` (refresh daemon + device-code re-auth), `jwt`
-(gateway-minted HS256), `github_app` (installation tokens minted from the App
-key), `aws_sts` (session credentials via AssumeRole/GetSessionToken), `huly`
-(workspace token minted via login + selectWorkspace against a Huly account
-service — URL discovery through `/config.json`), `google_sa` (Google service
-account JWT → access token), `none`.
+stdio servers), `composite` (several sources fused into one stdio upstream:
+static refs + provider mints — multi-service MCPs 100% minted), `oauth2`
+(refresh daemon + device-code re-auth), `jwt` (gateway-minted HS256),
+`github_app` (installation tokens minted from the App key), `aws_sts` (session
+credentials via AssumeRole/GetSessionToken), `huly` (workspace token minted
+via login + selectWorkspace against a Huly account service — URL discovery
+through `/config.json`), `google_sa` (Google service account JWT → access
+token), `none`. Minted credentials on stdio respawn proactively at 80% of
+their TTL, and spawned children only inherit a secret-scrubbed env
+(`SCOPEGATE_ENV_PASSTHROUGH=1` restores legacy full-inherit).
 See [scopegate.example.yaml](scopegate.example.yaml) for commented examples of each.
 
 ## Native connectors (bridges in `src/upstreams/`)

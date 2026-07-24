@@ -81,6 +81,11 @@ export function secretRefsOf(auth: UpstreamAuth): string[] {
       return [auth.secretRef];
     case "env":
       return Object.values(auth.env);
+    case "composite":
+      return [
+        ...Object.values(auth.env ?? {}),
+        ...(auth.mint ?? []).flatMap((m) => secretRefsOf(m)),
+      ];
     case "none":
       return [];
   }
@@ -131,6 +136,21 @@ export class Minter {
     if (auth.type === "none") return "none";
     const provider = this.providerFor(auth);
     return provider ? `minted:${provider.type}` : "fallback:injection";
+  }
+
+  /**
+   * M2.3: drop every cached credential of an upstream (after an auth error).
+   * The next resolve mints fresh — a revoked token is never retried as-is.
+   */
+  invalidate(upstreamName: string): number {
+    let removed = 0;
+    for (const key of this.cache.keys()) {
+      if (key === upstreamName || key.startsWith(upstreamName + " ")) {
+        this.cache.delete(key);
+        removed++;
+      }
+    }
+    return removed;
   }
 
   /**

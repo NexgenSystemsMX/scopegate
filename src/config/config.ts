@@ -144,6 +144,21 @@ export type UpstreamAuth =
        * more, e.g. calendar.events for calendar_create).
        */
       scopes?: string[];
+    }
+  | {
+      /**
+       * Composite auth (M1): several credential sources fused into ONE stdio
+       * upstream — static vault refs (`env`, same semantics as type "env")
+       * PLUS any number of provider-backed mints (`mint`, resolved in order
+       * with the minter's cache/single-flight). A multi-service MCP (Huly +
+       * GitHub + Redis at once) is 100% minted without splitting upstreams.
+       * Env-name conflicts across sources are config errors (fail-closed).
+       */
+      type: "composite";
+      /** Static refs: ENV_VAR_NAME -> vault secretRef (same as type "env"). */
+      env?: Record<string, string>;
+      /** Provider-backed auth entries (huly, github_app, aws_sts, google_sa, jwt). */
+      mint?: UpstreamAuth[];
     };
 
 /**
@@ -172,7 +187,18 @@ export interface UpstreamConfig {
   /** Transport to reach the upstream MCP server. */
   transport:
     | { kind: "http"; url: string }
-    | { kind: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
+    | {
+        kind: "stdio";
+        command: string;
+        args?: string[];
+        env?: Record<string, string>;
+        /**
+         * M8: extra process.env vars to pass through to the spawned child
+         * (the default pass set is minimal and secret-scrubbed). Names only —
+         * values come from the gateway's own environment.
+         */
+        envPassthrough?: string[];
+      };
   auth: UpstreamAuth;
   /** Optional allowlist of upstream tool names to expose. Empty = all. */
   exposeTools?: string[];
@@ -219,7 +245,61 @@ export function loadConfig(): ScopeGateConfig {
     throw new Error(`Unsupported or corrupt config at ${CONFIG_PATH}`);
   }
   raw.upstreams ??= [];
+  for (const up of raw.upstreams as UpstreamConfig[]) {
+    if (up?.auth?.type === "composite") validateCompositeAuth(up);
+    if (
+      up?.transport?.kind === "stdio" &&
+      up.transport.envPassthrough !== undefined &&
+      !Array.isArray(up.transport.envPassthrough)
+    ) {
+      throw new Error(
+        `upstream '${up.name}': transport.envPassthrough must be an array of env var names`,
+      );
+    }
+  }
   return raw as ScopeGateConfig;
+}
+
+/**
+ * M1: fail-closed validation of composite auth at load. Env-name conflicts
+ * across sources are config errors; nested types must be provider-backed
+ * (huly, github_app, aws_sts, google_sa, jwt) — never composite/env/oauth2
+ * (recursion or daemon-coupled types are refused).
+ */
+function validateCompositeAuth(up: UpstreamConfig): void {
+  const auth = up.auth as Extract<UpstreamAuth, { type: "composite" }>;
+  const seen = new Map<string, string>();
+  for (const name of Object.keys(auth.env ?? {})) seen.set(name, "env");
+  const PROVIDER_TYPES = new Set(["huly", "github_app", "aws_sts", "google_sa", "jwt"]);
+  for (const mintAuth of auth.mint ?? []) {
+    if (!mintAuth || !PROVIDER_TYPES.has(mintAuth.type)) {
+      throw new Error(
+        `upstream '${up.name}': composite.mint entries must be provider-backed auth ` +
+          `(huly, github_app, aws_sts, google_sa, jwt) — got '${mintAuth?.type}'`,
+      );
+    }
+    // Env produced by each provider must not collide with another source.
+    const PRODUCED: Record<string, string[]> = {
+      huly: ["HULY_TOKEN", "HULY_ENDPOINT", "HULY_WORKSPACE"],
+      github_app: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+      aws_sts: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"],
+      google_sa: ["GOOGLE_ACCESS_TOKEN"],
+      jwt: [],
+    };
+    for (const varName of PRODUCED[mintAuth.type] ?? []) {
+      const prev = seen.get(varName);
+      if (prev) {
+        throw new Error(
+          `upstream '${up.name}': composite env conflict on '${varName}' ` +
+            `(from both ${prev} and ${mintAuth.type}) — rename one source (fail-closed)`,
+        );
+      }
+      seen.set(varName, mintAuth.type);
+    }
+  }
+  if (Object.keys(auth.env ?? {}).length === 0 && (auth.mint ?? []).length === 0) {
+    throw new Error(`upstream '${up.name}': composite auth requires at least one of env/mint`);
+  }
 }
 
 export function saveConfig(cfg: ScopeGateConfig): void {

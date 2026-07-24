@@ -153,3 +153,29 @@ upstreams:
   #     secretRef: github_app_key
   #     repositories: [scopegate]
   #     permissions: { contents: write, pull_requests: write, issues: write, metadata: read }
+
+# ── composite (M1): varias fuentes de credencial en UN solo upstream stdio ────
+# Un MCP multi-servicio (Huly + GitHub + Redis a la vez) 100% minteado:
+# refs estáticas en `env` (como type env) + providers en `mint` (en orden).
+# Conflicto de nombre de variable entre fuentes = error de config (fail-closed).
+# - name: nexgen
+#   transport: { kind: stdio, command: node, args: ["dist/upstreams/nexgen/server.js"] }
+#   auth:
+#     type: composite
+#     env: { REDIS_URL: redis_url }
+#     mint:
+#       - { type: huly, secretRef: huly_nexgen }
+#       - type: github_app
+#         appId: "123456"
+#         installationId: "44444444"
+#         secretRef: github_app_key
+#         permissions: { contents: write }
+#
+# Refresh proactivo (M2): las credenciales minteadas en stdio se re-spawnan al
+# 80% de su TTL sin intervención; un 401 en banda invalida el cache del minter
+# y reintenta una vez con token fresco.
+#
+# Higiene de env (M8): el spawn ya NO hereda todo process.env del gateway —
+# solo PATH/HOME/LANG/LC_*/TMP*/SystemRoot/NODE_OPTIONS + transport.env +
+# transport.envPassthrough: [...]; cualquier var con forma de secreto se
+# elimina salvo que venga del bloque auth. Legacy: SCOPEGATE_ENV_PASSTHROUGH=1.
