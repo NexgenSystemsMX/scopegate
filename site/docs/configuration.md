@@ -21,6 +21,10 @@ Full annotated file: [`scopegate.example.yaml`](../scopegate.example.yaml).
 
 - `{ kind: http, url }` — remote MCP over HTTP
 - `{ kind: stdio, command, args?, env? }` — local MCP spawned per session
+- `{ kind: openapi, spec, baseUrl? }` — any OpenAPI 3 spec (https URL or local
+  path) becomes a governed upstream: one tool per operation, executed by the
+  gateway itself (auth `bearer`\|`none`; spec cached 24h; https outside
+  localhost)
 
 ### `auth` types
 
@@ -61,6 +65,12 @@ agents:
       - match: "support:call:get_customer"
         auto_approve: true
         redact: [pii]      # mask PII in upstream responses (best-effort)
+      - match: "github:call:create_or_update_file"
+        auto_approve: true
+        ttl: 5m
+        when: { branch: "kimi/*" }   # argument guard: auto-approve only on kimi/*
+      - match: "github:call:create_or_update_file"
+        require: human_approval      # every other branch escalates
       - match: "aws:*:production"
         require: human_approval   # → pending_human_approval + approvals.pending.jsonl
   "*":                     # fallback for unknown agents
@@ -69,6 +79,11 @@ agents:
       - match: "*:call:{get_*,list_*,search_*,read_*}"
         auto_approve: true
 ```
+
+`when:` values: strings are picomatch globs, numbers/booleans strict equality;
+a call without the guarded argument never matches the rule (fail-closed), and
+the guard sticks to the issued grant. `vault:inject:<ref>` capabilities
+escalate to human approval BY DEFAULT (a rule must explicitly `auto_approve`).
 
 Annotated copy: [`policies.example.yaml`](../policies.example.yaml).
 
@@ -87,6 +102,17 @@ Annotated copy: [`policies.example.yaml`](../policies.example.yaml).
 | `SCOPEGATE_HONEYTOKEN_MODE` | `enforce` (default) · `alert` | Canary response: revoke vs alert-only |
 | `SCOPEGATE_TELEMETRY` | `1` | Opt in to anonymous telemetry (default off) |
 | `SCOPEGATE_TELEMETRY_ENDPOINT` | URL | Override the telemetry collector |
+| `SCOPEGATE_HTTP_TOKEN` | string | Bearer token — **required** in `--http` mode |
+| `SCOPEGATE_TAINT_MODE` | `alert` (default) · `enforce` · `off` | Return-path taint scoring: `enforce` degrades cross-upstream writes to human approval |
+| `SCOPEGATE_ENV_PASSTHROUGH` | `1` | Restore legacy full-inherit of `process.env` into spawned upstreams (default: scrubbed minimal env + `envPassthrough`) |
+| `SCOPEGATE_CLOUD_DATABASE_URL` | postgres://… | Cloud control plane: use PostgresStore instead of the JSON FileStore |
+| `SCOPEGATE_CLOUD_AUDIT_RETENTION_DAYS` | days | Cloud: purge audit events older than N days (unset/`0` = keep everything) |
+
+HTTP transport notes: `GET /health` is a public readiness probe (`status`,
+`uptime_s`, `upstreams`, `upstreams_detail`, `vault_mode`,
+`pending_approvals`); `GET /events` (bearer) returns an NDJSON metadata-only
+event tail; `X-ScopeGate-Agent` on MCP requests selects the logical agent
+identity (must be in the policies allowlist).
 
 ## Files in `~/.scopegate/`
 

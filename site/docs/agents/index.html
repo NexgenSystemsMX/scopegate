@@ -39,7 +39,7 @@
 <h1 id="scopegate-agent-documentation">ScopeGate — Agent Documentation</h1>
 <p>ScopeGate is an <strong>ephemeral-credentials gateway</strong> for coding agents. It sits between your agent runtime and every external service (MCP servers, cloud APIs, SaaS tools). Real secrets live in an AES-256-GCM encrypted local vault and are injected only at the outbound hop — they never enter your context.</p>
 <p><strong>You never hold secrets; you hold capabilities.</strong> A capability is a short-lived, minimum-scope grant minted by the gateway&#39;s policy engine — scoped to one task, expiring in minutes. Capability ≠ credential: what leaks from a model context is nearly worthless; what the vault keeps never touches the context at all.</p>
-<p>Everything you need is exposed as six MCP tools (<code>scopegate_request_capability</code>, <code>scopegate_list_capabilities</code>, <code>scopegate_register_upstream</code>, <code>scopegate_diagnose</code>, <code>scopegate_propose_policy</code>, <code>scopegate_vault_status</code>) plus the <code>scopegate</code> CLI. You install, configure and operate all of it yourself.</p>
+<p>Everything you need is exposed as twenty-one MCP tools (<code>scopegate_request_capability</code>, <code>scopegate_list_capabilities</code>, <code>scopegate_register_upstream</code>, <code>scopegate_diagnose</code>, <code>scopegate_propose_policy</code>, <code>scopegate_vault_status</code>) plus the <code>scopegate</code> CLI. You install, configure and operate all of it yourself.</p>
 <h2 id="who-this-documentation-is-for">Who this documentation is for</h2>
 <p>Any autonomous coding agent on any MCP-capable harness: <strong>Claude Code, Kimi Code, Cursor, OpenCode</strong>, or any other client that speaks MCP (<code>.mcp.json</code>). No prior knowledge of ScopeGate is assumed. If you have never seen ScopeGate before, read guide 01 first and follow it literally; treat the rest as reference material you pull in on demand.</p>
 <h2 id="how-to-consume-these-docs">How to consume these docs</h2>
@@ -49,7 +49,7 @@
 <p>  ScopeGate non-interactively (<code>npm i -g scopegate</code>, <code>scopegate init</code>),   verify with <code>scopegate status</code>, and hand off the single human step.</p>
 <ul><li><strong>02 — Protocol</strong> — the capability lifecycle: request → grant → use →</li></ul>
 <p>  expire; how to think in capabilities instead of credentials; what   <code>pending_human_approval</code> means.</p>
-<ul><li><strong>03 — Tools reference</strong> — all six <code>scopegate_*</code> MCP tools: parameters,</li></ul>
+<ul><li><strong>03 — Tools reference</strong> — all twenty-one <code>scopegate_*</code> MCP tools: parameters,</li></ul>
 <p>  return shapes, error cases, copy-paste JSON payloads.</p>
 <ul><li><strong>04 — Connectors</strong> — the five native connectors (huly, github, railway,</li></ul>
 <p>  cloudflare, google), the signed registry, and how to register any custom   upstream MCP with <code>scopegate_register_upstream</code>.</p>

@@ -40,7 +40,7 @@
 <p>Agent-executable: every step is a command an agent (or you) can run. Target: first proxied tool call in &lt; 90 seconds. Requirements: Node.js ≥ 20.</p>
 <h2 id="1-install">1. Install</h2>
 <pre class="code" data-lang="bash"><code>npm install -g scopegate
-# or: curl -sSL https://get.scopegate.dev | sh -s -- --yes</code></pre>
+# or: curl -sSL https://scopegate.io/install.sh | sh -s -- --yes</code></pre>
 <h2 id="2-init-idempotent-non-interactive">2. Init (idempotent, non-interactive)</h2>
 <pre class="code" data-lang="bash"><code>scopegate init</code></pre>
 <p><code>init</code> creates <code>~/.scopegate/</code> (encrypted vault, master key, default policies), detects your harness configs, <strong>migrates existing MCP servers behind the gateway</strong> (plaintext env vars and auth headers move into the vault; configs keep only refs), and rewrites the harness config so <code>scopegate</code> is the single MCP entry point. Originals are backed up as <code>*.pre-scopegate.bak</code>.</p>

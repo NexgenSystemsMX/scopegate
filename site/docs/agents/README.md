@@ -11,7 +11,7 @@ scoped to one task, expiring in minutes. Capability ≠ credential: what leaks
 from a model context is nearly worthless; what the vault keeps never touches
 the context at all.
 
-Everything you need is exposed as six MCP tools
+Everything you need is exposed as twenty-one MCP tools
 (`scopegate_request_capability`, `scopegate_list_capabilities`,
 `scopegate_register_upstream`, `scopegate_diagnose`,
 `scopegate_propose_policy`, `scopegate_vault_status`) plus the `scopegate`
@@ -46,7 +46,7 @@ reference material you pull in on demand.
 - **02 — Protocol** — the capability lifecycle: request → grant → use →
   expire; how to think in capabilities instead of credentials; what
   `pending_human_approval` means.
-- **03 — Tools reference** — all six `scopegate_*` MCP tools: parameters,
+- **03 — Tools reference** — all twenty-one `scopegate_*` MCP tools: parameters,
   return shapes, error cases, copy-paste JSON payloads.
 - **04 — Connectors** — the five native connectors (huly, github, railway,
   cloudflare, google), the signed registry, and how to register any custom

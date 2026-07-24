@@ -1,7 +1,7 @@
 name: release
 
 # Tag-driven release: tag v* → build → unit tests → e2e → npm publish
-# (provenance) → GitHub Release. The package lives in ./scopegate.
+# (provenance) → GitHub Release. The package lives at the repo root.
 #
 # Required secret: NPM_TOKEN (granular token scoped to the `scopegate`
 # package). Without it the publish step is skipped — everything else still
@@ -16,10 +16,6 @@ permissions:
   contents: write       # GitHub Release
   id-token: write       # npm provenance
 
-defaults:
-  run:
-    working-directory: scopegate
-
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -32,7 +28,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: scopegate/package-lock.json
+          cache-dependency-path: package-lock.json
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
@@ -66,9 +62,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: scopegate/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci
       - run: npm run build
       - name: Red team harness
-        if: hashFiles('scopegate/redteam/run.mjs') != ''
+        if: hashFiles('redteam/run.mjs') != ''
         run: node redteam/run.mjs

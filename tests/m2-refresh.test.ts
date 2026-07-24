@@ -62,8 +62,15 @@ describe("M2.1: proactive respawn scheduler", () => {
       (
         proxy as unknown as { scheduleMintRefresh(name: string, expiresAt: number): void }
       ).scheduleMintRefresh("fakegit", Date.now() + 900); // fires at ~720ms
-      await new Promise((r) => setTimeout(r, 1500));
-      const after = conns.get("fakegit");
+      // Poll instead of a fixed sleep: under parallel-suite CPU load the
+      // respawn (child spawn + MCP handshake) can outlast a hardcoded wait.
+      // The entry can also be briefly absent between close and reconnect.
+      let after = conns.get("fakegit");
+      const deadline = Date.now() + 15_000;
+      while ((after === before || after === undefined) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+        after = conns.get("fakegit");
+      }
       expect(after).toBeDefined();
       expect(after).not.toBe(before); // swapped with a fresh connection
     } finally {

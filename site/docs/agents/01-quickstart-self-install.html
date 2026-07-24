@@ -62,7 +62,7 @@ scopegate --version</code></pre>
 <h3 id="b-npx-no-global-install">B. npx (no global install)</h3>
 <pre class="code" data-lang="bash"><code>npx --yes scopegate@latest init   # downloads transiently and runs init</code></pre>
 <h3 id="c-installer-script-curl-sh-built-for-agents">C. Installer script (curl | sh), built for agents</h3>
-<pre class="code" data-lang="bash"><code>curl -sSL https://get.scopegate.dev | sh -s -- --yes</code></pre>
+<pre class="code" data-lang="bash"><code>curl -sSL https://scopegate.io/install.sh | sh -s -- --yes</code></pre>
 <ul><li><code>--yes</code> = fully non-interactive. Other flags: <code>--version X.Y.Z</code>, <code>--no-init</code>.</li><li>Checks node &gt;= 20, installs via <code>npm install -g</code> (fallbacks: user prefix</li></ul>
 <p>  <code>~/.npm-global</code>, then <code>npx</code>), and runs <code>init</code> for you.</p>
 <ul><li><strong>Checksum verification (out-of-band):</strong> it prints the published tarball</li></ul>

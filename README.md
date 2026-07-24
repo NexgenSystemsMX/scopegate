@@ -3,7 +3,7 @@
 **Ephemeral credentials & persistent MCP connections for coding agents — Claude Code, Kimi Code, Cursor, OpenCode.**
 
 [![npm](https://img.shields.io/npm/v/scopegate)](https://www.npmjs.com/package/scopegate)
-[![CI](https://github.com/nexgen/scopegate/actions/workflows/release.yml/badge.svg)](https://github.com/nexgen/scopegate/actions)
+[![CI](https://github.com/NexgenSystemsMX/scopegate/actions/workflows/release.yml/badge.svg)](https://github.com/NexgenSystemsMX/scopegate/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 The agent never holds credentials — it holds short-lived, minimum-scope
@@ -30,7 +30,7 @@ scopegate init
 or via the installer:
 
 ```bash
-curl -sSL https://get.scopegate.dev | sh
+curl -sSL https://scopegate.io/install.sh | sh
 ```
 
 `init` is idempotent and does everything:
@@ -73,28 +73,60 @@ fresh credentials on the next call — no restart, no context loss.
 | `scopegate approve <id> [--ttl <t>]` / `deny <id> --reason <r>` | Human-side approval of escalated capability requests (TTY or `SCOPEGATE_APPROVAL_TOKEN`) |
 | `scopegate policies review` / `accept <n>` / `reject <n>` | Human review of agent-proposed policy rules (`policies.pending.yaml`) |
 | `scopegate cloud serve [--port <n>] [--home <dir>]` | Run the ScopeGate Cloud control plane (landing at `/`, panel at `/panel`, multi-tenant API at `/v1`) |
+| `scopegate cloud enroll --cloud <url> --token <t>` | Enroll this gateway into a control plane (writes `cloud.json`) |
+| `scopegate git-credential` | Git credential-helper: `git credential fill` gets a fresh GitHub App installation token, governed by `git:credential:<path>` policies |
+| `scopegate inject --ref <r> --out <f> [--template …]` · `--refresh <f>` | Materialize a vault secret into a legacy config file (approval by default, atomic 0600, sha256-only audit) |
+| `scopegate honeytoken plant <name>` | Plant a decoy credential (`canary:<name>`) whose use triggers surgical revocation |
 
 ## Agent tools (MCP)
 
-Exposed by `scopegate start`; the agent self-manages through them.
+Exposed by `scopegate start`; the agent self-manages through them (21 tools).
 
 | Tool | Use when |
 |---|---|
-| `scopegate_request_capability` | Before privileged actions — returns a TTL grant, or `pending_human_approval` with an `approval_id` when a human must approve |
+| `scopegate_request_capability` | Before privileged actions — returns a TTL grant, or `pending_human_approval` with an `approval_id`; `wait: true` long-polls the decision inline; `execute_on_approval` queues the intended call |
+| `scopegate_request_capabilities` | Batch: up to 20 capability requests in one call, per-item outcomes |
 | `scopegate_list_capabilities` | Active grants and remaining TTL |
-| `scopegate_register_upstream` | Connect a new service (never accepts secret values, only `secretRef` names) |
+| `scopegate_register_upstream` | Connect a new service (never accepts secret values, only `secretRef` names; also `from_registry` 1-click) |
 | `scopegate_diagnose` | Any auth/connection error — self-repair with `action_required` hints |
 | `scopegate_propose_policy` | A needed capability was denied — lands in `policies.pending.yaml` for human review |
 | `scopegate_vault_status` | Which secretRef **names** exist (never values) |
+| `scopegate_collect` / `scopegate_wait` | Collect / long-poll an approval-continuation outcome |
+| `scopegate_upstream_health` | Per-upstream liveness, oauth state and circuit-breaker state |
+| `scopegate_can_i` / `scopegate_policy_summary` | Read-only policy preflight and session-start digest — plan before acting |
+| `scopegate_recall` / `scopegate_events` | Session memory from the signed audit; metadata-only event tail for host UIs |
+| `scopegate_open_task_lease` / `scopegate_renew_capability` | Long-task leases (double budget) and agent-driven grant renewal |
+| `scopegate_request_plan` | Submit a whole task plan — ONE aggregated approval with the full blast radius |
+| `scopegate_result_get` / `scopegate_result_grep` | Page/search oversized results via handles (context window never flooded) |
+| `scopegate_delegate` | Attenuated sub-grants for subagents (scope ⊆ parent, dies with the parent) |
+| `scopegate_inject_file` | Materialize a vault secret into a file (governed exception; approval by default) |
+
+## Library API (embed the gateway in-process)
+
+```ts
+import { createGatewayServer } from "scopegate";
+
+const gw = await createGatewayServer({ agentId: "my-worker" });
+// gw.server is the full agent-facing MCP server — connect any transport.
+await gw.close();
+```
+
+No subprocess, no daemons (opt-in), throws instead of `process.exit`. For
+consumer integration tests, `scopegate/testkit` ships a fake upstream and
+`bootFakeGateway()` wired to an MCP client over in-memory transport — no real
+credentials needed. Experimental in v0.x; strict semver from v1.
 
 ## Configuration
 
 Two files in `~/.scopegate/` (both secret-free; secrets live only in the vault):
 
-- `scopegate.yaml` — upstream registry ([example](scopegate.example.yaml))
+- `scopegate.yaml` — upstream registry ([example](scopegate.example.yaml)),
+  transports `stdio` / `http` / `openapi` (OpenAPI 3 spec → one governed tool
+  per operation, no bridge needed)
 - `policies.yaml` — policy engine rules ([example](policies.example.yaml)):
   `limits` (`max_ttl`, `deny` globs, `rate_limit`, `approval_ttl`),
-  `auto_approve`, `require: human_approval`, `redact: [pii]`
+  `auto_approve`, `require: human_approval`, `redact: [pii]`,
+  `when:` (argument guards — e.g. auto-approve only on `kimi/*` branches)
 
 Auth types per upstream:
 
@@ -131,10 +163,14 @@ in the signed registry (`scopegate_register_upstream {from_registry}`):
 
 | Upstream | Tools | Auth |
 |---|---|---|
-| `huly` | 13 tools: tracker (create/update/comment/search issues, projects), documents, chunter (channels/messages/threads), contacts | `huly` (vault blob `{email,password,workspace}` → minted workspace token) |
+| `huly` | 16 tools: tracker (create/read/update/comment/search issues incl. comments, milestone/dueDate, assignee filter; projects), documents, chunter (post/edit messages, threads, thinking flag), contacts | `huly` (vault blob `{email,password,workspace}` → minted workspace token) |
 | `railway` | 7 tools: list/status/deploy/redeploy/logs/variables(names only)/domains | `env` (`RAILWAY_TOKEN` account-scoped) |
 | `cloudflare` | 8 tools: zones, DNS list/create/update/delete, workers, pages, R2 | `env` (scoped API token) |
 | `google` | 7 tools: Drive list/search/read, Gmail send/list, Calendar list/create | `google_sa` (SA JWT → access token) |
+
+Plus: `github-official` in the registry (GitHub's own remote MCP with
+`github_app` auth — ~1h installation tokens, no PAT), and the `openapi`
+transport that turns any OpenAPI 3 spec into a governed upstream.
 
 Their manifests ship signed in [`registry/`](registry/README.md);
 `docs/Implementacion/EPIC-13..18` has the design docs.
@@ -205,8 +241,10 @@ approval-sync (all fail-soft: a dead cloud never blocks a tool call).
 Access today: the panel authenticates with the control plane's admin token
 (env `ADMIN_TOKEN`) — dev-grade by design; SSO with per-team roles
 (owner/approver/viewer) plugs into the same API via the `SsoAdapter`
-interface (`src/cloud/server/sso.ts`). Persistence is the dev-grade
-`FileStore` behind the `Store` interface — the swap point for Postgres.
+interface (`src/cloud/server/sso.ts`). Persistence: the `FileStore` (default)
+or `PostgresStore` when `SCOPEGATE_CLOUD_DATABASE_URL` is set — both behind
+the `Store` interface, with configurable audit retention
+(`SCOPEGATE_CLOUD_AUDIT_RETENTION_DAYS`).
 Verify the whole plane: `node e2e-cloud.mjs` (enroll → sync → central audit →
 panel approval loop → fleet revocation → local-first) and `node
 e2e-landing.mjs` (static routing contract).

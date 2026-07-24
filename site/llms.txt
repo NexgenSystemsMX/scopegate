@@ -16,8 +16,8 @@
 - [Agent guides index](https://scopegate.io/docs/agents/): Who the docs are for and how to consume them.
 - [01 — Quickstart: self-install](https://scopegate.io/docs/agents/01-quickstart-self-install): Detect, install and initialize ScopeGate non-interactively; the single human step (depositing secrets).
 - [02 — Protocol](https://scopegate.io/docs/agents/02-protocol): The capability lifecycle — request → grant → use → expire; what `pending_human_approval` means.
-- [03 — Tools reference](https://scopegate.io/docs/agents/03-tools-reference): The six `scopegate_*` MCP tools with exact parameters, return shapes and copy-paste JSON payloads.
-- [04 — Connectors](https://scopegate.io/docs/agents/04-connectors): Native bridges (Huly 13 tools, Railway 7, Cloudflare 8, Google 7, GitHub App) and custom MCP upstreams.
+- [03 — Tools reference](https://scopegate.io/docs/agents/03-tools-reference): The twenty-one `scopegate_*` MCP tools with exact parameters, return shapes and copy-paste JSON payloads.
+- [04 — Connectors](https://scopegate.io/docs/agents/04-connectors): Native bridges (Huly 16 tools, Railway 7, Cloudflare 8, Google 7, GitHub App), the OpenAPI importer and custom MCP upstreams.
 - [05 — Policies](https://scopegate.io/docs/agents/05-policies): Capability matching, TTL rules, hard limits, and how to propose a policy a human can approve fast.
 - [06 — Self-repair](https://scopegate.io/docs/agents/06-self-repair): The diagnose-first playbook for auth/connection errors.
 - [07 — Security rules](https://scopegate.io/docs/agents/07-security-rules): The non-negotiables and how ScopeGate enforces them.

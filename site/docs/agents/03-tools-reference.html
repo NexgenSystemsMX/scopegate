@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>03 — MCP Tools Reference — ScopeGate Docs</title>
-<meta name="description" content="Exact reference of the eighteen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/ga">
+<meta name="description" content="Exact reference of the twenty-one scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/">
 <link rel="canonical" href="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:title" content="03 — MCP Tools Reference — ScopeGate Docs">
-<meta property="og:description" content="Exact reference of the eighteen scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/ga">
+<meta property="og:description" content="Exact reference of the twenty-one scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:image" content="https://scopegate.io/og.png">
@@ -37,7 +37,7 @@
   <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>03 — MCP Tools Reference</span></nav>
   <article>
 <h1 id="03-mcp-tools-reference">03 — MCP Tools Reference</h1>
-<p>Exact reference of the eighteen <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
+<p>Exact reference of the twenty-one <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
 <h2 id="response-conventions">Response conventions</h2>
 <p>Every management tool returns its payload as pretty-printed JSON in <code>content[0].text</code> — parse it as JSON. Three fail-closed gates can deny ANY call: <strong>agent suspended</strong> (honeytoken) and <strong>agent revoked by ScopeGate Cloud</strong> deny everything until a human intervenes; <strong>audit unavailable</strong> denies the action.</p>
 <p>Failures come in two shapes:</p>

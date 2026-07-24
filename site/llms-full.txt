@@ -24,7 +24,7 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 
 1. `scopegate init` — idempotent, non-interactive: creates the encrypted vault, detects the harness (Claude Code, Kimi Code, Cursor, OpenCode, `.mcp.json`), migrates existing MCPs behind the gateway and moves plaintext secrets into the vault (restorable backup kept).
 2. Human deposits secrets once per secret: `scopegate secret add <ref>`.
-3. The agent operates by itself through six MCP tools, holding TTL grants instead of credentials. Time from init to first proxied tool call: under 90 seconds.
+3. The agent operates by itself through twenty-one MCP tools, holding TTL grants instead of credentials. Time from init to first proxied tool call: under 90 seconds.
 
 ## The twenty-one agent tools (MCP)
 

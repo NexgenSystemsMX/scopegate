@@ -1,6 +1,6 @@
 {
   "name": "scopegate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ephemeral credentials & persistent connections gateway for coding agents (Claude Code, Kimi Code, Cursor, OpenCode). The agent never holds secrets — it holds short-lived, minimum-scope capabilities.",
   "license": "Apache-2.0",
   "type": "module",

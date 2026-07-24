@@ -57,7 +57,7 @@ npx --yes scopegate@latest init   # downloads transiently and runs init
 ### C. Installer script (curl | sh), built for agents
 
 ```bash
-curl -sSL https://get.scopegate.dev | sh -s -- --yes
+curl -sSL https://scopegate.io/install.sh | sh -s -- --yes
 ```
 
 - `--yes` = fully non-interactive. Other flags: `--version X.Y.Z`, `--no-init`.

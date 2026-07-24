@@ -7,7 +7,7 @@ Target: first proxied tool call in < 90 seconds. Requirements: Node.js ≥ 20.
 
 ```bash
 npm install -g scopegate
-# or: curl -sSL https://get.scopegate.dev | sh -s -- --yes
+# or: curl -sSL https://scopegate.io/install.sh | sh -s -- --yes
 ```
 
 ## 2. Init (idempotent, non-interactive)

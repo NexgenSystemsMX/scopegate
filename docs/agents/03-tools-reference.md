@@ -1,6 +1,6 @@
 # 03 — MCP Tools Reference
 
-Exact reference of the eighteen `scopegate_*` management tools, plus how proxied
+Exact reference of the twenty-one `scopegate_*` management tools, plus how proxied
 upstream tools (`<upstream>__<tool>`) work. Every shape here is traceable to
 `src/gateway/tools.ts`, `src/gateway/server.ts` and `src/policy/engine.ts`.
 Read [02 — Agent Protocol](./02-protocol.md) first; use this as its lookup table.
