@@ -99,6 +99,23 @@
 <p>   the SAME capability string.** The engine materializes a one-shot grant    from the decision and returns it (<code>granted: true</code>). A different string    starts a brand-new approval cycle — you just reset your own clock.</p>
 <ol><li><strong>If the request expired</strong> (no decision before <code>approval_expires_at</code>),</li></ol>
 <p>   re-request the same capability to open a fresh one and tell the human the    previous approval lapsed. <strong>If the human denied it</strong>, do not re-ask — drop    that path or use <code>scopegate_propose_policy</code> with a stronger justification.</p>
+<h3 id="4b-the-better-path-approval-continuation-execute-on-approval">4b. The better path: approval continuation (<code>execute_on_approval</code>)</h3>
+<p>Polling for an approval burns turns and tokens, and an approval that lands after you abandoned the task is wasted. Attach the exact call to the request and the approval becomes a continuation — queued, then executed by the gateway the moment the human approves (from the CLI or the cloud panel):</p>
+<pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 1, &quot;method&quot;: &quot;tools/call&quot;,
+  &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_request_capability&quot;,
+              &quot;arguments&quot;: {
+                &quot;capability&quot;: &quot;github:call:create_pull_request&quot;,
+                &quot;reason&quot;: &quot;Open the fix PR&quot;,
+                &quot;execute_on_approval&quot;: {
+                  &quot;tool&quot;: &quot;github__create_pull_request&quot;,
+                  &quot;args&quot;: { &quot;owner&quot;: &quot;easyorder&quot;, &quot;repo&quot;: &quot;api&quot;, &quot;title&quot;: &quot;fix&quot;, &quot;head&quot;: &quot;fix/x&quot;, &quot;base&quot;: &quot;main&quot; }
+                } } } }</code></pre>
+<p>Rules, all fail-closed: the intent&#39;s derived capability must EQUAL the requested one (the human approves exactly what they see — no smuggling), and the intent dies with the approval window (<code>approval_ttl</code>). The response carries <code>continuation.queued: true</code>. Then:</p>
+<ul><li><code>scopegate_wait {approval_id, timeout_s}</code> for short waits (long-poll, max</li></ul>
+<p>  120 s — never a polling loop), or</p>
+<ul><li><code>scopegate_collect {approval_id}</code> any time later, including after a restart:</li></ul>
+<p>  the outcome is persisted in the gateway home.</p>
+<p>On approval the intent executes with the fresh grant and the upstream result (or the failure) is stored for collection. The audit records the intent hash and the outcome hash — never the payloads.</p>
 <h2 id="5-suspended-the-gateway-has-contained-you">5. <code>suspended</code>: the gateway has contained you</h2>
 <p>If any response tells you the agent is <code>SUSPENDED</code>, a security tripwire fired — almost always a honeytoken: a decoy <code>canary:&lt;name&gt;</code> ref was used as a credential (<code>register_upstream</code>), named in a capability (<code>request_capability</code>), or seen outside the gateway. In enforce mode (the default) every one of your live grants was revoked and the gateway now denies EVERY request from you, fail-closed:</p>
 <pre class="code"><code>Agent &#39;kimi-code&#39; is SUSPENDED: honeytoken &#39;deploy&#39; (canary:deploy) used via

@@ -345,3 +345,197 @@ export function shortenApprovalRequestTtl(id: string, newTtl: string): void {
   atomicWriteFileSync(APPROVALS_PENDING_PATH, out);
   caches.delete(APPROVALS_PENDING_PATH);
 }
+
+/* ------------------------------------------------------------------------ */
+/* Approval continuation (mejora #2): intents + results                      */
+/*                                                                          */
+/* An agent may attach `execute_on_approval: {tool, args}` to a capability   */
+/* request that escalates to human approval. The gateway queues the INTENT   */
+/* here; when the approval is decided "approved" (CLI or cloud panel), the   */
+/* engine's materialization step executes the intent with the fresh grant    */
+/* and persists the outcome. The agent learns the result via                 */
+/* scopegate_collect / scopegate_wait instead of polling-burning turns.      */
+/*                                                                          */
+/* FILE CONTRACT (append-only JSONL, 0600, same trust level as the rest of   */
+/* ~/.scopegate):                                                            */
+/*   approvals.intents.jsonl  — one ApprovalIntent per line. args are stored */
+/*     verbatim (needed to execute) — local disk only, NEVER audited.        */
+/*   approval-results.jsonl   — one IntentResult per line. Results are       */
+/*     stored verbatim for collection; the AUDIT only records their hash.    */
+/* ------------------------------------------------------------------------ */
+
+export const APPROVALS_INTENTS_PATH = path.join(
+  SCOPEGATE_DIR,
+  "approvals.intents.jsonl",
+);
+export const APPROVALS_RESULTS_PATH = path.join(
+  SCOPEGATE_DIR,
+  "approval-results.jsonl",
+);
+
+export interface ApprovalIntent {
+  id: string;
+  approvalId: string;
+  agentId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  /** sha256 of canonical args — what the audit records (never the values). */
+  argsHash: string;
+  status: "queued" | "executed" | "failed" | "expired";
+  createdAt: number;
+  expiresAt: number;
+}
+
+export interface IntentResult {
+  intentId: string;
+  approvalId: string;
+  agentId: string;
+  tool: string;
+  status: "executed" | "failed";
+  result?: unknown;
+  error?: string;
+  executedAt: number;
+  durationMs: number;
+}
+
+function asApprovalIntent(v: unknown): ApprovalIntent | null {
+  if (!v || typeof v !== "object") return null;
+  const r = v as Record<string, unknown>;
+  if (
+    typeof r.id !== "string" ||
+    typeof r.approvalId !== "string" ||
+    typeof r.agentId !== "string" ||
+    typeof r.tool !== "string" ||
+    typeof r.args !== "object" ||
+    r.args === null ||
+    typeof r.status !== "string" ||
+    typeof r.createdAt !== "number" ||
+    typeof r.expiresAt !== "number"
+  ) {
+    return null;
+  }
+  return r as unknown as ApprovalIntent;
+}
+
+function asIntentResult(v: unknown): IntentResult | null {
+  if (!v || typeof v !== "object") return null;
+  const r = v as Record<string, unknown>;
+  if (
+    typeof r.intentId !== "string" ||
+    typeof r.approvalId !== "string" ||
+    (r.status !== "executed" && r.status !== "failed") ||
+    typeof r.executedAt !== "number"
+  ) {
+    return null;
+  }
+  return r as unknown as IntentResult;
+}
+
+export function readIntents(): ApprovalIntent[] {
+  return readJsonlFresh(APPROVALS_INTENTS_PATH, asApprovalIntent);
+}
+
+export function readIntentResults(): IntentResult[] {
+  return readJsonlFresh(APPROVALS_RESULTS_PATH, asIntentResult);
+}
+
+/** sha256 over the canonical JSON of the args (audit-safe reference). */
+export function hashArgs(args: Record<string, unknown>): string {
+  return crypto.createHash("sha256").update(JSON.stringify(args)).digest("hex");
+}
+
+/**
+ * Queue an intent for execution-on-approval. Idempotent per approvalId — a
+ * re-request with the same open approval returns the existing intent.
+ */
+export function queueIntent(input: {
+  approvalId: string;
+  agentId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  expiresAt: number;
+}): ApprovalIntent {
+  const existing = readIntents().find(
+    (i) => i.approvalId === input.approvalId && i.status === "queued",
+  );
+  if (existing) return existing;
+  const intent: ApprovalIntent = {
+    id: crypto.randomUUID(),
+    approvalId: input.approvalId,
+    agentId: input.agentId,
+    tool: input.tool,
+    args: input.args,
+    argsHash: hashArgs(input.args),
+    status: "queued",
+    createdAt: Date.now(),
+    expiresAt: input.expiresAt,
+  };
+  ensureDir();
+  fs.appendFileSync(APPROVALS_INTENTS_PATH, JSON.stringify(intent) + "\n", {
+    mode: 0o600,
+  });
+  return intent;
+}
+
+/** The queued intent for an approval, if any (fresh mtime-checked read). */
+export function pendingIntentFor(approvalId: string): ApprovalIntent | undefined {
+  return readIntents().find((i) => i.approvalId === approvalId && i.status === "queued");
+}
+
+/** The latest intent for an approval regardless of status. */
+export function latestIntentFor(approvalId: string): ApprovalIntent | undefined {
+  const all = readIntents().filter((i) => i.approvalId === approvalId);
+  return all.length > 0 ? all[all.length - 1] : undefined;
+}
+
+/** The stored result for an approval (or intent id), if executed. */
+export function resultFor(id: string): IntentResult | undefined {
+  const all = readIntentResults();
+  return (
+    all.find((r) => r.approvalId === id) ??
+    all.filter((r) => r.intentId === id).pop()
+  );
+}
+
+/**
+ * Persist the outcome of an executed intent and flip the intent's status
+ * (atomic read-merge-write, foreign lines preserved byte-for-byte).
+ */
+export function storeIntentResult(result: IntentResult): void {
+  ensureDir();
+  fs.appendFileSync(APPROVALS_RESULTS_PATH, JSON.stringify(result) + "\n", {
+    mode: 0o600,
+  });
+  caches.delete(APPROVALS_INTENTS_PATH);
+  const lines = readIntents().map((i) =>
+    i.approvalId === result.approvalId && i.status === "queued"
+      ? { ...i, status: result.status as ApprovalIntent["status"] }
+      : i,
+  );
+  ensureDir();
+  atomicWriteFileSync(
+    APPROVALS_INTENTS_PATH,
+    lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+  );
+  caches.delete(APPROVALS_INTENTS_PATH);
+}
+
+/** Mark queued intents whose window closed (called by the engine's refresh). */
+export function expireStaleIntents(now: number): string[] {
+  const stale = readIntents().filter(
+    (i) => i.status === "queued" && i.expiresAt <= now,
+  );
+  if (stale.length === 0) return [];
+  const updates = new Map(stale.map((i) => [i.id, i]));
+  caches.delete(APPROVALS_INTENTS_PATH);
+  const lines = readIntents().map((i) =>
+    updates.has(i.id) ? { ...i, status: "expired" as const } : i,
+  );
+  ensureDir();
+  atomicWriteFileSync(
+    APPROVALS_INTENTS_PATH,
+    lines.map((l) => JSON.stringify(l)).join("\n") + "\n",
+  );
+  caches.delete(APPROVALS_INTENTS_PATH);
+  return stale.map((i) => i.approvalId);
+}

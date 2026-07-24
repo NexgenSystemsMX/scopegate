@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>03 — MCP Tools Reference — ScopeGate Docs</title>
-<meta name="description" content="Exact reference of the six scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gateway">
+<meta name="description" content="Exact reference of the nine scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gatewa">
 <link rel="canonical" href="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:title" content="03 — MCP Tools Reference — ScopeGate Docs">
-<meta property="og:description" content="Exact reference of the six scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gateway">
+<meta property="og:description" content="Exact reference of the nine scopegate_* management tools, plus how proxied upstream tools (&lt;upstream&gt;__&lt;tool&gt;) work. Every shape here is traceable to src/gatewa">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://scopegate.io/docs/agents/03-tools-reference">
 <meta property="og:image" content="https://scopegate.io/og.png">
@@ -37,12 +37,40 @@
   <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/">ScopeGate</a><span class="sep">/</span><a href="/docs/">Docs</a><span class="sep">/</span><a href="/docs/agents/">Agent guides</a><span class="sep">/</span><span>03 — MCP Tools Reference</span></nav>
   <article>
 <h1 id="03-mcp-tools-reference">03 — MCP Tools Reference</h1>
-<p>Exact reference of the six <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
+<p>Exact reference of the nine <code>scopegate_*</code> management tools, plus how proxied upstream tools (<code>&lt;upstream&gt;__&lt;tool&gt;</code>) work. Every shape here is traceable to <code>src/gateway/tools.ts</code>, <code>src/gateway/server.ts</code> and <code>src/policy/engine.ts</code>. Read <a href="/docs/agents/02-protocol">02 — Agent Protocol</a> first; use this as its lookup table.</p>
 <h2 id="response-conventions">Response conventions</h2>
-<p>Every management tool returns its payload as pretty-printed JSON in <code>content[0].text</code> — parse it as JSON. Failures are tool errors: text <code>&quot;ERROR: &lt;actionable message&gt;&quot;</code>, <code>isError: true</code>; stack traces never reach you. Three fail-closed gates can deny ANY call: <strong>agent suspended</strong> (honeytoken) and <strong>agent revoked by ScopeGate Cloud</strong> deny everything until a human intervenes; <strong>audit unavailable</strong> denies the action.</p>
+<p>Every management tool returns its payload as pretty-printed JSON in <code>content[0].text</code> — parse it as JSON. Three fail-closed gates can deny ANY call: <strong>agent suspended</strong> (honeytoken) and <strong>agent revoked by ScopeGate Cloud</strong> deny everything until a human intervenes; <strong>audit unavailable</strong> denies the action.</p>
+<p>Failures come in two shapes:</p>
+<ul><li><strong>Argument/misuse errors</strong> — text <code>&quot;ERROR: &lt;actionable message&gt;&quot;</code>, <code>isError: true</code></li></ul>
+<p>  (fix the call and retry).</p>
+<ul><li><strong>Machine-readable error envelopes</strong> (execution/policy failures) — JSON with</li></ul>
+<p>  <code>isError: true</code>. Always act on <code>kind</code> + <code>next_action</code>, never on the prose:</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;error&quot;: true,
+  &quot;kind&quot;: &quot;expired_grant | missing_scope | policy_denied | rate_limited | upstream_down | auth_broken&quot;,
+  &quot;message&quot;: &quot;one actionable line&quot;,
+  &quot;retry_after_s&quot;: 5,
+  &quot;next_action&quot;: &quot;renew | request_capability | wait | diagnose | human&quot;,
+  &quot;next_step&quot;: &quot;literal instruction for you&quot;
+}</code></pre>
+<table><thead><tr><th><code>kind</code></th><th>you should</th></tr></thead><tbody><tr><td><code>expired_grant</code></td><td><code>scopegate_renew_capability</code> (or request a fresh grant)</td></tr><tr><td><code>missing_scope</code></td><td><code>scopegate_request_capability</code> with the SAME capability</td></tr><tr><td><code>policy_denied</code></td><td>stop — human path only (<code>scopegate_propose_policy</code> or ask)</td></tr><tr><td><code>rate_limited</code></td><td>wait <code>retry_after_s</code>, never loop</td></tr><tr><td><code>upstream_down</code></td><td>wait briefly, retry once, then <code>scopegate_diagnose</code></td></tr><tr><td><code>auth_broken</code></td><td><code>scopegate_diagnose</code> for the self-repair path</td></tr></tbody></table>
+<p>Upstream availability is additionally guarded by a per-upstream <strong>circuit breaker</strong>: after 5 consecutive failures the circuit opens for 30 s (calls fail fast with an <code>upstream_down</code> envelope), then a half-open probe decides. See <code>scopegate_upstream_health</code> for the live states.</p>
 <h2 id="scopegate-request-capability">scopegate_request_capability</h2>
 <p>Request an ephemeral grant before privileged work. Capability format: <code>&lt;upstream&gt;:&lt;action&gt;:&lt;resource&gt;</code>. Request the MINIMUM scope and SHORTEST TTL.</p>
-<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>capability</code></td><td>string</td><td>yes</td><td>e.g. <code>github:write:easyorder/*</code></td></tr><tr><td><code>ttl</code></td><td>string</td><td>no</td><td><code>&#39;&lt;n&gt;s&#39;</code>, <code>&#39;&lt;n&gt;m&#39;</code> or <code>&#39;&lt;n&gt;h&#39;</code>; the policy ceiling always wins</td></tr><tr><td><code>reason</code></td><td>string</td><td>yes</td><td>one line; recorded in the audit log</td></tr></tbody></table>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>capability</code></td><td>string</td><td>yes</td><td>e.g. <code>github:write:easyorder/*</code></td></tr><tr><td><code>ttl</code></td><td>string</td><td>no</td><td><code>&#39;&lt;n&gt;s&#39;</code>, <code>&#39;&lt;n&gt;m&#39;</code> or <code>&#39;&lt;n&gt;h&#39;</code>; the policy ceiling always wins</td></tr><tr><td><code>reason</code></td><td>string</td><td>yes</td><td>one line; recorded in the audit log</td></tr><tr><td><code>execute_on_approval</code></td><td>object</td><td>no</td><td><code>{tool, args}</code> continuation — see below</td></tr></tbody></table>
+<p><strong>Approval continuation (<code>execute_on_approval</code>).</strong> When a request escalates, you may attach the exact call you intend to make: <code>{tool: &#39;&lt;upstream&gt;__&lt;tool&gt;&#39;, args: {...}}</code>. Constraints, all fail-closed: the tool&#39;s derived capability (<code>&lt;upstream&gt;:call:&lt;tool&gt;</code>) must EQUAL the requested capability (a human approves exactly what they see — no smuggling a different action), and the intent expires with the approval window. The response then carries a <code>continuation</code> block and the flow changes to fire-and-collect:</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;granted&quot;: false,
+  &quot;status&quot;: &quot;pending_human_approval&quot;,
+  &quot;approval_id&quot;: &quot;3f6b8c2e-…&quot;,
+  &quot;continuation&quot;: {
+    &quot;queued&quot;: true,
+    &quot;intent_id&quot;: &quot;d41d8cd9-…&quot;,
+    &quot;collect_with&quot;: &quot;scopegate_collect {approval_id: \&quot;3f6b8c2e-…\&quot;}&quot;,
+    &quot;wait_with&quot;: &quot;scopegate_wait {approval_id: \&quot;3f6b8c2e-…\&quot;, timeout_s: 60}&quot;
+  }
+}</code></pre>
+<p>When the human approves (CLI or cloud panel), the gateway executes the intent with the fresh grant and persists the outcome — you collect it; you do NOT re-issue the call.</p>
 <p><strong>Response — granted</strong></p>
 <pre class="code" data-lang="json"><code>{ &quot;granted&quot;: true, &quot;capability&quot;: &quot;github:write:easyorder/*&quot;, &quot;expires_in_seconds&quot;: 900, &quot;matched_rule&quot;: &quot;github:write:easyorder/*&quot; }</code></pre>
 <p><code>expires_in_seconds</code> = <code>min(requested, rule/default ceiling, limits.max_ttl)</code> (default 15m). Re-requesting a held capability is idempotent (<code>matched_rule</code> may be <code>&quot;existing_grant&quot;</code>).</p>
@@ -65,6 +93,31 @@
 <pre class="code" data-lang="json"><code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 1, &quot;method&quot;: &quot;tools/call&quot;,
   &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_request_capability&quot;,
               &quot;arguments&quot;: { &quot;capability&quot;: &quot;github:write:easyorder/*&quot;, &quot;ttl&quot;: &quot;15m&quot;, &quot;reason&quot;: &quot;Push the fix branch and open a PR&quot; } } }</code></pre>
+<h2 id="scopegate-collect">scopegate_collect</h2>
+<p>Read the outcome of an approval continuation. Triggers the approval materialization on access (an approved request executes its intent at that moment).</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>approval_id</code></td><td>string</td><td>yes</td><td>from the pending response</td></tr></tbody></table>
+<p><strong>Response — executed</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;status&quot;: &quot;executed&quot;, &quot;approval_id&quot;: &quot;3f6b8c2e-…&quot;, &quot;tool&quot;: &quot;fakegit__danger2&quot;,
+  &quot;executed_at&quot;: &quot;2026-07-23T18:21:40.102Z&quot;, &quot;duration_ms&quot;: 312,
+  &quot;result&quot;: { &quot;content&quot;: [{ &quot;type&quot;: &quot;text&quot;, &quot;text&quot;: &quot;danger2 executed&quot; }] } }</code></pre>
+<p><strong>Response — failed / pending / none</strong></p>
+<pre class="code" data-lang="json"><code>{ &quot;status&quot;: &quot;failed&quot;, &quot;approval_id&quot;: &quot;…&quot;, &quot;error&quot;: &quot;upstream said no&quot; }
+{ &quot;status&quot;: &quot;pending&quot;, &quot;approval_id&quot;: &quot;…&quot;, &quot;expires_at&quot;: &quot;…&quot; }
+{ &quot;status&quot;: &quot;none&quot;, &quot;approval_id&quot;: &quot;…&quot;, &quot;note&quot;: &quot;No continuation intent exists for this approval_id …&quot; }</code></pre>
+<h2 id="scopegate-wait">scopegate_wait</h2>
+<p>Long-poll for the outcome — prefer this over polling loops that burn turns.</p>
+<table><thead><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr></thead><tbody><tr><td><code>approval_id</code></td><td>string</td><td>yes</td><td>from the pending response</td></tr><tr><td><code>timeout_s</code></td><td>number</td><td>no</td><td>default 60, max 120</td></tr></tbody></table>
+<p>Returns the executed/failed shape as soon as it exists, <code>{status: &quot;expired&quot;}</code> when the approval window closed, or <code>{status: &quot;timeout&quot;}</code> — in which case the approval is still pending: collect later with <code>scopegate_collect</code>, never abandon the task silently.</p>
+<h2 id="scopegate-upstream-health">scopegate_upstream_health</h2>
+<p>Per-upstream health as a machine-readable report (this is <code>scopegate_diagnose</code> plus circuit-breaker state — use it before deciding to retry).</p>
+<pre class="code" data-lang="json"><code>{
+  &quot;agentId&quot;: &quot;kimi-code&quot;,
+  &quot;upstreams&quot;: {
+    &quot;fakegit&quot;: { &quot;ok&quot;: true, &quot;tools&quot;: 5, &quot;mode&quot;: &quot;fallback:injection&quot;, &quot;circuit&quot;: { &quot;state&quot;: &quot;closed&quot;, &quot;failures&quot;: 0 } },
+    &quot;notion&quot;: { &quot;ok&quot;: false, &quot;error&quot;: &quot;HTTP 401&quot;, &quot;mode&quot;: &quot;minted:oauth2&quot;, &quot;action_required&quot;: &quot;…&quot;, &quot;circuit&quot;: { &quot;state&quot;: &quot;open&quot;, &quot;failures&quot;: 5 } }
+  }
+}</code></pre>
+<p><code>circuit.state</code> is <code>closed</code> (healthy), <code>open</code> (fail-fast after 5 consecutive failures, 30 s) or <code>half_open</code> (a single probe is deciding).</p>
 <h2 id="scopegate-list-capabilities">scopegate_list_capabilities</h2>
 <p>List your active (non-expired) grants with remaining TTL. No arguments.</p>
 <pre class="code" data-lang="json"><code>{ &quot;agentId&quot;: &quot;kimi-code&quot;,
@@ -117,7 +170,7 @@
 <pre class="code" data-lang="json"><code>{ &quot;secret_refs&quot;: [&quot;github_token&quot;, &quot;grafana_token&quot;, &quot;railway_api_token&quot;] }</code></pre>
 <p>Example call: <code>{ &quot;jsonrpc&quot;: &quot;2.0&quot;, &quot;id&quot;: 6, &quot;method&quot;: &quot;tools/call&quot;, &quot;params&quot;: { &quot;name&quot;: &quot;scopegate_vault_status&quot;, &quot;arguments&quot;: {} } }</code></p>
 <h2 id="proxied-tools-upstream-tool">Proxied tools: <code>&lt;upstream&gt;__&lt;tool&gt;</code></h2>
-<p><code>tools/list</code> returns the six management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
+<p><code>tools/list</code> returns the nine management tools PLUS every tool of every connected upstream, renamed <code>&lt;upstream&gt;__&lt;toolName&gt;</code> (double underscore; description/inputSchema pass through unchanged; an upstream config may restrict exposure with an <code>exposeTools</code> allowlist).</p>
 <p>Every proxied call maps to the capability <code>&lt;upstream&gt;:call:&lt;toolName&gt;</code>. The gateway checks a live covering grant first; with none, it attempts an IMPLICIT request that succeeds only via an <code>auto_approve</code> rule. A denied call is a tool error:</p>
 <pre class="code" data-lang="text"><code>ERROR: Capability &#39;grafana:call:query&#39; not granted. Call scopegate_request_capability first (or scopegate_propose_policy if denied). Reason: No auto_approve rule matches &#39;grafana:call:query&#39; for agent &#39;kimi-code&#39;.</code></pre>
 <p>If the denial escalated, it appends <code> Approval request &lt;id&gt; is pending — ask the human to run: scopegate approve &lt;id&gt;</code>. Unknown names yield <code>ERROR: Unknown tool &#39;&lt;name&gt;&#39;</code>. Correct flow — request explicitly FIRST (the reason lands in the audit log), then call:</p>

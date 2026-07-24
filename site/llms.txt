@@ -25,7 +25,9 @@
 ## Facts
 
 - Open source, Apache-2.0. Gateway is local-first: the cloud management plane is optional and metadata-only (it never receives secret values).
-- Six MCP tools: `scopegate_request_capability`, `scopegate_list_capabilities`, `scopegate_register_upstream`, `scopegate_diagnose`, `scopegate_propose_policy`, `scopegate_vault_status`.
+- Nine MCP tools: `scopegate_request_capability`, `scopegate_list_capabilities`, `scopegate_register_upstream`, `scopegate_diagnose`, `scopegate_propose_policy`, `scopegate_vault_status`, `scopegate_collect`, `scopegate_wait`, `scopegate_upstream_health`.
+- Approval continuation: `execute_on_approval` queues the intended call; the gateway executes it the moment the human approves (CLI or panel) and the agent collects the outcome with `scopegate_collect`/`scopegate_wait` — no polling loops, no abandoned tasks.
+- Machine-readable error envelopes on every failure: `{kind, next_action, retry_after_s?}` with a per-upstream circuit breaker (fail-fast after 5 consecutive failures).
 - Token minter: gateway JWTs, GitHub App installation tokens, AWS STS, Google service-account tokens, Huly workspace tokens.
 - Signed audit trail: append-only, hash-chained, Ed25519-signed JSONL; inputs are hashed, never stored.
 - Fleet revocation via the cloud panel is effective in under 30 seconds on online gateways; offline agents' tokens expire by TTL anyway.

@@ -38,6 +38,7 @@ import type { PoolConfig, UpstreamConfig } from "../config/config.js";
 import { Vault } from "../vault/vault.js";
 import { Minter, secretRefsOf, type CredentialMode } from "../minter/minter.js";
 import { audit } from "../audit/log.js";
+import { isRateLimitMessage, parseRetryAfterS } from "./errors.js";
 import {
   OAuthRefreshDaemon,
   reauthInstruction,
@@ -248,6 +249,19 @@ export class UpstreamProxy {
   private pools = new Map<string, Pool>();
   /** EPIC-12: global attestation default (per-upstream `attestation` wins). */
   private attestationDefault: boolean;
+  /**
+   * Mejora #8: per-upstream circuit breaker. After CIRCUIT_OPEN_AFTER
+   * consecutive failed calls the circuit OPENS for CIRCUIT_RESET_MS (calls
+   * fail fast with an upstream_down envelope instead of hammering a dead
+   * service), then a single half-open probe decides: success closes it.
+   */
+  private circuits = new Map<
+    string,
+    { state: "closed" | "open" | "half_open"; failures: number; openedAt: number }
+  >();
+
+  private static readonly CIRCUIT_OPEN_AFTER = 5;
+  private static readonly CIRCUIT_RESET_MS = 30_000;
 
   constructor(
     private upstreams: UpstreamConfig[],
@@ -793,6 +807,14 @@ export class UpstreamProxy {
     let lastError: unknown;
     let refreshedAfter401 = false;
     let refreshSucceeded = false;
+    let absorbed429 = false;
+
+    // Mejora #8: circuit breaker — a dead upstream fails FAST while its
+    // circuit is open (the error classifies as upstream_down for the agent);
+    // after the reset window a single half-open probe decides.
+    const circuit = this.circuitGate(tool.upstream);
+    if (circuit !== null) throw new Error(circuit);
+
     const poolUp = up && this.poolCfgFor(up) ? up : undefined;
     // The pool is normally created by connectAll(); a call landing first
     // initializes it on demand so pooling never silently degrades to lazy.
@@ -811,12 +833,21 @@ export class UpstreamProxy {
           arguments: args,
         });
         if (handle && poolUp && pool) this.releasePoolEntry(poolUp, pool, handle, true);
+        this.circuitSuccess(tool.upstream);
         return result;
       } catch (e) {
         lastError = e;
         if (handle && poolUp && pool) {
           this.releasePoolEntry(poolUp, pool, handle, false);
           handle = null;
+        }
+        // Mejora #8: absorb ONE upstream 429 server-side — wait the hinted
+        // window (≤5 s) instead of propagating the rate-limit to the agent.
+        if (!absorbed429 && isRateLimitMessage(errorMessage(e))) {
+          absorbed429 = true;
+          const waitS = Math.min(parseRetryAfterS(errorMessage(e)) ?? 3, 5);
+          log("warn", `upstream rate limit on '${exposedName}' — absorbing a ${waitS}s wait server-side`, {});
+          await sleep(waitS * 1000);
         }
         // Auth failure on an oauth2 upstream → ONE synchronous refresh via
         // the daemon; the self-heal below then reconnects with the fresh
@@ -867,6 +898,7 @@ export class UpstreamProxy {
     log("error", `call '${exposedName}' failed after ${MAX_CALL_ATTEMPTS} attempts`, {
       error: errorMessage(lastError),
     });
+    this.circuitFailure(tool.upstream);
     // Still an auth error after a successful refresh + retry: escalate with
     // an actionable pointer instead of a bare 401.
     if (daemon && refreshSucceeded && isAuthError(lastError)) {
@@ -876,6 +908,64 @@ export class UpstreamProxy {
     }
     throw lastError;
   }
+
+  /* ------------------------------------------------------------------ */
+  /* Mejora #8: circuit breaker                                          */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Gate evaluated before a call. Returns an error message to throw when the
+   * circuit is open (fail fast), or null to proceed (closed / half-open probe).
+   */
+  private circuitGate(upstream: string): string | null {
+    const c = this.circuits.get(upstream);
+    if (!c || c.state === "closed") return null;
+    if (c.state === "open") {
+      const elapsed = Date.now() - c.openedAt;
+      if (elapsed < UpstreamProxy.CIRCUIT_RESET_MS) {
+        return (
+          `upstream '${upstream}' circuit OPEN after ${c.failures} consecutive failures — ` +
+          `retry in ~${Math.ceil((UpstreamProxy.CIRCUIT_RESET_MS - elapsed) / 1000)}s ` +
+          `(upstream_down; a half-open probe decides then)`
+        );
+      }
+      c.state = "half_open"; // one probe decides
+      return null;
+    }
+    return null; // half_open: the probe is already being allowed
+  }
+
+  private circuitSuccess(upstream: string): void {
+    this.circuits.set(upstream, { state: "closed", failures: 0, openedAt: 0 });
+  }
+
+  private circuitFailure(upstream: string): void {
+    const c = this.circuits.get(upstream) ?? { state: "closed" as const, failures: 0, openedAt: 0 };
+    c.failures += 1;
+    if (c.state === "half_open" || c.failures >= UpstreamProxy.CIRCUIT_OPEN_AFTER) {
+      c.state = "open";
+      c.openedAt = Date.now();
+      log("warn", `circuit OPEN on upstream '${upstream}' (${c.failures} consecutive failures)`, {});
+    }
+    this.circuits.set(upstream, c);
+  }
+
+  /** Circuit state per upstream, for scopegate_upstream_health. */
+  public circuitReport(): Record<
+    string,
+    { state: "closed" | "open" | "half_open"; failures: number }
+  > {
+    const out: Record<string, { state: "closed" | "open" | "half_open"; failures: number }> = {};
+    for (const up of this.upstreams.filter((u) => u.enabled !== false)) {
+      const c = this.circuits.get(up.name);
+      out[up.name] = { state: c?.state ?? "closed", failures: c?.failures ?? 0 };
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Mejora #8: circuit breaker — end                                    */
+  /* ------------------------------------------------------------------ */
 
   /**
    * Health check used by scopegate_diagnose. Never rejects. For oauth2

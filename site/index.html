@@ -151,7 +151,7 @@
       <div class="fact"><span class="fact-num">&lt;90s</span><span class="fact-lbl">install → first tool call</span></div>
       <div class="fact"><span class="fact-num">&lt;30s</span><span class="fact-lbl">fleet revocation, online</span></div>
       <div class="fact"><span class="fact-num">0</span><span class="fact-lbl">secrets in the model's context</span></div>
-      <div class="fact"><span class="fact-num">6</span><span class="fact-lbl">MCP tools for the agent</span></div>
+      <div class="fact"><span class="fact-num">9</span><span class="fact-lbl">MCP tools for the agent</span></div>
       <div class="fact"><span class="fact-num">5</span><span class="fact-lbl">native connectors</span></div>
       <div class="fact"><span class="fact-num">Apache-2.0</span><span class="fact-lbl">open source, self-hosted</span></div>
     </div>
@@ -392,6 +392,22 @@ first tool call at 87s — zero secrets in context</pre>
           touches them — exfiltration attempts contain themselves.
         </p>
       </div>
+      <div class="card">
+        <h3>Approval continuation</h3>
+        <p>
+          The agent queues the exact call with <code>execute_on_approval</code>; the gateway
+          runs it the moment a human approves — from the CLI or the panel. No polling
+          loops, no abandoned tasks: approvals <em>complete work</em>.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Machine-readable errors + circuit breaker</h3>
+        <p>
+          Every failure is a structured envelope — <code>{kind, next_action, retry_after_s}</code> —
+          so agents decide retry/renew/escalate without guessing. Dead upstreams fail
+          fast behind a per-upstream circuit breaker; 429s are absorbed server-side.
+        </p>
+      </div>
     </div>
   </div>
 </section>
@@ -496,7 +512,7 @@ first tool call at 87s — zero secrets in context</pre>
       </div>
       <div class="card">
         <h3>Human approvals</h3>
-        <p>Escalated capability requests land in a queue. Approve or deny from the panel or Slack — the gateway applies the decision in seconds.</p>
+        <p>Escalated capability requests land in a queue. Approve or deny from the panel or Slack — and approving can <em>execute the agent's queued call on the spot</em>, so the task completes instead of just unblocking.</p>
       </div>
       <div class="card">
         <h3>Fleet revocation</h3>

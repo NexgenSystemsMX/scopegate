@@ -197,6 +197,8 @@ describe("audit signing (EPIC-07)", () => {
       "policy_accepted", "policy_rejected", "grant_issued", "grant_expired",
       "grants_revoked", "redaction_applied", "policy_reload_error",
       "honeytoken_triggered", "agent_revoked",
+      // Mejoras del agente (append-only, wave A): approval continuation.
+      "intent_queued", "intent_executed",
     ];
     expect([...AUDIT_KINDS].sort()).toEqual(expected.sort());
   });

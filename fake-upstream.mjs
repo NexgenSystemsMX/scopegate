@@ -416,6 +416,7 @@ if (process.argv.includes("--oauth")) {
     tools: [
       { name: "whoami", description: "Returns auth status", inputSchema: { type: "object", properties: {} } },
       { name: "danger", description: "Privileged operation (never auto-approved in e2e)", inputSchema: { type: "object", properties: {} } },
+      { name: "danger2", description: "Second privileged operation (approval-continuation fixture)", inputSchema: { type: "object", properties: {} } },
       PII_TOOL,
       LEAKY_TOOL,
     ],
@@ -424,6 +425,9 @@ if (process.argv.includes("--oauth")) {
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (req.params.name === "danger") {
       return { content: [{ type: "text", text: "danger executed" }] };
+    }
+    if (req.params.name === "danger2") {
+      return { content: [{ type: "text", text: "danger2 executed" }] };
     }
     if (req.params.name === "pii_echo") {
       return { content: [{ type: "text", text: PII_TEXT }] };

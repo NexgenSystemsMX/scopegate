@@ -112,6 +112,9 @@ async function main() {
             { match: "fakegit:call:slow", auto_approve: true, ttl: "45m" },
             // escalates to the human-approval queue
             { match: "fakegit:call:danger", require: "human_approval", ttl: "10m" },
+            // approval-continuation fixture (mejora #2) — separate capability
+            // so its grant lifecycle never collides with the danger flow
+            { match: "fakegit:call:danger2", require: "human_approval", ttl: "10m" },
             // PII in the RESPONSE is masked under this rule
             { match: "fakegit:call:pii_echo", auto_approve: true, ttl: "5m", redact: ["pii"] },
           ],
@@ -320,6 +323,77 @@ async function main() {
     const dangerNow = await client.callTool({ name: "fakegit__danger", arguments: {} });
     assert.notEqual(dangerNow.isError, true, `approved proxied call failed: ${dangerNow.content[0].text}`);
     pass("require: human_approval → pending → approved on disk → one-shot grant (600s) → call passes");
+
+    // 16b. Mejora #2 (approval continuation): execute_on_approval queues the
+    // intent → human approves on disk → the gateway EXECUTES the intent with
+    // the fresh grant → scopegate_wait/collect return the upstream result.
+    const contReq = parse(
+      await client.callTool({
+        name: "scopegate_request_capability",
+        arguments: {
+          capability: "fakegit:call:danger2",
+          ttl: "10m",
+          reason: "continuation e2e",
+          execute_on_approval: { tool: "fakegit__danger2", args: {} },
+        },
+      }),
+    );
+    assert.equal(contReq.status, "pending_human_approval", `expected pending, got: ${JSON.stringify(contReq)}`);
+    assert.equal(contReq.continuation?.queued, true, `continuation not queued: ${JSON.stringify(contReq)}`);
+    assert.ok(contReq.continuation.intent_id, "continuation must carry intent_id");
+    const contApprovalId = contReq.approval_id;
+    // A mismatched intent capability is refused fail-closed (no smuggling).
+    const mismatch = await client.callTool({
+      name: "scopegate_request_capability",
+      arguments: {
+        capability: "fakegit:call:danger2",
+        ttl: "10m",
+        reason: "smuggle attempt",
+        execute_on_approval: { tool: "fakegit__whoami", args: {} },
+      },
+    });
+    assert.equal(mismatch.isError, true, "intent/capability mismatch must be rejected");
+    assert.match(mismatch.content[0].text, /must equal the requested capability/);
+    pass("execute_on_approval queues the continuation (mismatched intents refused fail-closed)");
+    // The human approves on disk — the gateway executes the intent itself.
+    fs.appendFileSync(
+      path.join(home, "approvals.decisions.jsonl"),
+      JSON.stringify({ id: contApprovalId, decision: "approved", decidedAt: Date.now(), decidedBy: "human:e2e" }) + "\n",
+      { mode: 0o600 },
+    );
+    const collected = parse(
+      await client.callTool({
+        name: "scopegate_wait",
+        arguments: { approval_id: contApprovalId, timeout_s: 15 },
+      }),
+    );
+    assert.equal(collected.status, "executed", `intent must be executed, got: ${JSON.stringify(collected)}`);
+    assert.equal(collected.tool, "fakegit__danger2");
+    assert.ok(
+      JSON.stringify(collected.result).includes("danger2 executed"),
+      `intent result must be the upstream payload: ${JSON.stringify(collected.result)}`,
+    );
+    // scopegate_collect reads the same stored outcome again (idempotent).
+    const recollect = parse(
+      await client.callTool({ name: "scopegate_collect", arguments: { approval_id: contApprovalId } }),
+    );
+    assert.equal(recollect.status, "executed");
+    pass("approval continuation: approve → gateway executes → wait/collect return the result");
+
+    // 16c. Mejora #8: machine-readable error envelopes + upstream health tool.
+    const health = parse(await client.callTool({ name: "scopegate_upstream_health", arguments: {} }));
+    assert.ok(health.upstreams?.fakegit, `health must cover fakegit: ${JSON.stringify(health)}`);
+    assert.equal(health.upstreams.fakegit.circuit.state, "closed");
+    assert.equal(health.upstreams.fakegit.ok, true, `fakegit must be healthy: ${JSON.stringify(health.upstreams.fakegit)}`);
+    pass("scopegate_upstream_health reports liveness + circuit state per upstream");
+    // A denied implicit call returns a structured envelope (kind + next_action).
+    const envelope = await client.callTool({ name: "fakegit__leaky", arguments: {} });
+    assert.equal(envelope.isError, true, "not-granted tool must be an error");
+    const envParsed = JSON.parse(envelope.content[0].text);
+    assert.equal(envParsed.error, true);
+    assert.equal(envParsed.kind, "missing_scope", `expected missing_scope kind: ${envelope.content[0].text}`);
+    assert.equal(envParsed.next_action, "request_capability", `expected request_capability action: ${envelope.content[0].text}`);
+    pass("failures surface as machine-readable envelopes (kind + next_action)");
 
     // 17. redact: [pii] masks email/card in the proxied tool RESPONSE.
     const pii = await client.callTool({ name: "fakegit__pii_echo", arguments: {} });

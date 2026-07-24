@@ -1,6 +1,6 @@
 # 03 — MCP Tools Reference
 
-Exact reference of the six `scopegate_*` management tools, plus how proxied
+Exact reference of the nine `scopegate_*` management tools, plus how proxied
 upstream tools (`<upstream>__<tool>`) work. Every shape here is traceable to
 `src/gateway/tools.ts`, `src/gateway/server.ts` and `src/policy/engine.ts`.
 Read [02 — Agent Protocol](./02-protocol.md) first; use this as its lookup table.
@@ -8,10 +8,42 @@ Read [02 — Agent Protocol](./02-protocol.md) first; use this as its lookup tab
 ## Response conventions
 
 Every management tool returns its payload as pretty-printed JSON in `content[0].text`
-— parse it as JSON. Failures are tool errors: text `"ERROR: <actionable message>"`,
-`isError: true`; stack traces never reach you. Three fail-closed gates can deny ANY
-call: **agent suspended** (honeytoken) and **agent revoked by ScopeGate Cloud** deny
-everything until a human intervenes; **audit unavailable** denies the action.
+— parse it as JSON. Three fail-closed gates can deny ANY call: **agent suspended**
+(honeytoken) and **agent revoked by ScopeGate Cloud** deny everything until a human
+intervenes; **audit unavailable** denies the action.
+
+Failures come in two shapes:
+
+- **Argument/misuse errors** — text `"ERROR: <actionable message>"`, `isError: true`
+  (fix the call and retry).
+- **Machine-readable error envelopes** (execution/policy failures) — JSON with
+  `isError: true`. Always act on `kind` + `next_action`, never on the prose:
+
+```json
+{
+  "error": true,
+  "kind": "expired_grant | missing_scope | policy_denied | rate_limited | upstream_down | auth_broken",
+  "message": "one actionable line",
+  "retry_after_s": 5,
+  "next_action": "renew | request_capability | wait | diagnose | human",
+  "next_step": "literal instruction for you"
+}
+```
+
+| `kind` | you should |
+|---|---|
+| `expired_grant` | `scopegate_renew_capability` (or request a fresh grant) |
+| `missing_scope` | `scopegate_request_capability` with the SAME capability |
+| `policy_denied` | stop — human path only (`scopegate_propose_policy` or ask) |
+| `rate_limited` | wait `retry_after_s`, never loop |
+| `upstream_down` | wait briefly, retry once, then `scopegate_diagnose` |
+| `auth_broken` | `scopegate_diagnose` for the self-repair path |
+
+Upstream availability is additionally guarded by a per-upstream **circuit breaker**:
+after 5 consecutive failures the circuit opens for 30 s (calls fail fast with an
+`upstream_down` envelope), then a half-open probe decides. See
+`scopegate_upstream_health` for the live states.
+
 
 ## scopegate_request_capability
 
@@ -23,6 +55,31 @@ Request an ephemeral grant before privileged work. Capability format:
 | `capability` | string | yes | e.g. `github:write:easyorder/*` |
 | `ttl` | string | no | `'<n>s'`, `'<n>m'` or `'<n>h'`; the policy ceiling always wins |
 | `reason` | string | yes | one line; recorded in the audit log |
+| `execute_on_approval` | object | no | `{tool, args}` continuation — see below |
+
+**Approval continuation (`execute_on_approval`).** When a request escalates, you
+may attach the exact call you intend to make: `{tool: '<upstream>__<tool>', args: {...}}`.
+Constraints, all fail-closed: the tool's derived capability (`<upstream>:call:<tool>`)
+must EQUAL the requested capability (a human approves exactly what they see — no
+smuggling a different action), and the intent expires with the approval window.
+The response then carries a `continuation` block and the flow changes to fire-and-collect:
+
+```json
+{
+  "granted": false,
+  "status": "pending_human_approval",
+  "approval_id": "3f6b8c2e-…",
+  "continuation": {
+    "queued": true,
+    "intent_id": "d41d8cd9-…",
+    "collect_with": "scopegate_collect {approval_id: \"3f6b8c2e-…\"}",
+    "wait_with": "scopegate_wait {approval_id: \"3f6b8c2e-…\", timeout_s: 60}"
+  }
+}
+```
+
+When the human approves (CLI or cloud panel), the gateway executes the intent with the
+fresh grant and persists the outcome — you collect it; you do NOT re-issue the call.
 
 **Response — granted**
 
@@ -76,6 +133,62 @@ call); `… references honeytoken '<ref>' …` (canary mentioned; incident recor
   "params": { "name": "scopegate_request_capability",
               "arguments": { "capability": "github:write:easyorder/*", "ttl": "15m", "reason": "Push the fix branch and open a PR" } } }
 ```
+
+## scopegate_collect
+
+Read the outcome of an approval continuation. Triggers the approval materialization
+on access (an approved request executes its intent at that moment).
+
+| field | type | required | notes |
+|---|---|---|---|
+| `approval_id` | string | yes | from the pending response |
+
+**Response — executed**
+
+```json
+{ "status": "executed", "approval_id": "3f6b8c2e-…", "tool": "fakegit__danger2",
+  "executed_at": "2026-07-23T18:21:40.102Z", "duration_ms": 312,
+  "result": { "content": [{ "type": "text", "text": "danger2 executed" }] } }
+```
+
+**Response — failed / pending / none**
+
+```json
+{ "status": "failed", "approval_id": "…", "error": "upstream said no" }
+{ "status": "pending", "approval_id": "…", "expires_at": "…" }
+{ "status": "none", "approval_id": "…", "note": "No continuation intent exists for this approval_id …" }
+```
+
+## scopegate_wait
+
+Long-poll for the outcome — prefer this over polling loops that burn turns.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `approval_id` | string | yes | from the pending response |
+| `timeout_s` | number | no | default 60, max 120 |
+
+Returns the executed/failed shape as soon as it exists, `{status: "expired"}` when the
+approval window closed, or `{status: "timeout"}` — in which case the approval is still
+pending: collect later with `scopegate_collect`, never abandon the task silently.
+
+## scopegate_upstream_health
+
+Per-upstream health as a machine-readable report (this is `scopegate_diagnose` plus
+circuit-breaker state — use it before deciding to retry).
+
+```json
+{
+  "agentId": "kimi-code",
+  "upstreams": {
+    "fakegit": { "ok": true, "tools": 5, "mode": "fallback:injection", "circuit": { "state": "closed", "failures": 0 } },
+    "notion": { "ok": false, "error": "HTTP 401", "mode": "minted:oauth2", "action_required": "…", "circuit": { "state": "open", "failures": 5 } }
+  }
+}
+```
+
+`circuit.state` is `closed` (healthy), `open` (fail-fast after 5 consecutive failures,
+30 s) or `half_open` (a single probe is deciding).
 
 ## scopegate_list_capabilities
 
@@ -217,7 +330,7 @@ Example call: `{ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { 
 
 ## Proxied tools: `<upstream>__<tool>`
 
-`tools/list` returns the six management tools PLUS every tool of every connected upstream,
+`tools/list` returns the nine management tools PLUS every tool of every connected upstream,
 renamed `<upstream>__<toolName>` (double underscore; description/inputSchema pass through
 unchanged; an upstream config may restrict exposure with an `exposeTools` allowlist).
 

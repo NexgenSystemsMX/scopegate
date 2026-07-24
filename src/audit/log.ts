@@ -70,6 +70,9 @@ export const AUDIT_KINDS = [
   "policy_reload_error",
   "honeytoken_triggered",
   "agent_revoked",
+  // Mejoras del agente (append-only, wave A): approval continuation.
+  "intent_queued",
+  "intent_executed",
 ] as const;
 
 export type AuditKind = (typeof AUDIT_KINDS)[number];

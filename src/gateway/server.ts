@@ -28,6 +28,7 @@
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import crypto from "node:crypto";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -47,6 +48,13 @@ import { redactToolResult } from "../policy/redact.js";
 import { trackEvent } from "../telemetry/telemetry.js";
 import { UpstreamProxy, log, errorMessage } from "./proxy.js";
 import { MANAGEMENT_TOOLS } from "./tools.js";
+import { classifyError } from "./errors.js";
+import {
+  queueIntent,
+  latestIntentFor,
+  resultFor,
+  type ApprovalIntent,
+} from "../policy/approvals.js";
 import { audit } from "../audit/log.js";
 import {
   honeytokenCheckpoint,
@@ -76,6 +84,17 @@ function text(payload: unknown) {
 
 function err(message: string) {
   return { ...text(`ERROR: ${message}`), isError: true };
+}
+
+/** sha256 over the JSON of a result payload — what the audit records (never the payload). */
+function hashResult(result: unknown): string {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(result) ?? "null";
+  } catch {
+    serialized = "[unserializable]";
+  }
+  return crypto.createHash("sha256").update(serialized).digest("hex");
 }
 
 /**
@@ -220,6 +239,41 @@ function createAgentServer(deps: {
   agentId: string;
 }): Server {
   const { cfg, proxy, policy, vault, agentId } = deps;
+
+  // Mejora #2 (approval continuation): the policy engine owns the approval
+  // lifecycle; the proxy owns execution. This hook is the bridge — when an
+  // approval materializes its grant, the queued intent runs HERE with the
+  // remaining TTL of the covering grant (token_ttl clamp still applies) and
+  // the outcome is audited (hash only, never the payload).
+  policy.intentExecutor = async (intent: ApprovalIntent) => {
+    const capability = intent.tool.includes("__")
+      ? intent.tool.replace("__", ":call:")
+      : intent.tool;
+    const grant = policy.coveringGrant(intent.agentId, capability);
+    const grantTtlMs = grant ? Math.max(0, grant.expiresAt - Date.now()) : undefined;
+    const startedAt = Date.now();
+    try {
+      const result = await proxy.call(intent.tool, intent.args, { grantTtlMs });
+      auditOrThrow(intent.agentId, "intent_executed", {
+        approvalId: intent.approvalId,
+        tool: intent.tool,
+        status: "executed",
+        durationMs: Date.now() - startedAt,
+        resultHash: hashResult(result),
+      });
+      return { ok: true, result };
+    } catch (e) {
+      auditOrThrow(intent.agentId, "intent_executed", {
+        approvalId: intent.approvalId,
+        tool: intent.tool,
+        status: "failed",
+        durationMs: Date.now() - startedAt,
+        error: errorMessage(e),
+      });
+      return { ok: false, error: errorMessage(e) };
+    }
+  };
+
   const server = new Server(
     { name: "scopegate", version: "0.1.0" },
     { capabilities: { tools: {} } },
@@ -338,6 +392,52 @@ function createAgentServer(deps: {
             // H-04.3: a pending request now exists in approvals.pending.jsonl.
             // Additive to the previous {granted:false, reason, next_step}
             // contract — older clients keep working.
+            //
+            // Mejora #2 (approval continuation): execute_on_approval queues
+            // the intended call; when the human approves (CLI or panel), the
+            // gateway executes it with the fresh grant and the agent collects
+            // the outcome via scopegate_collect / scopegate_wait.
+            let continuation: Record<string, unknown> | undefined;
+            const eoa = args.execute_on_approval;
+            if (eoa !== undefined) {
+              const tool = typeof eoa === "object" && eoa !== null ? String((eoa as Record<string, unknown>).tool ?? "") : "";
+              const eoaArgs = typeof eoa === "object" && eoa !== null && typeof (eoa as Record<string, unknown>).args === "object" && (eoa as Record<string, unknown>).args !== null
+                ? (eoa as Record<string, unknown>).args as Record<string, unknown>
+                : null;
+              if (!tool || !eoaArgs) {
+                return err(
+                  "Invalid execute_on_approval — expected {tool: '<upstream>__<tool>', args: {...}}.",
+                );
+              }
+              // The intent must be covered by the SAME approval: its capability
+              // must match the requested one (no smuggling a different action).
+              const intentCapability = tool.includes("__")
+                ? tool.replace("__", ":call:")
+                : tool;
+              if (intentCapability !== capability) {
+                return err(
+                  `execute_on_approval rejected: the intent's capability '${intentCapability}' must equal the requested capability '${capability}' — a human approves exactly what they see.`,
+                );
+              }
+              const intent = queueIntent({
+                approvalId: decision.approvalId!,
+                agentId,
+                tool,
+                args: eoaArgs,
+                expiresAt: decision.approvalExpiresAt ?? Date.now() + 10 * 60 * 1000,
+              });
+              auditOrThrow(agentId, "intent_queued", {
+                approvalId: intent.approvalId,
+                tool: intent.tool,
+                argsHash: intent.argsHash,
+              });
+              continuation = {
+                queued: true,
+                intent_id: intent.id,
+                collect_with: `scopegate_collect {approval_id: "${intent.approvalId}"}`,
+                wait_with: `scopegate_wait {approval_id: "${intent.approvalId}", timeout_s: 60}`,
+              };
+            }
             return text({
               granted: false,
               status: "pending_human_approval",
@@ -346,12 +446,17 @@ function createAgentServer(deps: {
                 ? new Date(decision.approvalExpiresAt).toISOString()
                 : undefined,
               reason: decision.reason,
+              ...(continuation ? { continuation } : {}),
               instructions:
                 `A human must approve this request. Ask them to run in their terminal: ` +
                 `scopegate approve ${decision.approvalId} (or: scopegate deny ${decision.approvalId}). ` +
-                `Once approved, call scopegate_request_capability again with the SAME capability — ` +
-                `do NOT retry with broader scope.`,
-              next_step: "Ask the human to approve this action, or wait for approval.",
+                (continuation
+                  ? `On approval the queued intent executes automatically — collect it with scopegate_collect. `
+                  : `Once approved, call scopegate_request_capability again with the SAME capability — ` +
+                    `do NOT retry with broader scope.`),
+              next_step: continuation
+                ? "Wait for the human approval; the intent executes on approval — use scopegate_wait for short waits."
+                : "Ask the human to approve this action, or wait for approval.",
             });
           }
           return text({
@@ -570,6 +675,105 @@ function createAgentServer(deps: {
           return text({ secret_refs: vault.listRefs() });
         }
 
+        case "scopegate_upstream_health": {
+          // Mejora #8: health as an MCP tool (diagnose lived CLI-side only) —
+          // liveness + tool count + circuit-breaker state per upstream.
+          const [diag, circuits] = await Promise.all([
+            proxy.diagnose(),
+            Promise.resolve(proxy.circuitReport()),
+          ]);
+          const upstreams: Record<string, unknown> = {};
+          for (const [name, entry] of Object.entries(diag)) {
+            upstreams[name] = { ...entry, circuit: circuits[name] ?? { state: "closed", failures: 0 } };
+          }
+          return text({ agentId, upstreams });
+        }
+
+        case "scopegate_collect": {
+          // Mejora #2: collect the outcome of an approval continuation.
+          const approvalId = String(args.approval_id ?? "");
+          if (!approvalId) return err("Missing required argument 'approval_id'.");
+          // Trigger the engine's approval refresh: an approved request
+          // materializes its grant and EXECUTES the queued intent here (fresh
+          // mtime-checked reads — no cross-process watchers needed).
+          const pendingIntent = latestIntentFor(approvalId);
+          if (pendingIntent) {
+            policy.isGranted(
+              agentId,
+              pendingIntent.tool.includes("__")
+                ? pendingIntent.tool.replace("__", ":call:")
+                : pendingIntent.tool,
+            );
+          }
+          const result = resultFor(approvalId);
+          if (result) {
+            return text({
+              status: result.status,
+              approval_id: result.approvalId,
+              tool: result.tool,
+              executed_at: new Date(result.executedAt).toISOString(),
+              duration_ms: result.durationMs,
+              ...(result.status === "executed" ? { result: result.result } : { error: result.error }),
+            });
+          }
+          const intent = latestIntentFor(approvalId);
+          if (intent) {
+            return text({
+              status: intent.status === "queued" ? "pending" : intent.status,
+              approval_id: approvalId,
+              tool: intent.tool,
+              queued_at: new Date(intent.createdAt).toISOString(),
+              expires_at: new Date(intent.expiresAt).toISOString(),
+            });
+          }
+          return text({
+            status: "none",
+            approval_id: approvalId,
+            note: "No continuation intent exists for this approval_id (maybe it had no execute_on_approval, or the result expired).",
+          });
+        }
+
+        case "scopegate_wait": {
+          // Mejora #2: long-poll for short waits instead of turn-burning loops.
+          const approvalId = String(args.approval_id ?? "");
+          if (!approvalId) return err("Missing required argument 'approval_id'.");
+          const timeoutS = Math.min(Math.max(Number(args.timeout_s ?? 60) || 60, 1), 120);
+          const deadline = Date.now() + timeoutS * 1000;
+          while (Date.now() < deadline) {
+            // Trigger materialization/execution of the approval (if decided).
+            const pendingIntent = latestIntentFor(approvalId);
+            if (pendingIntent) {
+              policy.isGranted(
+                agentId,
+                pendingIntent.tool.includes("__")
+                  ? pendingIntent.tool.replace("__", ":call:")
+                  : pendingIntent.tool,
+              );
+            }
+            const result = resultFor(approvalId);
+            if (result) {
+              return text({
+                status: result.status,
+                approval_id: result.approvalId,
+                tool: result.tool,
+                executed_at: new Date(result.executedAt).toISOString(),
+                duration_ms: result.durationMs,
+                ...(result.status === "executed" ? { result: result.result } : { error: result.error }),
+              });
+            }
+            const intent = latestIntentFor(approvalId);
+            if (intent && intent.status === "expired") {
+              return text({ status: "expired", approval_id: approvalId, tool: intent.tool });
+            }
+            await new Promise((r) => setTimeout(r, 500));
+          }
+          return text({
+            status: "timeout",
+            approval_id: approvalId,
+            note: `No outcome after ${timeoutS}s. The approval is still pending — collect later with scopegate_collect, never abandon the task silently.`,
+          });
+        }
+
         default: {
           // Proxied upstream tool → enforce policy, audit, forward.
           const tool = proxy.resolve(name);
@@ -588,9 +792,16 @@ function createAgentServer(deps: {
                 d.escalation === "human_approval" && d.approvalId
                   ? ` Approval request ${d.approvalId} is pending — ask the human to run: scopegate approve ${d.approvalId}`
                   : "";
-              return err(
-                `Capability '${capability}' not granted. Call scopegate_request_capability first (or scopegate_propose_policy if denied). Reason: ${d.reason}${hint}`,
-              );
+              // Mejora #8: machine-readable envelope, same actionable message.
+              return {
+                ...text(
+                  classifyError({
+                    message: `Capability '${capability}' not granted. Call scopegate_request_capability first (or scopegate_propose_policy if denied). Reason: ${d.reason}${hint}`,
+                    code: d.code === "no_rule" ? "missing_scope" : d.code,
+                  }),
+                ),
+                isError: true,
+              };
             }
           }
           auditOrThrow(agentId, "tool_call", { tool: name, upstream: tool.upstream }, args);
@@ -636,7 +847,9 @@ function createAgentServer(deps: {
       log("error", `tool call '${name}' failed: ${errorMessage(e)}`, {
         stack: e instanceof Error ? e.stack : undefined,
       });
-      return err(errorMessage(e));
+      // Mejora #8: every failure is a machine-readable envelope — the agent
+      // knows the kind and the recommended next action without parsing prose.
+      return { ...text(classifyError({ message: errorMessage(e) })), isError: true };
     }
   });
 

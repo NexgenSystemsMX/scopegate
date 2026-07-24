@@ -52,9 +52,13 @@ import {
   readPendingRequests,
   readDecisions,
   updatePendingStatuses,
+  expireStaleIntents,
+  pendingIntentFor,
+  storeIntentResult,
   DEFAULT_APPROVAL_TTL_MS,
   type ApprovalRequest,
   type ApprovalStatus,
+  type ApprovalIntent,
 } from "./approvals.js";
 import {
   RateLimiter,
@@ -359,6 +363,15 @@ export class PolicyEngine {
   private teamLimiters = new Map<string, { spec: string; limiter: RateLimiter }>();
   private watcher: fs.FSWatcher | null = null;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Mejora #2 (approval continuation): injected by the gateway server (which
+   * owns the proxy) to execute queued intents when their approval is granted.
+   * Kept as a hook so the policy layer never imports the gateway layer.
+   */
+  public intentExecutor:
+    | ((intent: ApprovalIntent) => Promise<{ ok: boolean; result?: unknown; error?: string }>)
+    | null = null;
 
   constructor(policies: PoliciesFile, deps: { grants?: GrantStore } = {}) {
     this.policies = policies;
@@ -879,6 +892,7 @@ export class PolicyEngine {
       return; // unreadable queue: nothing materializes (still fail-closed)
     }
     const now = Date.now();
+    expireStaleIntents(now);
     const updates = new Map<string, { status: ApprovalStatus; resolvedAt: number }>();
     for (const req of pendings) {
       if (req.agentId !== agentId) continue;
@@ -909,6 +923,43 @@ export class PolicyEngine {
               via: "human_approval",
               approvalId: req.id,
             });
+            // Mejora #2 (approval continuation): a queued intent attached to
+            // this approval is executed NOW, with the fresh grant — the agent
+            // collects the outcome via scopegate_collect/_wait instead of
+            // re-issuing the call and burning turns. Fire-and-forget: the
+            // executor audits `intent_executed` (status + hashes) itself.
+            const intent = pendingIntentFor(req.id);
+            if (intent && this.intentExecutor) {
+              const startedAt = Date.now();
+              void Promise.resolve()
+                .then(() => this.intentExecutor!(intent))
+                .then((outcome) => {
+                  storeIntentResult({
+                    intentId: intent.id,
+                    approvalId: intent.approvalId,
+                    agentId: intent.agentId,
+                    tool: intent.tool,
+                    status: outcome.ok ? "executed" : "failed",
+                    ...(outcome.ok
+                      ? { result: outcome.result }
+                      : { error: outcome.error ?? "intent execution failed" }),
+                    executedAt: Date.now(),
+                    durationMs: Date.now() - startedAt,
+                  });
+                })
+                .catch((e: unknown) => {
+                  storeIntentResult({
+                    intentId: intent.id,
+                    approvalId: intent.approvalId,
+                    agentId: intent.agentId,
+                    tool: intent.tool,
+                    status: "failed",
+                    error: e instanceof Error ? e.message : String(e),
+                    executedAt: Date.now(),
+                    durationMs: Date.now() - startedAt,
+                  });
+                });
+            }
           } catch (e) {
             console.error(
               `[scopegate] error: failed to materialize approved request ${req.id}: ${(e as Error).message}`,

@@ -14,16 +14,56 @@ export const MANAGEMENT_TOOLS: Tool[] = [
   {
     name: "scopegate_request_capability",
     description:
-      "Request an ephemeral capability for the current task. Format: '<upstream>:<action>:<resource>' (e.g. 'github:write:easyorder/*'). Returns a grant with TTL if policy auto-approves; status 'pending_human_approval' (with an approval_id) when a human must approve — poll the SAME capability afterwards, never a broader one. Hard limits (deny globs, max_ttl) are non-negotiable. Request the MINIMUM scope and the SHORTEST ttl that completes the task.",
+      "Request an ephemeral capability for the current task. Format: '<upstream>:<action>:<resource>' (e.g. 'github:write:easyorder/*'). Returns a grant with TTL if policy auto-approves; status 'pending_human_approval' (with an approval_id) when a human must approve — poll the SAME capability afterwards, never a broader one. Hard limits (deny globs, max_ttl) are non-negotiable. Request the MINIMUM scope and the SHORTEST ttl that completes the task. Optional: pass execute_on_approval {tool, args} (tool's capability must equal the requested one) and the call executes automatically the moment the human approves — collect it with scopegate_collect or scopegate_wait.",
     inputSchema: {
       type: "object",
       properties: {
         capability: { type: "string", description: "Capability string, e.g. 'github:write:easyorder/*'" },
         ttl: { type: "string", description: "Requested TTL like '5m', '15m', '1h'. Policy ceiling always wins." },
         reason: { type: "string", description: "One-line justification (goes to the audit log)." },
+        execute_on_approval: {
+          type: "object",
+          description: "Optional continuation: {tool: '<upstream>__<tool>', args: {...}} to execute automatically when the human approves. The tool's capability must equal the requested capability.",
+          properties: {
+            tool: { type: "string" },
+            args: { type: "object", additionalProperties: true },
+          },
+          required: ["tool", "args"],
+        },
       },
       required: ["capability", "reason"],
     },
+  },
+  {
+    name: "scopegate_collect",
+    description:
+      "Collect the outcome of an approval continuation (execute_on_approval). Returns {status: pending|executed|failed|expired|none, result?|error?} — call it after the human approves; never abandon a queued intent silently.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        approval_id: { type: "string", description: "The approval_id returned by scopegate_request_capability." },
+      },
+      required: ["approval_id"],
+    },
+  },
+  {
+    name: "scopegate_wait",
+    description:
+      "Long-poll (up to timeout_s, max 120) for an approval continuation outcome. Prefer this over polling loops that burn turns. Returns the same shape as scopegate_collect, or {status: 'timeout'} when the approval is still pending.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        approval_id: { type: "string", description: "The approval_id returned by scopegate_request_capability." },
+        timeout_s: { type: "number", description: "Max seconds to wait (default 60, max 120)." },
+      },
+      required: ["approval_id"],
+    },
+  },
+  {
+    name: "scopegate_upstream_health",
+    description:
+      "Health of every upstream as a machine-readable report: liveness, tool count, oauth state, and circuit-breaker state (closed|open|half_open with consecutive failure counts). Use it before deciding to retry a failing call.",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "scopegate_list_capabilities",

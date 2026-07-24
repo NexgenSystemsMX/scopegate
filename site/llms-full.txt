@@ -26,14 +26,21 @@ Agent/CLI ──(MCP, zero secrets)──► ScopeGate ──(creds injected)─
 2. Human deposits secrets once per secret: `scopegate secret add <ref>`.
 3. The agent operates by itself through six MCP tools, holding TTL grants instead of credentials. Time from init to first proxied tool call: under 90 seconds.
 
-## The six agent tools (MCP)
+## The nine agent tools (MCP)
 
-- `scopegate_request_capability` — ask for a scoped, TTL-bound grant before a privileged action; returns the grant, a denial with actionable reason, or `pending_human_approval` with an `approval_id`.
+- `scopegate_request_capability` — ask for a scoped, TTL-bound grant before a privileged action; returns the grant, a denial with actionable reason, or `pending_human_approval` with an `approval_id`. Accepts `execute_on_approval {tool, args}` (approval continuation).
 - `scopegate_list_capabilities` — active grants and remaining TTL.
 - `scopegate_register_upstream` — connect a new service (never accepts secret values, only `secretRef` names; also installs from the signed registry with `from_registry`).
 - `scopegate_diagnose` — health check of every upstream; self-repair hints with `action_required`.
 - `scopegate_propose_policy` — redact a new policy rule when a capability is denied; lands in `policies.pending.yaml` for human review.
 - `scopegate_vault_status` — which secretRef NAMES exist (never values).
+- `scopegate_collect` — collect the outcome of an approval continuation (executed/failed/pending) — persisted in the gateway home, survives restarts.
+- `scopegate_wait` — long-poll (max 120 s) for a continuation outcome; the agent never burns turns polling.
+- `scopegate_upstream_health` — per-upstream liveness, tool count, oauth state and circuit-breaker state (closed|open|half_open).
+
+## Failure handling (agent-facing)
+
+Every failure is a machine-readable envelope `{error, kind, message, retry_after_s?, next_action, next_step}` with kinds `expired_grant | missing_scope | policy_denied | rate_limited | upstream_down | auth_broken`. A per-upstream circuit breaker opens after 5 consecutive failures (30 s fail-fast, then a half-open probe); upstream 429s are absorbed server-side when possible.
 
 ## Features
 

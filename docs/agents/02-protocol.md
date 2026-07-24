@@ -142,6 +142,40 @@ sits in the human's queue (it expires after `approval_expires_at` — default
    previous approval lapsed. **If the human denied it**, do not re-ask — drop
    that path or use `scopegate_propose_policy` with a stronger justification.
 
+### 4b. The better path: approval continuation (`execute_on_approval`)
+
+Polling for an approval burns turns and tokens, and an approval that lands
+after you abandoned the task is wasted. Attach the exact call to the request
+and the approval becomes a continuation — queued, then executed by the
+gateway the moment the human approves (from the CLI or the cloud panel):
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": { "name": "scopegate_request_capability",
+              "arguments": {
+                "capability": "github:call:create_pull_request",
+                "reason": "Open the fix PR",
+                "execute_on_approval": {
+                  "tool": "github__create_pull_request",
+                  "args": { "owner": "easyorder", "repo": "api", "title": "fix", "head": "fix/x", "base": "main" }
+                } } } }
+```
+
+Rules, all fail-closed: the intent's derived capability must EQUAL the
+requested one (the human approves exactly what they see — no smuggling), and
+the intent dies with the approval window (`approval_ttl`). The response
+carries `continuation.queued: true`. Then:
+
+- `scopegate_wait {approval_id, timeout_s}` for short waits (long-poll, max
+  120 s — never a polling loop), or
+- `scopegate_collect {approval_id}` any time later, including after a restart:
+  the outcome is persisted in the gateway home.
+
+On approval the intent executes with the fresh grant and the upstream result
+(or the failure) is stored for collection. The audit records the intent hash
+and the outcome hash — never the payloads.
+
+
 ## 5. `suspended`: the gateway has contained you
 
 If any response tells you the agent is `SUSPENDED`, a security tripwire
