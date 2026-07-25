@@ -1,7 +1,16 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterAll } from "vitest";
 import type { IncomingMessage } from "node:http";
+import { cleanupTempHome, useTempHome } from "./helpers.js";
 import { authorizeAdmin, decidedByConsole, fingerprint, routeAdmin } from "../src/gateway/admin.js";
 import type { AdminContext } from "../src/gateway/admin.js";
+
+// Las mutaciones auditan, y auditar ESCRIBE en SCOPEGATE_HOME. Sin un home
+// propio este archivo contaminaba el de los demás (hot-reload rompía justo
+// después de él) y tocaría el ~/.scopegate real.
+const HOME = useTempHome();
+afterAll(() => {
+  cleanupTempHome(HOME);
+});
 
 /**
  * La superficie /admin es el camino de ESCRITURA de la consola humana. Sus
