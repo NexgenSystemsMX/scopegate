@@ -34,9 +34,16 @@ import {
 import { parseTtlStrict } from "../policy/engine.js";
 import { ensureDir } from "../config/config.js";
 
-export type ApprovalOrigin = "tty" | "token";
+/**
+ * De dónde viene una decisión humana. `console` la toma la consola de Nexum
+ * autenticada con el token de administración y trae el id de la persona: es
+ * el único origen que dice QUIÉN aprobó (tty y token solo prueban "algún
+ * shell").
+ */
+export type ApprovalOrigin = "tty" | "token" | { console: string };
 
 export function decidedByFor(origin: ApprovalOrigin): string {
+  if (typeof origin === "object") return `human:console:${origin.console}`;
   return `human:cli:${origin}`;
 }
 

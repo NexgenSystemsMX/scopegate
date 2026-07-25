@@ -211,6 +211,9 @@ describe("audit signing (EPIC-07)", () => {
       "approval_waited",
       // M10: governed secret materialization.
       "secret_materialized",
+      // Consola de administración: mutaciones del vault hechas por una persona
+      // identificada (human:console:<cuenta>). Append-only, como el resto.
+      "secret_added", "secret_rotated", "secret_deleted",
     ];
     expect([...AUDIT_KINDS].sort()).toEqual(expected.sort());
   });

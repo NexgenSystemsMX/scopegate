@@ -215,6 +215,21 @@ export class GrantStore {
   }
 
   /**
+   * Revoke ONE grant by id, with the same cascade as revokeAgent: a delegated
+   * child must not outlive the parent that authorized it. Returns the number
+   * of grants removed (0 = unknown id).
+   */
+  revokeById(grantId: string): number {
+    const before = this.grants.length;
+    this.grants = this.grants.filter(
+      (g) => g.id !== grantId && g.parentGrantId !== grantId,
+    );
+    const removed = before - this.grants.length;
+    if (removed > 0) this.save();
+    return removed;
+  }
+
+  /**
    * Revoke every grant of an agent — with cascade (mejora #5): child grants
    * delegated FROM the revoked grants die with their parents.
    */

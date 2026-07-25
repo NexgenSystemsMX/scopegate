@@ -88,6 +88,12 @@ export const AUDIT_KINDS = [
   "taint_detected",
   // M3: git credential-helper mints.
   "git_credential_minted",
+  // Consola de administración (/admin/*): mutaciones del vault hechas por una
+  // persona identificada. Las capacidades y políticas reutilizan
+  // grants_revoked / policy_accepted.
+  "secret_added",
+  "secret_rotated",
+  "secret_deleted",
 ] as const;
 
 export type AuditKind = (typeof AUDIT_KINDS)[number];

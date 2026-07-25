@@ -900,6 +900,19 @@ export class PolicyEngine {
     return this.grants.active(agentId);
   }
 
+  /** Revoke a single grant by id (cascade incluida); audita grants_revoked. */
+  revokeGrantById(agentId: string, grantId: string): number {
+    const removed = this.grants.revokeById(grantId);
+    if (removed > 0) {
+      bestEffortAudit(reloadAuditAgent(), "grants_revoked", {
+        revokedAgentId: agentId,
+        grantId,
+        count: removed,
+      });
+    }
+    return removed;
+  }
+
   /** Revoke every grant of an agent; audits grants_revoked with the count. */
   revokeAgent(agentId: string): number {
     const removed = this.grants.revokeAgent(agentId);

@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { log, errorMessage } from "./proxy.js";
+import { routeAdmin, type AdminContext } from "./admin.js";
 
 /** Hard cap on a single JSON-RPC body (generous for tool args). */
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
@@ -60,6 +61,8 @@ export interface HttpGatewayContext {
   };
   /** M12: metadata-only event tail for GET /events (NDJSON, bearer-required). */
   recentEvents?: (opts: { since?: string; limit: number }) => Record<string, unknown>[];
+  /** Write path for a human console (/admin/*). Absent → 501. */
+  admin?: AdminContext;
   /** Transport-independent cleanup (cloud sync, policy watcher, proxy). */
   shutdown: () => Promise<void>;
 }
@@ -187,6 +190,37 @@ export async function startHttpGateway(
         });
       }
       return;
+    }
+
+    // Admin surface: its OWN credential, checked before the agent bearer gate
+    // so the agent token is rejected with a reason instead of silently passing
+    // into MCP routing. See gateway/admin.ts for why they must stay separate.
+    if (url.pathname.startsWith("/admin")) {
+      if (!ctx.admin) {
+        sendJson(res, 501, {
+          error: "not_implemented",
+          message: "admin surface is not wired on this gateway.",
+        });
+        return;
+      }
+      let body: unknown = null;
+      if (req.method !== "GET" && req.method !== "DELETE") {
+        try {
+          const raw = await readBody(req);
+          body = raw.trim() === "" ? null : JSON.parse(raw);
+        } catch {
+          sendJson(res, 400, { error: "bad_request", message: "Body must be valid JSON." });
+          return;
+        }
+      }
+      const result = await routeAdmin(req, res, body, ctx.admin, {
+        adminToken: (process.env.SCOPEGATE_ADMIN_TOKEN ?? "").trim(),
+        agentToken: token,
+      });
+      if (result !== null) {
+        sendJson(res, result.status, result.body);
+        return;
+      }
     }
 
     // Everything else is MCP and requires the bearer (fail-closed).

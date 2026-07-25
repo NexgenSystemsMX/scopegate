@@ -29,6 +29,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import crypto from "node:crypto";
+import { secretRefsOf } from "../minter/minter.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -238,6 +239,49 @@ export async function runGateway(
             vault_mode: process.env.SCOPEGATE_VAULT_MODE ?? "auto",
             pending_approvals: listApprovals().filter((a) => a.effectiveStatus === "pending").length,
           };
+        },
+        // Write path for the human console. Its credential is separate
+        // (SCOPEGATE_ADMIN_TOKEN) and the agent bearer is rejected there —
+        // see gateway/admin.ts.
+        admin: {
+          vault,
+          capabilities: () => ({
+            active_grants: policy.activeGrants(agentId).map((g) => ({
+              id: g.id,
+              capability: g.capability,
+              agent: agentId,
+              expiresAt: g.expiresAt,
+              remaining_seconds: Math.max(0, Math.round((g.expiresAt - Date.now()) / 1000)),
+              ...(g.leaseId !== undefined ? { leaseId: g.leaseId } : {}),
+            })),
+            leases: policy.leasesForAgent(agentId).map((l) => ({
+              lease_id: l.leaseId,
+              goal: l.goal,
+              expiresAt: l.deadlineMs,
+            })),
+          }),
+          revokeCapability: (id: string) => {
+            // Un id puede ser un grant o un lease; revocar el lease arrastra
+            // sus grants (y sus delegaciones) por diseño de GrantStore.
+            const lease = policy.leasesForAgent(agentId).find((l) => l.leaseId === id);
+            if (lease !== undefined) {
+              policy.revokeLease(agentId, id);
+              return true;
+            }
+            const grant = policy.activeGrants(agentId).find((g) => g.id === id);
+            if (grant === undefined) return false;
+            policy.revokeGrantById(agentId, id);
+            return true;
+          },
+          upstreamNames: () => cfg.upstreams.filter((u) => u.enabled !== false).map((u) => u.name),
+          upstreamsUsingSecret: (ref: string) =>
+            cfg.upstreams.filter((u) => secretRefsOf(u.auth).includes(ref)).map((u) => u.name),
+          reload: async () => {
+            // policy.startWatching() ya recarga el archivo solo; esto fuerza
+            // el reintento de conexiones que fallaron por un secreto ausente,
+            // que es justo lo que pasa al dar de alta una credencial nueva.
+            await proxy.connectAll();
+          },
         },
         // M12: metadata-only event tail for GET /events.
         recentEvents: ({ since, limit }) => {
