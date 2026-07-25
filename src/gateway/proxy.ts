@@ -1226,6 +1226,29 @@ export class UpstreamProxy {
     this.circuits.set(upstream, c);
   }
 
+  /**
+   * Liveness per upstream from the live connection cache, for /health.
+   *
+   * Unlike the `connectAll()` snapshot, this reflects connections established
+   * (or respawned) after boot. Cheap and synchronous by design: /health is a
+   * probe that Docker/Railway hit constantly, so it must not open sockets or
+   * list tools — `diagnose()` stays the deep, on-demand check.
+   *
+   * An upstream absent from the map returns no entry, so the caller can fall
+   * back to whatever it knew before instead of assuming failure.
+   */
+  public liveStatus(): Record<string, boolean> {
+    const out: Record<string, boolean> = {};
+    for (const up of this.upstreams.filter((u) => u.enabled !== false)) {
+      if (this.pools.has(up.name)) {
+        out[up.name] = (this.pools.get(up.name)?.entries.length ?? 0) > 0;
+      } else if (this.connections.has(up.name)) {
+        out[up.name] = true;
+      }
+    }
+    return out;
+  }
+
   /** Circuit state per upstream, for scopegate_upstream_health. */
   public circuitReport(): Record<
     string,

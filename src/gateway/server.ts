@@ -221,8 +221,16 @@ export async function runGateway(
           const failed = Object.entries(circuits)
             .filter(([, c]) => c.state === "open")
             .map(([n]) => n);
+          // `status` is the connectAll() snapshot taken at boot. An upstream
+          // that connects later — or is respawned by the M2 proactive
+          // refresh — stays `false` there forever, so /health kept reporting
+          // it as failed while its tools answered fine (observed for 20h in
+          // production). Trust the live cache when it has an entry; fall back
+          // to the boot snapshot only for upstreams never seen since.
+          const live = proxy.liveStatus();
           for (const [n, s] of Object.entries(status)) {
-            if (!s.ok && !failed.includes(n)) failed.push(n);
+            const ok = live[n] ?? s.ok;
+            if (!ok && !failed.includes(n)) failed.push(n);
           }
           const total = Math.max(Object.keys(circuits).length, Object.keys(status).length);
           return {
