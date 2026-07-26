@@ -274,6 +274,11 @@ export async function runGateway(
             return true;
           },
           upstreamNames: () => cfg.upstreams.filter((u) => u.enabled !== false).map((u) => u.name),
+          agents: () =>
+            policy.agentSummaries().map((a) => ({
+              ...a,
+              activeGrants: policy.activeGrants(a.agentId).length,
+            })),
           upstreamsUsingSecret: (ref: string) =>
             cfg.upstreams.filter((u) => secretRefsOf(u.auth).includes(ref)).map((u) => u.name),
           reload: async () => {

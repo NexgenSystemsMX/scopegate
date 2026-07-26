@@ -1267,6 +1267,19 @@ export class PolicyEngine {
   }
 
   /**
+   * Resumen por identidad para la consola: cuántas reglas tiene y su TTL por
+   * defecto. La lista de agentes ES la sección `agents:` de las políticas —
+   * no hay un registro paralelo que se pueda desincronizar.
+   */
+  agentSummaries(): Array<{ agentId: string; defaultTtl?: string; rules: number }> {
+    return Object.entries(this.policies.agents).map(([agentId, a]) => ({
+      agentId,
+      ...(a.default_ttl !== undefined ? { defaultTtl: a.default_ttl } : {}),
+      rules: a.capabilities.length,
+    }));
+  }
+
+  /**
    * Sliding-window rate limit for scopegate_request_capability (H-04.7).
    * Counted here, enforced by server.ts before evaluating the request.
    */

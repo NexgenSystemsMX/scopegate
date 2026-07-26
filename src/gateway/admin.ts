@@ -39,6 +39,12 @@ export interface AdminContext {
   revokeCapability: (id: string) => boolean;
   /** Upstream names declared in the running config. */
   upstreamNames: () => string[];
+  /**
+   * Identidades lógicas conocidas por las políticas, con sus reglas. Es lo que
+   * hace la consola multi-agente: la lista ES la sección `agents:`, no un
+   * registro paralelo que se pueda desincronizar.
+   */
+  agents: () => Array<{ agentId: string; defaultTtl?: string; rules: number; activeGrants: number }>;
   /** Which upstreams reference a given secret ref (blocks unsafe deletes). */
   upstreamsUsingSecret: (ref: string) => string[];
   /** Ask the gateway to reload config + policies after a write. */
@@ -277,6 +283,14 @@ export async function routeAdmin(
     // --- upstreams --------------------------------------------------------
     if (p === "/admin/upstreams" && method === "GET") {
       return ok({ upstreams: ctx.upstreamNames() });
+    }
+
+    // --- agents -----------------------------------------------------------
+    // La consola no es "de Kimi-Tag": la lista de identidades sale de las
+    // políticas, así que un agente nuevo (otro worker, un bot de CI) aparece
+    // solo con darlo de alta ahí. Cada uno con sus reglas y su auditoría.
+    if (p === "/admin/agents" && method === "GET") {
+      return ok({ agents: ctx.agents() });
     }
 
     // --- summary (one call for the console's first paint) -----------------

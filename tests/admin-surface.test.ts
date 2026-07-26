@@ -50,6 +50,10 @@ function ctx(over: Partial<AdminContext> = {}): AdminContext {
     capabilities: () => ({ active_grants: [], leases: [] }),
     revokeCapability: () => true,
     upstreamNames: () => ["nexgen", "railway"],
+    agents: () => [
+      { agentId: "nexgen-kimi", defaultTtl: "15m", rules: 20, activeGrants: 0 },
+      { agentId: "git", defaultTtl: "10m", rules: 1, activeGrants: 0 },
+    ],
     upstreamsUsingSecret: () => [],
     reload: async () => {},
     ...over,
@@ -202,5 +206,20 @@ describe("rutas", () => {
     );
     expect(out?.status).toBe(500);
     expect(JSON.stringify(out?.body)).not.toContain("vault.enc");
+  });
+});
+
+describe("multi-agente", () => {
+  it("lista las identidades desde las políticas, no desde un registro aparte", async () => {
+    const out = await routeAdmin(
+      req({ url: "/admin/agents", token: ADMIN_TOKEN }),
+      res,
+      null,
+      ctx(),
+      auth,
+    );
+    expect(out?.status).toBe(200);
+    const body = out?.body as { agents: Array<{ agentId: string }> };
+    expect(body.agents.map((a) => a.agentId)).toEqual(["nexgen-kimi", "git"]);
   });
 });
