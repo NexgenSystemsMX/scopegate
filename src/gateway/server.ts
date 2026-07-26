@@ -73,6 +73,7 @@ import {
   type ApprovalIntent,
 } from "../policy/approvals.js";
 import { audit } from "../audit/log.js";
+import { auditSizeBytes } from "../audit/segments.js";
 import {
   honeytokenCheckpoint,
   findCanaryRef,
@@ -238,6 +239,10 @@ export async function runGateway(
             upstreams_detail: { ok: Math.max(0, total - failed.length), failed },
             vault_mode: process.env.SCOPEGATE_VAULT_MODE ?? "auto",
             pending_approvals: listApprovals().filter((a) => a.effectiveStatus === "pending").length,
+            // The audit path is fail-closed: a full disk stops the gateway from
+            // starting. Surfacing the size here makes that visible from the
+            // console while it is still a number and not an outage.
+            audit_size_mb: Math.round((auditSizeBytes() / (1024 * 1024)) * 10) / 10,
           };
         },
         // Write path for the human console. Its credential is separate

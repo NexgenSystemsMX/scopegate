@@ -37,6 +37,7 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { AUDIT_LOG_PATH, ensureDir } from "../config/config.js";
+import { readAuditLines, rotateIfNeeded } from "./segments.js";
 import { loadOrCreateIdentity, signCanonical } from "./identity.js";
 
 /** FROZEN taxonomy — see header. Single runtime source of truth for `AuditKind`. */
@@ -151,11 +152,10 @@ interface Tail {
 let lastTail: Tail | null = null;
 
 function readTailFromDisk(): Tail {
-  if (!fs.existsSync(AUDIT_LOG_PATH)) return { hash: "genesis", seq: 0 };
-  const lines = fs
-    .readFileSync(AUDIT_LOG_PATH, "utf8")
-    .split("\n")
-    .filter((l) => l.trim().length > 0);
+  // Across ALL segments: right after a rotation the live file is empty, and
+  // reading only that would restart the chain at genesis — the rotation would
+  // silently forge a new origin.
+  const lines = readAuditLines();
   const last = lines[lines.length - 1];
   if (!last) return { hash: "genesis", seq: 0 };
   try {
@@ -220,8 +220,10 @@ export function audit(
       .update(prev + canonicalSigned(signed))
       .digest("hex"),
   };
-  fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(event) + "\n", {
-    mode: 0o600,
-  });
+  const line = JSON.stringify(event) + "\n";
+  // Rotate BEFORE writing so the cut falls between events: no line is ever
+  // split across two segments.
+  rotateIfNeeded(Buffer.byteLength(line));
+  fs.appendFileSync(AUDIT_LOG_PATH, line, { mode: 0o600 });
   lastTail = { hash: event.hash, seq: event.seq };
 }

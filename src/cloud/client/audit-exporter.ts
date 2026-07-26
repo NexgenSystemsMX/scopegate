@@ -35,7 +35,7 @@
  * which remains the source of truth).
  */
 import fs from "node:fs";
-import { AUDIT_LOG_PATH } from "../../config/config.js";
+import { readAuditLines } from "../../audit/segments.js";
 import {
   loadOrCreateIdentity,
   signCanonical,
@@ -99,13 +99,10 @@ function saveExportCursor(lastSeq: number): void {
  * (they still occupy their implicit position, keeping seqs aligned).
  */
 export function readEventsAfter(afterSeq: number, limit: number): AuditEvent[] {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(AUDIT_LOG_PATH, "utf8");
-  } catch {
-    return [];
-  }
-  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+  // All segments, oldest first: after a rotation the pending events live in
+  // audit.jsonl.1, and reading only the live file would skip them for good —
+  // the cursor only moves forward, so nothing would ever go back for them.
+  const lines = readAuditLines();
   const out: AuditEvent[] = [];
   for (let i = 0; i < lines.length && out.length < limit; i++) {
     let e: Partial<AuditEvent>;

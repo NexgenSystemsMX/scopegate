@@ -19,7 +19,7 @@
  */
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { AUDIT_LOG_PATH } from "../config/config.js";
+import { isPruned, readAuditLines } from "./segments.js";
 import {
   canonicalSigned,
   canonicalUnsigned,
@@ -33,6 +33,11 @@ export interface VerifyOk {
   count: number;
   /** Fingerprint of the identity the events verified against (null when the log is empty). */
   fingerprint: string | null;
+  /**
+   * Set when retention pruned the oldest segments: the chain no longer reaches
+   * genesis and was verified from this seq onward. Absent means "from genesis".
+   */
+  verifiedFromSeq?: number;
 }
 
 export interface VerifyFail {
@@ -52,11 +57,9 @@ export type VerifyResult = VerifyOk | VerifyFail;
  * that throw into a VerifyFail.
  */
 export function readAuditEvents(): AuditEvent[] {
-  if (!fs.existsSync(AUDIT_LOG_PATH)) return [];
-  const lines = fs
-    .readFileSync(AUDIT_LOG_PATH, "utf8")
-    .split("\n")
-    .filter((l) => l.trim().length > 0);
+  // All rotated segments plus the live one, oldest first: the chain is one
+  // logical log even when it lives in several files.
+  const lines = readAuditLines();
   return lines.map((l, i) => {
     try {
       return JSON.parse(l) as AuditEvent;
@@ -92,11 +95,26 @@ export function verifyAuditLog(): VerifyResult {
     };
   }
 
-  let prev = "genesis";
+  // A pruned log (retention dropped the oldest segments) no longer starts at
+  // genesis. Its first retained event is trusted as the starting point and the
+  // result says where verification begins — pretending the chain still reached
+  // genesis would be a lie, and reporting a break would read like tampering.
+  const firstSeq = Number.isInteger(events[0]?.seq) ? (events[0].seq as number) : 1;
+  const pruned = isPruned() && firstSeq > 1;
+  if (firstSeq > 1 && !pruned) {
+    return {
+      ok: false,
+      line: 1,
+      seq: firstSeq,
+      reason: `log does not start at seq 1 (starts at ${firstSeq}) and no retention marker explains it — truncated or rewritten`,
+    };
+  }
+  const baseSeq = pruned ? firstSeq : 1;
+  let prev = pruned ? events[0].prev : "genesis";
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
     const line = i + 1;
-    const expectedSeq = i + 1;
+    const expectedSeq = baseSeq + i;
     if (!Number.isInteger(e.seq)) {
       return {
         ok: false,
@@ -145,7 +163,13 @@ export function verifyAuditLog(): VerifyResult {
     }
     prev = e.hash;
   }
-  return { ok: true, events, count: events.length, fingerprint: identity.fingerprint };
+  return {
+    ok: true,
+    events,
+    count: events.length,
+    fingerprint: identity.fingerprint,
+    ...(pruned ? { verifiedFromSeq: baseSeq } : {}),
+  };
 }
 
 /**
@@ -158,7 +182,10 @@ export function runVerifyCli(): number {
   if (r.ok) {
     console.log(
       `audit log OK: ${r.count} event(s) verified (seq + hash chain + Ed25519 signatures` +
-        `${r.fingerprint ? `, identity ${r.fingerprint}` : ""}).`,
+        `${r.fingerprint ? `, identity ${r.fingerprint}` : ""})` +
+        // Say it out loud: "OK" over a pruned window is a weaker claim than
+        // "OK" over the whole history, and the reader must know which one this is.
+        `${r.verifiedFromSeq ? ` — from seq ${r.verifiedFromSeq}; earlier segments pruned by retention` : ""}.`,
     );
     return 0;
   }

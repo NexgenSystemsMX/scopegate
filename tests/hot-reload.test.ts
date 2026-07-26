@@ -45,6 +45,12 @@ describe("vault hot-reload", () => {
       expect(connectionsOf()).toBeGreaterThan(0);
 
       // A second mutation (rotation) IS a change → stale connections drop.
+      //
+      // Both writes land within the same millisecond, so on a filesystem with
+      // coarse timestamps they share an mtime. Detection therefore cannot rest
+      // on mtime alone: it reads the file's content (the ISO stamp `secret add`
+      // writes). A rotation the gateway cannot see means it keeps serving the
+      // OLD credential — the exact failure hot-reload exists to prevent.
       fs.writeFileSync(VAULT_VERSION_PATH, new Date(Date.now() + 5000).toISOString() + "\n", { mode: 0o600 });
       (proxy as unknown as { refreshVaultVersion(): void }).refreshVaultVersion();
       expect(connectionsOf()).toBe(0);
@@ -52,4 +58,29 @@ describe("vault hot-reload", () => {
       await proxy.closeAll();
     }
   }, 30_000);
+
+  it("detecta dos rotaciones seguidas aunque compartan mtime", async () => {
+    // Aísla la invariante del test de arriba: mismo mtime forzado a mano, y
+    // el cambio se tiene que ver igual.
+    const { UpstreamProxy } = await import("../src/gateway/proxy.js");
+    const { Vault } = await import("../src/vault/vault.js");
+    const { VAULT_VERSION_PATH } = await import("../src/config/config.js");
+    const proxy = new UpstreamProxy([], Vault.open(), { agentId: "test-agent" });
+    const refresh = (): void =>
+      (proxy as unknown as { refreshVaultVersion(): void }).refreshVaultVersion();
+    const stampOf = (): unknown =>
+      (proxy as unknown as { lastVaultVersionCheck: { stamp: string | null } })
+        .lastVaultVersionCheck.stamp;
+
+    fs.writeFileSync(VAULT_VERSION_PATH, "2026-01-01T00:00:00.000Z\n", { mode: 0o600 });
+    const fixed = new Date(1_700_000_000_000);
+    fs.utimesSync(VAULT_VERSION_PATH, fixed, fixed);
+    refresh();
+    const first = stampOf();
+
+    fs.writeFileSync(VAULT_VERSION_PATH, "2026-01-01T00:00:01.000Z\n", { mode: 0o600 });
+    fs.utimesSync(VAULT_VERSION_PATH, fixed, fixed); // MISMO mtime a propósito
+    refresh();
+    expect(stampOf()).not.toBe(first);
+  });
 });

@@ -125,6 +125,59 @@ export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * Is this pid still running? `kill(pid, 0)` sends no signal — it only asks.
+ *
+ * A pid can be reused after the child exits, so a true here is "something with
+ * that pid exists", not proof it is our child. That is fine for the only use
+ * (deciding whether to escalate to SIGTERM right after our own close()): the
+ * window is seconds, and the alternative — leaking the process — is worse.
+ */
+export function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make sure a child process is really gone, escalating SIGTERM → SIGKILL.
+ *
+ * Split out of closeConnection so it can be tested against a real process
+ * that ignores SIGTERM — the whole point of the escalation. Returns how it
+ * ended, which is also what gets logged: an upstream that needs SIGKILL has a
+ * shutdown bug, and that should be visible rather than quietly handled.
+ */
+export async function ensureChildGone(
+  pid: number,
+  name: string,
+  graceMs = 5_000,
+): Promise<"exited" | "sigterm" | "sigkill" | "unkillable"> {
+  if (!alive(pid)) return "exited";
+  await new Promise((r) => setTimeout(r, graceMs));
+  if (!alive(pid)) return "exited";
+
+  log("warn", `upstream '${name}' (pid ${pid}) survived close() — sending SIGTERM`, {});
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return "exited"; // already gone: benign race
+  }
+  await new Promise((r) => setTimeout(r, graceMs));
+  if (!alive(pid)) return "sigterm";
+
+  log("error", `upstream '${name}' (pid ${pid}) ignored SIGTERM — sending SIGKILL`, {});
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return "sigterm"; // already gone
+  }
+  await new Promise((r) => setTimeout(r, graceMs));
+  return alive(pid) ? "unkillable" : "sigkill";
+}
+
 /* ------------------------------------------------------------------------ */
 
 export interface ProxiedTool {
@@ -140,6 +193,17 @@ interface Connection {
   client: Client;
   tools: ProxiedTool[];
   connectedAt: number;
+  /**
+   * Child pid of a stdio upstream, when there is one.
+   *
+   * The proactive mint refresh (M2) replaces a connection every few hours;
+   * over days that is many spawns, and `client.close()` is fire-and-forget.
+   * An MCP server that ignores a closed stdin — or dies slowly — leaves the
+   * child alive with nothing pointing at it: memory and file descriptors that
+   * only a gateway restart reclaims. Keeping the pid lets `closeConnection`
+   * check and, as a last resort, kill it. See closeConnection().
+   */
+  pid?: number;
 }
 
 /**
@@ -475,12 +539,17 @@ export class UpstreamProxy {
     );
 
     try {
-      const tools = await withTimeout(
+      const { tools, pid } = await withTimeout(
         this.connectAndListTools(client, up, ctx),
         CONNECT_TIMEOUT_MS,
         `connect to upstream '${up.name}'`,
       );
-      const conn: Connection = { client, tools, connectedAt: Date.now() };
+      const conn: Connection = {
+        client,
+        tools,
+        connectedAt: Date.now(),
+        ...(pid !== undefined ? { pid } : {}),
+      };
       this.toolRegistry.set(up.name, tools);
       log("debug", `upstream '${up.name}' connected`, {
         tools: tools.length,
@@ -691,12 +760,18 @@ export class UpstreamProxy {
     };
   }
 
-  /** Transport setup + initial tool listing — the parts that can hang. */
+  /**
+   * Transport setup + initial tool listing — the parts that can hang.
+   *
+   * Returns the stdio child pid alongside the tools so the connection can be
+   * torn down completely later: see Connection.pid and closeConnection().
+   */
   private async connectAndListTools(
     client: Client,
     up: UpstreamConfig,
     ctx: CallContext,
-  ): Promise<ProxiedTool[]> {
+  ): Promise<{ tools: ProxiedTool[]; pid?: number }> {
+    let stdioPid: number | undefined;
     if (up.transport.kind === "http") {
       const headers = await this.buildAuthHeaders(up, ctx);
       const transport = new StreamableHTTPClientTransport(
@@ -720,15 +795,18 @@ export class UpstreamProxy {
       const { tools, operations } = toolsFromSpec(spec, up.name);
       this.openApi.set(up.name, { spec, operations, baseUrl });
       const allow = new Set(up.exposeTools ?? []);
-      return tools
-        .filter((t) => allow.size === 0 || allow.has(t.name))
-        .map((t) => ({
-          upstream: up.name,
-          exposedName: `${up.name}__${t.name}`,
-          upstreamName: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-        }));
+      // No pid: the openapi transport spawns nothing.
+      return {
+        tools: tools
+          .filter((t) => allow.size === 0 || allow.has(t.name))
+          .map((t) => ({
+            upstream: up.name,
+            exposedName: `${up.name}__${t.name}`,
+            upstreamName: t.name,
+            description: t.description,
+            inputSchema: t.inputSchema,
+          })),
+      };
     } else {
       // stdio: inject secret env vars at spawn — invisible to the agent.
       const env = this.buildSpawnEnv(up);
@@ -789,11 +867,13 @@ export class UpstreamProxy {
         env,
       });
       await client.connect(transport);
+      // Available only after connect(): before that there is no child yet.
+      stdioPid = transport.pid ?? undefined;
     }
 
     const listed = await client.listTools();
     const allow = new Set(up.exposeTools ?? []);
-    return listed.tools
+    const tools = listed.tools
       .filter((t) => allow.size === 0 || allow.has(t.name))
       .map((t) => ({
         upstream: up.name,
@@ -802,6 +882,7 @@ export class UpstreamProxy {
         description: t.description,
         inputSchema: t.inputSchema,
       }));
+    return stdioPid === undefined ? { tools } : { tools, pid: stdioPid };
   }
 
   private async getConnection(name: string, ctx: CallContext = {}): Promise<Connection> {
@@ -1270,7 +1351,7 @@ export class UpstreamProxy {
   /* Quick win: vault hot-reload                                          */
   /* ------------------------------------------------------------------ */
 
-  private lastVaultVersionCheck: { mtimeMs: number | null } = { mtimeMs: null };
+  private lastVaultVersionCheck: { stamp: string | null } = { stamp: null };
 
   /**
    * One stat per call: when vault.version changed since the last check,
@@ -1278,16 +1359,24 @@ export class UpstreamProxy {
    * (secrets deposited while the gateway runs take effect without restart).
    */
   private refreshVaultVersion(): void {
-    let mtimeMs: number | null = null;
+    // Stamp = file CONTENT (the ISO timestamp `secret add` writes) plus mtime.
+    //
+    // mtime alone was not enough: on filesystems with coarse timestamps two
+    // vault mutations inside the same tick get the SAME mtime, the change
+    // looks like no change, and the gateway keeps serving the old credential
+    // — exactly the failure hot-reload exists to prevent. The content is
+    // rewritten on every bump, so it distinguishes what mtime cannot.
+    let stamp: string | null = null;
     try {
-      mtimeMs = fs.statSync(VAULT_VERSION_PATH).mtimeMs;
+      const st = fs.statSync(VAULT_VERSION_PATH);
+      stamp = `${st.mtimeMs}:${fs.readFileSync(VAULT_VERSION_PATH, "utf8").trim()}`;
     } catch {
-      mtimeMs = null; // no version file yet — nothing to reload
+      stamp = null; // no version file yet — nothing to reload
     }
-    if (this.lastVaultVersionCheck.mtimeMs === null && mtimeMs === null) return;
-    if (this.lastVaultVersionCheck.mtimeMs === mtimeMs) return;
-    const had = this.lastVaultVersionCheck.mtimeMs !== null;
-    this.lastVaultVersionCheck.mtimeMs = mtimeMs;
+    if (this.lastVaultVersionCheck.stamp === null && stamp === null) return;
+    if (this.lastVaultVersionCheck.stamp === stamp) return;
+    const had = this.lastVaultVersionCheck.stamp !== null;
+    this.lastVaultVersionCheck.stamp = stamp;
     if (!had) return; // first sight of the file — not a change
     for (const c of this.connections.values()) {
       void c.client.close().catch(() => {});
@@ -1395,15 +1484,44 @@ export class UpstreamProxy {
   private async respawnMintedConnection(name: string): Promise<void> {
     const up = this.upstreams.find((u) => u.name === name && u.enabled !== false);
     if (!up) return;
-    const fresh = await this.connect(up, {});
     const old = this.connections.get(name);
-    this.connections.set(name, fresh);
+    // connect() already publishes the new connection in the map.
+    const fresh = await this.connect(up, {});
     if (old && old !== fresh) {
       setTimeout(() => {
-        void old.client.close().catch(() => {});
+        void this.closeConnection(old, name);
       }, 15_000).unref?.();
     }
     log("info", `stdio connection to '${name}' respawned proactively (mint refresh)`, {});
+  }
+
+  /** Grace between `close()` and checking whether the child actually died. */
+  private static readonly CHILD_EXIT_GRACE_MS = 5_000;
+
+  /**
+   * Close a connection and make sure its child process is really gone.
+   *
+   * `client.close()` closes stdin and asks nicely. An MCP server that ignores
+   * that — or hangs on shutdown — leaves an orphan: the gateway respawns stdio
+   * connections every few hours for the mint refresh, so over days the orphans
+   * accumulate until a restart. Nothing reports it, because from the gateway's
+   * point of view the close "succeeded".
+   *
+   * So: close, wait, and if the pid is still alive, SIGTERM and then SIGKILL.
+   * Every step is logged — a leak that needs killing is a bug in the upstream
+   * and should be visible, not quietly papered over.
+   */
+  private async closeConnection(conn: Connection, name: string): Promise<void> {
+    try {
+      await conn.client.close();
+    } catch (e) {
+      log("debug", `closing '${name}' threw: ${errorMessage(e)}`, {});
+    }
+    if (conn.pid === undefined) return;
+    const outcome = await ensureChildGone(conn.pid, name, UpstreamProxy.CHILD_EXIT_GRACE_MS);
+    if (outcome === "unkillable") {
+      log("error", `upstream '${name}' (pid ${conn.pid}) survived SIGKILL — leaked`, {});
+    }
   }
 
   /**
