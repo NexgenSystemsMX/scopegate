@@ -1,6 +1,6 @@
 {
   "name": "scopegate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Ephemeral credentials & persistent connections gateway for coding agents (Claude Code, Kimi Code, Cursor, OpenCode). The agent never holds secrets — it holds short-lived, minimum-scope capabilities.",
   "license": "Apache-2.0",
   "type": "module",
@@ -54,6 +54,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
     "dev": "tsc --watch",
     "start": "node dist/cli.js start",
     "test": "vitest run",
