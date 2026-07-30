@@ -1,0 +1,67 @@
+name: ci
+
+# Why this exists: until now the only CI triggers were `push` to master
+# (docker-ghcr.yml, which publishes ghcr.io/.../scopegate:latest — the image
+# production runs) and `v*` tags (release.yml, which publishes to npm). So the
+# first automated signal on a change arrived only AFTER it was already on
+# master or already released: there was no way to see a branch go green before
+# merging it, and no way to run the suite without a side effect on a live
+# artifact.
+#
+# This runs the same gates as the release job — build, unit tests, the four
+# e2e smokes and the red-team harness — on pull requests and on any non-master
+# branch, and publishes nothing.
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [master, main]
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+
+      # Types are a gate of their own: `npm test` runs vitest, which transpiles
+      # per file and would not fail on a cross-file type error.
+      - run: npx tsc --noEmit
+
+      - run: npm test
+
+      # Same four smokes release.yml runs, in the same order.
+      - run: node e2e-client.mjs
+      - run: node e2e-init.mjs
+      - run: node e2e-oauth.mjs
+      - run: node e2e-vaultd.mjs
+
+  redteam:
+    # Adversarial suite (EPIC-11): every attack must be blocked AND audited.
+    # Separate job so a red-team failure is distinguishable at a glance from a
+    # unit-test failure.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: node redteam/run.mjs
