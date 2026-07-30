@@ -310,6 +310,43 @@ describe("reglas ensombrecidas", () => {
     expect(rules[2].shadowedBy).toBeUndefined();
   });
 
+  it("expone el guardia `when` — sin el, la politica se lee al reves", async () => {
+    // Este es el fallo que este test fija: la primera version de RuleView NO
+    // devolvia `when`, y quien leyo la respuesta del endpoint contra el gateway
+    // real concluyo que staging habia perdido el guardia y tenia un gate humano
+    // muerto. Era falso: el guardia estaba, solo era invisible.
+    write(
+      `      - { match: "nexgen:call:github_create_pr_draft", when: { branch: "kimi/*" }, auto_approve: true, ttl: 15m }
+` +
+        `      - { match: "nexgen:call:github_create_pr_draft", require: human_approval }
+`,
+    );
+    const { readRules } = await import("../src/gateway/policy-rules.js");
+    const rules = (await readRules()).agents[0].rules;
+    expect(rules[0].when).toEqual({ branch: "kimi/*" });
+    expect(rules[1].when).toBeUndefined();
+  });
+
+  it("no deja editar una regla con guardia `when` (borraria el guardia)", async () => {
+    write(
+      `      - { match: "nexgen:call:github_create_pr_draft", when: { branch: "kimi/*" }, auto_approve: true, ttl: 15m }
+`,
+    );
+    const { applyUpsert, readPoliciesRaw } = await import("../src/gateway/policy-rules.js");
+    // Un toggle sobre esa capacidad reemplazaria el nodo entero y dejaria el
+    // auto_approve SIN guardia: de "solo en ramas kimi/*" a "siempre".
+    const res = await applyUpsert(readPoliciesRaw(), {
+      agentId: "nexgen-kimi",
+      match: "nexgen:call:github_create_pr_draft",
+      auto_approve: true,
+      ttl: "15m",
+    });
+    if (!("error" in res)) throw new Error("expected a refusal");
+    expect(res.error.kind).toBe("invalid");
+    expect(res.error.message).toMatch(/when/);
+    expect(res.error.message).toMatch(/widen/i);
+  });
+
   it("un auto_approve con guardia `when` NO ensombrece lo que sigue (producción)", async () => {
     write(
       `      - { match: "nexgen:call:github_create_pr_draft", when: { branch: "kimi/*" }, auto_approve: true, ttl: 15m }\n` +

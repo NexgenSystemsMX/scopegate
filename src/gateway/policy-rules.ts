@@ -62,6 +62,21 @@ export interface RuleView {
   /** Position in the agent's `capabilities` list — the only stable identity a
    * rule has, because duplicate `match` values are legal (see `shadowedBy`). */
   index: number;
+  /**
+   * M6 arg guard. MUST be surfaced: `when` changes what a rule means, and a
+   * console (or a human reading this API) that cannot see it will misread the
+   * policy.
+   *
+   * Concretely, the running policy has two rules for
+   * `nexgen:call:github_create_pr_draft`: an `auto_approve` guarded by
+   * `when: {branch: "kimi/*"}`, then a `require: human_approval`. Without the
+   * guard in view, that reads as "auto-approved, and the gate below is dead" —
+   * which is the exact wrong conclusion. With it, the design is legible: PRs on
+   * the governed branch namespace are auto-approved, anything else escalates.
+   * Omitting this field made a reviewer of this very endpoint reach the wrong
+   * conclusion about production, so it is not a cosmetic addition.
+   */
+  when?: Record<string, string | number | boolean>;
   /** True when a `limits.deny` glob already kills this capability. */
   deniedByGlob?: string;
   /**
@@ -177,6 +192,7 @@ export async function readRules(): Promise<RulesSnapshot> {
           ...(r.auto_approve !== undefined ? { auto_approve: r.auto_approve } : {}),
           ...(r.ttl !== undefined ? { ttl: r.ttl } : {}),
           ...(r.require !== undefined ? { require: r.require } : {}),
+          ...(r.when !== undefined ? { when: r.when } : {}),
           ...(hit !== undefined ? { deniedByGlob: hit } : {}),
           ...(shadow !== null ? { shadowedBy: shadow } : {}),
         } satisfies RuleView;
@@ -301,6 +317,28 @@ export async function applyUpsert(
   const current = (doc.toJS() as { agents: Record<string, { capabilities?: PolicyRule[] }> })
     .agents[input.agentId]?.capabilities ?? [];
   const idx = current.findIndex((r) => r.match === input.match);
+
+  // A rule carrying an M6 `when` guard is NOT editable through this API.
+  //
+  // This layer has no vocabulary for arg guards, so replacing such a rule in
+  // place would drop the guard and turn a conditional auto-approve into an
+  // unconditional one — silently widening exactly what the widening guard
+  // above exists to protect. The running policy has such a rule
+  // (`github_create_pr_draft` guarded by `when: {branch: "kimi/*"}`), so this
+  // is a live path, not a defensive hypothetical. Fail closed and send the
+  // human to the raw editor, where the guard is visible in the diff.
+  if (idx >= 0 && current[idx]?.when !== undefined) {
+    return {
+      error: {
+        kind: "invalid",
+        message:
+          `rule '${input.match}' for '${input.agentId}' carries a \`when\` arg guard ` +
+          `(${JSON.stringify(current[idx].when)}). This API cannot express guards, so ` +
+          `editing it here would silently drop the guard and widen the rule. Edit it in ` +
+          `the raw policies file instead.`,
+      },
+    };
+  }
 
   const value: PolicyRule = {
     match: input.match,
