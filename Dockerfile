@@ -19,14 +19,24 @@
 FROM node:20-slim AS build
 WORKDIR /app
 
-# Install the full dependency tree (dev included) from the lockfile.
-COPY package.json package-lock.json ./
+# Sources come in BEFORE `npm ci` on purpose. package.json has a `prepare`
+# script (`npm run build`, added so the package can be installed straight from
+# git), and npm runs `prepare` as part of `npm ci` — so with sources copied
+# afterwards, `npm ci` invoked tsc against an empty /app and the image build
+# died at that step. It failed on three consecutive master pushes and nobody
+# saw it, because nothing built this image outside master; production kept
+# running the last image that happened to succeed. The ci workflow now builds
+# it on every branch for exactly this reason.
+#
+# Cost of the ordering: a source-only edit invalidates the npm ci layer. That
+# is the cheaper problem.
+COPY package.json package-lock.json tsconfig.json ./
+COPY src ./src
 RUN npm ci
 
-# Compile TypeScript → dist/, then prune dev deps so stage 2 copies a
+# `prepare` already compiled during npm ci; build again so the layer does not
+# depend on that side effect, then prune dev deps so stage 2 copies a
 # production-only node_modules.
-COPY tsconfig.json ./
-COPY src ./src
 RUN npm run build && npm prune --omit=dev
 
 # ---------------------------------------------------------------------------

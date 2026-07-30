@@ -50,6 +50,45 @@ jobs:
       - run: node e2e-oauth.mjs
       - run: node e2e-vaultd.mjs
 
+  image:
+    # The production image was NOT covered by any pre-merge check: docker-ghcr.yml
+    # only runs on master, and it pushes `:latest` — the tag production runs. So
+    # a Dockerfile break landed and stayed broken across three master pushes
+    # while production silently kept serving the last image that built. This job
+    # builds the same Dockerfile and pushes NOTHING, so the break is visible on
+    # the branch instead of after the merge.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: scopegate:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Building is not enough: the image must actually come up. This catches a
+      # missing runtime asset (the COPYs of site/, registry/, docker/) that a
+      # successful build says nothing about.
+      - name: Boot the image and probe /health
+        run: |
+          docker run -d --name sg -p 8080:8080 \
+            -e SCOPEGATE_HTTP_TOKEN=ci-token-not-a-secret \
+            -e SCOPEGATE_SEED_DEMO=1 \
+            scopegate:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+              echo "healthy after ${i}s"; curl -sS http://127.0.0.1:8080/health; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the image never answered /health"
+          docker logs sg
+          exit 1
+
   redteam:
     # Adversarial suite (EPIC-11): every attack must be blocked AND audited.
     # Separate job so a red-team failure is distinguishable at a glance from a
