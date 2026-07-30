@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterAll } from "vitest";
 import type { IncomingMessage } from "node:http";
+import fsSync from "node:fs";
 import { cleanupTempHome, useTempHome } from "./helpers.js";
 import { authorizeAdmin, decidedByConsole, fingerprint, routeAdmin } from "../src/gateway/admin.js";
 import type { AdminContext } from "../src/gateway/admin.js";
@@ -221,5 +222,190 @@ describe("multi-agente", () => {
     expect(out?.status).toBe(200);
     const body = out?.body as { agents: Array<{ agentId: string }> };
     expect(body.agents.map((a) => a.agentId)).toEqual(["nexgen-kimi", "git"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reglas estructuradas (/admin/policies/rules). Lo que se fija aquí es lo que
+// la tabla de la consola hace newly reachable: escribir una regla sin haber
+// leído la última versión del archivo, y quitar un gate humano de un clic.
+// ---------------------------------------------------------------------------
+
+const RULES_SEED = `version: 1
+limits:
+  deny: ["*merge_pull_request*"]
+agents:
+  # comentario que debe sobrevivir a una edición de la consola
+  nexgen-kimi:
+    default_ttl: 15m
+    capabilities:
+      - { match: "nexgen:call:*", auto_approve: true, ttl: 15m }
+      - { match: "nexgen:call:github_create_pr_draft", require: human_approval }
+`;
+
+function rulesReq(opts: {
+  method?: string;
+  url?: string;
+  token?: string;
+  actor?: string;
+  ifMatch?: string;
+}): IncomingMessage {
+  return {
+    method: opts.method ?? "GET",
+    url: opts.url ?? "/admin/policies/rules",
+    headers: {
+      ...(opts.token !== undefined ? { authorization: `Bearer ${opts.token}` } : {}),
+      ...(opts.actor !== undefined ? { "x-scopegate-actor": opts.actor } : {}),
+      ...(opts.ifMatch !== undefined ? { "if-match": opts.ifMatch } : {}),
+    },
+  } as unknown as IncomingMessage;
+}
+
+describe("reglas estructuradas", () => {
+  let policiesPath: string;
+
+  beforeEach(async () => {
+    const { POLICIES_PATH } = await import("../src/config/config.js");
+    policiesPath = POLICIES_PATH;
+    fsSync.writeFileSync(policiesPath, RULES_SEED);
+  });
+
+  async function currentEtag(): Promise<string> {
+    const out = await routeAdmin(
+      rulesReq({ token: ADMIN_TOKEN }),
+      res,
+      null,
+      ctx(),
+      auth,
+    );
+    return (out?.body as { etag: string }).etag;
+  }
+
+  it("el bearer del agente tampoco entra por aquí (regla de oro)", async () => {
+    const out = await routeAdmin(
+      rulesReq({ method: "PUT", token: AGENT_TOKEN, actor: "u1", ifMatch: "x" }),
+      res,
+      { agentId: "nexgen-kimi", match: "a:b", auto_approve: true },
+      ctx(),
+      auth,
+    );
+    expect(out?.status).toBe(403);
+  });
+
+  it("GET devuelve reglas con etag; PUT sin If-Match es 428", async () => {
+    const etag = await currentEtag();
+    expect(etag).toMatch(/^[0-9a-f]{16}$/);
+
+    const out = await routeAdmin(
+      rulesReq({ method: "PUT", token: ADMIN_TOKEN, actor: "u1" }),
+      res,
+      { agentId: "nexgen-kimi", match: "nexgen:call:huly_reply", auto_approve: true },
+      ctx(),
+      auth,
+    );
+    expect(out?.status).toBe(428);
+  });
+
+  it("un If-Match viejo es 409 y no toca el archivo", async () => {
+    const stale = "0".repeat(16);
+    const out = await routeAdmin(
+      rulesReq({ method: "PUT", token: ADMIN_TOKEN, actor: "u1", ifMatch: stale }),
+      res,
+      { agentId: "nexgen-kimi", match: "nexgen:call:huly_reply", auto_approve: true },
+      ctx(),
+      auth,
+    );
+    expect(out?.status).toBe(409);
+    expect((out?.body as { etag: string }).etag).not.toBe(stale);
+    expect(fsSync.readFileSync(policiesPath, "utf8")).toBe(RULES_SEED);
+  });
+
+  it("PUT válido aplica, recarga y conserva comentarios", async () => {
+    let reloaded = false;
+    const out = await routeAdmin(
+      rulesReq({ method: "PUT", token: ADMIN_TOKEN, actor: "u1", ifMatch: await currentEtag() }),
+      res,
+      { agentId: "nexgen-kimi", match: "nexgen:call:huly_reply", auto_approve: true, ttl: "15m" },
+      ctx({ reload: async () => { reloaded = true; } }),
+      auth,
+    );
+    expect(out?.status).toBe(200);
+    expect(reloaded).toBe(true);
+    const written = fsSync.readFileSync(policiesPath, "utf8");
+    expect(written).toContain("huly_reply");
+    expect(written).toContain("comentario que debe sobrevivir");
+  });
+
+  it("quitar un gate humano de un clic exige acknowledgement (409 needs_acknowledge)", async () => {
+    const out = await routeAdmin(
+      rulesReq({ method: "PUT", token: ADMIN_TOKEN, actor: "u1", ifMatch: await currentEtag() }),
+      res,
+      { agentId: "nexgen-kimi", match: "nexgen:call:*", auto_approve: true, ttl: "15m" },
+      ctx(),
+      auth,
+    );
+    expect(out?.status).toBe(409);
+    const body = out?.body as { error: string; widens: string[] };
+    expect(body.error).toBe("needs_acknowledge");
+    expect(body.widens).toContain("nexgen:call:github_create_pr_draft");
+    expect(fsSync.readFileSync(policiesPath, "utf8")).toBe(RULES_SEED);
+  });
+
+  it("una regla bajo un deny duro es 422", async () => {
+    const out = await routeAdmin(
+      rulesReq({ method: "PUT", token: ADMIN_TOKEN, actor: "u1", ifMatch: await currentEtag() }),
+      res,
+      { agentId: "nexgen-kimi", match: "github:call:merge_pull_request", auto_approve: true },
+      ctx(),
+      auth,
+    );
+    expect(out?.status).toBe(422);
+  });
+
+  it("DELETE por match en base64url; un match inexistente es 404", async () => {
+    const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64url");
+
+    const gone = await routeAdmin(
+      rulesReq({
+        method: "DELETE",
+        url: `/admin/policies/rules/nexgen-kimi/${b64("nexgen:call:github_create_pr_draft")}`,
+        token: ADMIN_TOKEN,
+        actor: "u1",
+        ifMatch: await currentEtag(),
+      }),
+      res,
+      null,
+      ctx(),
+      auth,
+    );
+    expect(gone?.status).toBe(200);
+    expect(fsSync.readFileSync(policiesPath, "utf8")).not.toContain("github_create_pr_draft");
+
+    const missing = await routeAdmin(
+      rulesReq({
+        method: "DELETE",
+        url: `/admin/policies/rules/nexgen-kimi/${b64("no:such:rule")}`,
+        token: ADMIN_TOKEN,
+        actor: "u1",
+        ifMatch: await currentEtag(),
+      }),
+      res,
+      null,
+      ctx(),
+      auth,
+    );
+    expect(missing?.status).toBe(404);
+  });
+
+  it("toda mutación queda atribuida a una persona", async () => {
+    const out = await routeAdmin(
+      rulesReq({ method: "PUT", token: ADMIN_TOKEN, ifMatch: await currentEtag() }),
+      res,
+      { agentId: "nexgen-kimi", match: "nexgen:call:huly_reply", auto_approve: true },
+      ctx(),
+      auth,
+    );
+    expect(out?.status).toBe(400);
+    expect(JSON.stringify(out?.body)).toContain("X-ScopeGate-Actor");
   });
 });

@@ -373,6 +373,23 @@ export function validatePoliciesFile(raw: unknown): PoliciesFile {
   }
   for (const [name, ap] of Object.entries(p.agents)) {
     const where = `agents.${name === "*" ? '"*"' : name}`;
+    // Agent keys may be globs (`nexgen-kimi-*`): a worker that mints one
+    // logical identity per work unit cannot enumerate them in advance.
+    //
+    // Caveat worth knowing before trusting this line: picomatch is permissive
+    // — it only rejects the empty string, so `nexgen-kimi-[` compiles fine and
+    // simply matches nothing. This validates what IS detectable (empty,
+    // newlines, whitespace) and cannot catch a glob typo. The defense against
+    // a section that matches nothing is operational, not static: the 403
+    // message names every declared section, and `GET /admin/agents` lists
+    // them, so an identity falling through is visible immediately.
+    assertCompilableGlob(name, where);
+    if (/\s/.test(name)) {
+      throw new PolicyConfigError(
+        `${where}: agent key must not contain whitespace — ids arrive trimmed ` +
+          `from the X-ScopeGate-Agent header, so a key with a space can never match`,
+      );
+    }
     if (!ap || typeof ap !== "object" || Array.isArray(ap)) {
       throw new PolicyConfigError(`${where}: must be an object`);
     }
@@ -392,10 +409,44 @@ export function validatePoliciesFile(raw: unknown): PoliciesFile {
 /* Limits resolution                                                          */
 /* ------------------------------------------------------------------------ */
 
+/**
+ * Resolves the `agents:` section that governs one logical identity.
+ *
+ * Keys may be globs, so a worker can mint an identity per work unit
+ * (`nexgen-kimi-<channelId>`) and still be governed by one declared rule set.
+ * Precedence is deterministic and most-specific-first, because a widening
+ * glob must never silently outrank a narrower one:
+ *
+ *   1. exact key            (`nexgen-kimi-6a68fe4b…`)
+ *   2. globs, longest key first, `*` never counted here
+ *   3. the catch-all `*`
+ *
+ * Ties at equal length are broken by key order in the file (stable), which
+ * only happens between two globs of identical length — a config smell the
+ * caller can see in `agentIds()`.
+ */
 function agentKeyFor(policies: PoliciesFile, agentId: string): string | null {
   if (policies.agents[agentId]) return agentId;
+  const globs = Object.keys(policies.agents)
+    .filter((k) => k !== "*" && k !== agentId && /[*?[\]{}!]/.test(k))
+    .sort((a, b) => b.length - a.length);
+  for (const g of globs) {
+    if (picomatch.isMatch(agentId, g)) return g;
+  }
   if (policies.agents["*"]) return "*";
   return null;
+}
+
+/**
+ * Whether a logical identity is accepted by this gateway (M4 allowlist).
+ *
+ * Exported because `http.ts` gates `X-ScopeGate-Agent` on it: with glob keys
+ * the old `allowedAgents().includes(id)` no longer answers the question. An
+ * identity is accepted when it resolves to a section — `*` included, since a
+ * catch-all is an explicit decision to accept anything.
+ */
+export function agentIdAccepted(policies: PoliciesFile, agentId: string): boolean {
+  return agentKeyFor(policies, agentId) !== null;
 }
 
 /** Effective limits for an agent: global merged with per-agent (agent wins). */
@@ -1264,6 +1315,23 @@ export class PolicyEngine {
   /** M4: logical agent identities known to this engine (policies sections). */
   agentIds(): string[] {
     return Object.keys(this.policies.agents);
+  }
+
+  /**
+   * M4 allowlist check. Sections may be globs, so membership is a match, not
+   * a lookup — `http.ts` must ask this instead of scanning `agentIds()`.
+   */
+  acceptsAgentId(agentId: string): boolean {
+    return agentIdAccepted(this.policies, agentId);
+  }
+
+  /**
+   * The section that governs an identity, for audit and diagnostics: an
+   * operator seeing `nexgen-kimi-6a68…` in the audit needs to know which
+   * declared rule set produced the decision.
+   */
+  agentKeyOf(agentId: string): string | null {
+    return agentKeyFor(this.policies, agentId);
   }
 
   /**

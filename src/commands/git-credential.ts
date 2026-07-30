@@ -52,9 +52,34 @@ function readStdin(): Promise<string> {
   });
 }
 
-export async function runGitCredential(): Promise<void> {
-  // Operation: git passes it as argv[2] (get|store|erase).
-  const op = process.argv[2] ?? "get";
+/** git credential-helper operations. Anything else is not ours to answer. */
+const GIT_CREDENTIAL_OPS = new Set(["get", "store", "erase"]);
+
+/**
+ * Resolves the credential operation git asked for.
+ *
+ * Why this is not `process.argv[2]`: git runs `<helper> <operation>`, and the
+ * helper configured in git config is `scopegate git-credential`. So the real
+ * argv is `[node, cli.js, "git-credential", "get"]` — argv[2] is the
+ * SUBCOMMAND, not the operation, and the helper used to return silently on
+ * every fill. The unit test passed because it stubbed argv without the
+ * subcommand token, so nothing ever exercised the real shape.
+ *
+ * Scanning for the first recognized operation makes both invocations work and
+ * survives an extra argv element appearing in front (a wrapper script, a
+ * different launcher). Absent → "get", which is what git means by a bare fill.
+ */
+export function resolveGitCredentialOp(argv: readonly string[]): string {
+  for (const a of argv.slice(2)) {
+    if (GIT_CREDENTIAL_OPS.has(a)) return a;
+  }
+  return "get";
+}
+
+export async function runGitCredential(operation?: string): Promise<void> {
+  // The CLI passes the operation explicitly; the argv scan is the fallback for
+  // direct invocation of the binary.
+  const op = operation ?? resolveGitCredentialOp(process.argv);
   if (op !== "get") return; // store/erase: no-op, the vault is the store
 
   const raw = await readStdin();

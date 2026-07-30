@@ -43,11 +43,20 @@ export interface HttpGatewayContext {
    */
   createAgentServer: (agentId?: string) => Server;
   /**
-   * M4: the logical agent ids accepted on `X-ScopeGate-Agent` (the policies'
-   * agent sections + the gateway default). Unknown ids are 403 — the header
-   * names work units (thread/task), it is not an auth credential.
+   * M4: whether a logical id presented on `X-ScopeGate-Agent` is accepted.
+   *
+   * A predicate rather than a list because `agents:` keys may be globs: a
+   * worker that mints one identity per work unit (`nexgen-kimi-<channelId>`)
+   * produces ids that no list can enumerate ahead of time. Unknown ids are
+   * 403 — the header names work units, it is not an auth credential.
    */
-  allowedAgents: () => string[];
+  agentAccepted: (agentId: string) => boolean;
+  /**
+   * M4: the declared agent sections, for diagnostics only (the 403 message
+   * and `/admin/agents`). Never used to decide acceptance — see
+   * `agentAccepted`.
+   */
+  declaredAgents: () => string[];
   /** Live count of connected upstreams, surfaced by /health. */
   connectedUpstreams: () => number;
   /**
@@ -259,10 +268,12 @@ export async function startHttpGateway(
     const agentHeader = req.headers["x-scopegate-agent"];
     if (typeof agentHeader === "string" && agentHeader.trim().length > 0) {
       const candidate = agentHeader.trim();
-      if (!ctx.allowedAgents().includes(candidate)) {
+      if (!ctx.agentAccepted(candidate)) {
         sendJson(res, 403, {
           error: "unknown_agent",
-          message: `Agent '${candidate}' is not in this gateway's allowlist (see policies.yaml agents + the default identity).`,
+          message:
+            `Agent '${candidate}' is not accepted by this gateway. ` +
+            `Declared sections (exact ids or globs): ${ctx.declaredAgents().join(", ")}.`,
         });
         return;
       }
