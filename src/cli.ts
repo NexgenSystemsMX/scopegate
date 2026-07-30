@@ -84,14 +84,18 @@ program
   });
 
 program
-  .command("git-credential")
+  // git invokes the helper as `<helper> <operation>`, so the operation arrives
+  // as an argument of this subcommand — it must be declared, or it lands in
+  // argv where the command cannot see it (the bug that made every fill a
+  // silent no-op).
+  .command("git-credential [operation]")
   .description(
     "Git credential-helper (M3): mint an ephemeral GitHub App token per fill, " +
       "governed by the git:credential:<path> capability — no tokens in remote URLs",
   )
-  .action(async () => {
+  .action(async (operation?: string) => {
     const { runGitCredential } = await import("./commands/git-credential.js");
-    await runGitCredential();
+    await runGitCredential(operation);
   });
 
 program

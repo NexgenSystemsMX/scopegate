@@ -212,9 +212,13 @@ export async function runGateway(
       {
         createAgentServer: (requestAgentId?: string) =>
           createAgentServer({ cfg, proxy, policy, vault, agentId: requestAgentId ?? agentId }),
-        // M4: logical identities accepted on X-ScopeGate-Agent (policies
-        // sections + the gateway default).
-        allowedAgents: () => [agentId, ...policy.agentIds().filter((a) => a !== agentId)],
+        // M4: logical identities accepted on X-ScopeGate-Agent. The gateway's
+        // own default is always accepted; everything else must resolve to an
+        // `agents:` section — by exact key or by glob, so a worker can mint
+        // one identity per work unit (`nexgen-kimi-<channelId>`).
+        agentAccepted: (candidate: string) =>
+          candidate === agentId || policy.acceptsAgentId(candidate),
+        declaredAgents: () => [agentId, ...policy.agentIds().filter((a) => a !== agentId)],
         connectedUpstreams: () =>
           Object.values(status).filter((s) => s.ok).length,
         // M12: readiness detail for /health (additive to the legacy count).

@@ -26,6 +26,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { audit } from "../audit/log.js";
 import { POLICIES_PATH, ensureDir } from "../config/config.js";
 import { validatePoliciesFile } from "../policy/engine.js";
+import type { UpsertInput as RuleUpsertInput } from "./policy-rules.js";
 import { listApprovals } from "../policy/approvals.js";
 import { approveRequest, denyRequest, approvalsForReview } from "../commands/approvals-cli.js";
 import type { Vault } from "../vault/vault.js";
@@ -131,6 +132,37 @@ export function authorizeAdmin(
 /** Audit label for a console-originated action. */
 export function decidedByConsole(actor: string): string {
   return `human:console:${actor}`;
+}
+
+/**
+ * Maps a rules-layer refusal to HTTP. `needs_acknowledge` is a 409 rather than
+ * a 400 because nothing about the request is malformed: the server is asking
+ * the human to confirm a consequence it detected.
+ */
+function rulesErrorToResult(e: {
+  kind: string;
+  message: string;
+  widens?: string[];
+  etag?: string;
+}): AdminResult {
+  switch (e.kind) {
+    case "not_found":
+      return { status: 404, body: { error: "not_found", message: e.message } };
+    case "conflict":
+      return { status: 409, body: { error: "conflict", message: e.message, etag: e.etag } };
+    case "needs_acknowledge":
+      return {
+        status: 409,
+        body: {
+          error: "needs_acknowledge",
+          message: e.message,
+          widens: e.widens ?? [],
+          next_action: "re-send with acknowledge_widening: true",
+        },
+      };
+    default:
+      return { status: 422, body: { error: "invalid", message: e.message } };
+  }
 }
 
 /**
@@ -278,6 +310,101 @@ export async function routeAdmin(
         return ok({ applied: true, backup: `${POLICIES_PATH}.prev` });
       }
       return bad(405, "Method not allowed on /admin/policies.");
+    }
+
+    // --- policies: structured rules (console table) ------------------------
+    // Same file, same validation, same reload as /admin/policies — this is the
+    // per-rule granularity a UI needs, not a second source of truth. See
+    // gateway/policy-rules.ts for why comments and etags matter here.
+    if (p === "/admin/policies/rules" || p.startsWith("/admin/policies/rules/")) {
+      const rules = await import("./policy-rules.js");
+
+      if (p === "/admin/policies/rules" && method === "GET") {
+        return ok(await rules.readRules());
+      }
+
+      // Every mutation needs If-Match: the raw YAML editor writes the same
+      // file, so a blind write here would silently discard a human's edit.
+      const ifMatch = (req.headers["if-match"] ?? "").toString().replace(/"/g, "").trim();
+      const onDisk = rules.currentEtag();
+      if (method === "PUT" || method === "DELETE") {
+        if (ifMatch === "") {
+          return bad(
+            428,
+            "Send If-Match with the etag from GET /admin/policies/rules — " +
+              "the raw policies editor writes the same file and a blind write would lose it.",
+          );
+        }
+        if (ifMatch !== onDisk) {
+          return {
+            status: 409,
+            body: {
+              error: "conflict",
+              message:
+                "policies.yaml changed since you read it (someone edited the raw file " +
+                "or another console session wrote a rule). Re-read and re-apply.",
+              etag: onDisk,
+            },
+          };
+        }
+      }
+
+      const raw = rules.readPoliciesRaw();
+
+      if (p === "/admin/policies/rules" && method === "PUT") {
+        const input = body as RuleUpsertInput | null;
+        if (input === null || typeof input !== "object") {
+          return bad(400, "Body must be {agentId, match, auto_approve?, ttl?, require?}.");
+        }
+        const applied = await rules.applyUpsert(raw, input);
+        if ("error" in applied) return rulesErrorToResult(applied.error);
+        const committed = await rules.commitRules(applied.raw, ctx.reload);
+        if (!committed.ok) return rulesErrorToResult(committed.error);
+        audit(decidedByConsole(actor), "policy_accepted", { via: "console:rules" });
+        log("info", "policy rule upserted from the console", {
+          actor,
+          agentId: input.agentId,
+          match: input.match,
+          autoApprove: input.auto_approve === true,
+          acknowledgedWidening: input.acknowledge_widening === true,
+        });
+        return ok({ applied: true, etag: committed.etag });
+      }
+
+      // DELETE /admin/policies/rules/<agentId>/<base64url(match)>
+      //   or  /admin/policies/rules/<agentId>/index/<n>
+      //
+      // The match is base64url-encoded because a capability glob contains `:`,
+      // `*` and `/` — path-encoding it plainly would be ambiguous. The `index`
+      // form exists because duplicate matches are legal and the real policies
+      // have them: deleting by match then refuses rather than guessing.
+      const delIndex = /^\/admin\/policies\/rules\/([^/]+)\/index\/(\d+)$/.exec(p);
+      const delMatch = /^\/admin\/policies\/rules\/([^/]+)\/([^/]+)$/.exec(p);
+      if ((delIndex || delMatch) && method === "DELETE") {
+        const agentId = decodeURIComponent((delIndex ?? delMatch!)[1]);
+        let target: { match: string } | { index: number };
+        if (delIndex) {
+          target = { index: Number(delIndex[2]) };
+        } else {
+          let ruleMatch: string;
+          try {
+            ruleMatch = Buffer.from(delMatch![2], "base64url").toString("utf8");
+          } catch {
+            return bad(400, "The rule match must be base64url-encoded.");
+          }
+          if (ruleMatch === "") return bad(400, "Empty rule match.");
+          target = { match: ruleMatch };
+        }
+        const applied = await rules.applyDelete(raw, agentId, target);
+        if ("error" in applied) return rulesErrorToResult(applied.error);
+        const committed = await rules.commitRules(applied.raw, ctx.reload);
+        if (!committed.ok) return rulesErrorToResult(committed.error);
+        audit(decidedByConsole(actor), "policy_accepted", { via: "console:rules" });
+        log("info", "policy rule deleted from the console", { actor, agentId, target });
+        return ok({ deleted: true, etag: committed.etag });
+      }
+
+      return bad(405, `Method not allowed on ${p}.`);
     }
 
     // --- upstreams --------------------------------------------------------

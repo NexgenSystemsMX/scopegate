@@ -175,4 +175,47 @@ describe("scopegate git-credential", () => {
     expect(exitSpy).not.toHaveBeenCalled();
     expect(stdoutText()).toBe("");
   });
+
+  // The regression this suite used to miss entirely: every test above stubs
+  // argv WITHOUT the subcommand token, but git actually runs
+  // `scopegate git-credential get`, so argv[2] is "git-credential". Reading
+  // argv[2] as the operation made every real fill a silent no-op while these
+  // tests stayed green.
+  it("resolves the operation from the real argv shape git produces", async () => {
+    const { resolveGitCredentialOp } = await import("../src/commands/git-credential.js");
+
+    // Real invocation: credential.helper = "scopegate git-credential".
+    expect(resolveGitCredentialOp(["node", "cli.js", "git-credential", "get"])).toBe("get");
+    expect(resolveGitCredentialOp(["node", "cli.js", "git-credential", "store"])).toBe("store");
+    expect(resolveGitCredentialOp(["node", "cli.js", "git-credential", "erase"])).toBe("erase");
+    // Direct invocation of the binary (what the old tests assumed).
+    expect(resolveGitCredentialOp(["node", "scopegate", "get"])).toBe("get");
+    // Bare fill: git means "get".
+    expect(resolveGitCredentialOp(["node", "cli.js", "git-credential"])).toBe("get");
+  });
+
+  it("a fill through the real argv shape mints instead of returning silently", async () => {
+    const { Vault } = await import("../src/vault/vault.js");
+    const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+    Vault.open().set("gh_app_key", privateKey.export({ type: "pkcs8", format: "pem" }).toString());
+
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        token: "ghs_real_argv_token",
+        expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Exactly what git executes — subcommand token included.
+    process.argv = ["node", "cli.js", "git-credential", "get"];
+    stubStdin("protocol=https\nhost=github.com\npath=easyorder/api.git\n\n");
+
+    const { runGitCredential } = await import("../src/commands/git-credential.js");
+    await runGitCredential();
+
+    expect(stdoutText()).toContain("password=ghs_real_argv_token");
+  });
 });

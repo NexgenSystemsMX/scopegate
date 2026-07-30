@@ -109,4 +109,44 @@ describe("M2.2: isError auth self-heal", () => {
     expect(isAuth({ isError: true, content: [{ text: "401" }] }, bearerUp)).toBe(false);
     await proxy.closeAll();
   });
+
+  it("heals composite upstreams too — the shape production actually runs", async () => {
+    // Regression: `providerFor({type:"composite"})` is undefined, because the
+    // proxy expands composite into its `mint:` entries instead of asking a
+    // provider. The old gate therefore classified the most-minted shape as
+    // "not minted", and an in-band 401 from `nexgen` (env REDIS_URL + mint
+    // huly + github_app) reached the agent as a bare isError with no retry.
+    const { UpstreamProxy } = await import("../src/gateway/proxy.js");
+    const { Vault } = await import("../src/vault/vault.js");
+    const proxy = new UpstreamProxy([], Vault.open(), { agentId: "test-agent" });
+    const isAuth = (
+      proxy as unknown as { isAuthErrorResult(r: unknown, up: unknown): boolean }
+    ).isAuthErrorResult.bind(proxy);
+
+    const nexgenUp = {
+      name: "nexgen",
+      transport: { kind: "stdio", command: "node", args: ["server.js"] },
+      auth: {
+        type: "composite",
+        env: { REDIS_URL: "redis_url" },
+        mint: [
+          { type: "huly", secretRef: "huly_nexgen" },
+          { type: "github_app", appId: "1", installationId: "2", secretRef: "gh_app_key" },
+        ],
+      },
+    };
+    expect(isAuth({ isError: true, content: [{ text: "401 unauthorized" }] }, nexgenUp)).toBe(true);
+    // Still discriminating: a domain error on the same upstream is not auth.
+    expect(isAuth({ isError: true, content: [{ text: "issue not found" }] }, nexgenUp)).toBe(false);
+
+    // A composite whose mint half has no provider is NOT refreshable: there is
+    // nothing to re-mint, so retrying would just replay the same static creds.
+    const staticOnly = {
+      name: "z",
+      transport: { kind: "stdio", command: "node", args: [] },
+      auth: { type: "composite", env: { API_KEY: "k" }, mint: [] },
+    };
+    expect(isAuth({ isError: true, content: [{ text: "401" }] }, staticOnly)).toBe(false);
+    await proxy.closeAll();
+  });
 });

@@ -35,7 +35,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import type { PoolConfig, UpstreamConfig } from "../config/config.js";
+import type { PoolConfig, UpstreamAuth, UpstreamConfig } from "../config/config.js";
 import { VAULT_VERSION_PATH } from "../config/config.js";
 import { Vault } from "../vault/vault.js";
 import { Minter, secretRefsOf, type CredentialMode } from "../minter/minter.js";
@@ -1525,16 +1525,40 @@ export class UpstreamProxy {
   }
 
   /**
+   * Whether an auth config produces credentials the gateway can refresh by
+   * itself — the precondition for healing an in-band 401.
+   *
+   * `minter.providerFor` alone got this wrong for `composite`: no provider
+   * claims `supports({type:"composite"})`, because composite is expanded by
+   * the proxy into its `mint:` entries (see the spawn path above). So the
+   * check answered "not minted" for the one shape that is most minted of all
+   * — and an in-band 401 from a composite upstream reached the agent as a bare
+   * `isError` instead of healing. `nexgen` is exactly that shape, so this was
+   * live in production.
+   *
+   * A composite counts as refreshable when at least one of its `mint:` entries
+   * has a provider; the static `env:` half of a composite is long-lived by
+   * design and re-injecting it changes nothing, but re-minting the other half
+   * is precisely the recovery.
+   */
+  private authIsRefreshable(auth: UpstreamAuth): boolean {
+    if (auth.type === "oauth2") return true;
+    if (auth.type === "composite") {
+      return (auth.mint ?? []).some((m) => this.minter.providerFor(m) !== undefined);
+    }
+    return this.minter.providerFor(auth) !== undefined;
+  }
+
+  /**
    * M2.2: true when an MCP RESULT is an in-band auth failure (isError with
-   * an auth-shaped message) on a minted/oauth2 upstream — the caller
-   * invalidates the mint cache and retries with a fresh credential.
+   * an auth-shaped message) on a refreshable upstream — the caller invalidates
+   * the mint cache and retries with a fresh credential.
    */
   private isAuthErrorResult(result: unknown, up: UpstreamConfig | undefined): boolean {
     if (result === null || typeof result !== "object") return false;
     if ((result as { isError?: unknown }).isError !== true) return false;
     if (!up) return false;
-    const mintedOrOauth = up.auth.type === "oauth2" || this.minter.providerFor(up.auth) !== undefined;
-    if (!mintedOrOauth) return false;
+    if (!this.authIsRefreshable(up.auth)) return false;
     const custom = up.auth.type === "oauth2" ? up.auth.authErrorPattern : undefined;
     const pattern = custom
       ? new RegExp(custom, "i")
