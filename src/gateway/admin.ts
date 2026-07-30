@@ -372,24 +372,35 @@ export async function routeAdmin(
       }
 
       // DELETE /admin/policies/rules/<agentId>/<base64url(match)>
+      //   or  /admin/policies/rules/<agentId>/index/<n>
+      //
       // The match is base64url-encoded because a capability glob contains `:`,
-      // `*` and `/` — path-encoding it plainly would be ambiguous.
+      // `*` and `/` — path-encoding it plainly would be ambiguous. The `index`
+      // form exists because duplicate matches are legal and the real policies
+      // have them: deleting by match then refuses rather than guessing.
+      const delIndex = /^\/admin\/policies\/rules\/([^/]+)\/index\/(\d+)$/.exec(p);
       const delMatch = /^\/admin\/policies\/rules\/([^/]+)\/([^/]+)$/.exec(p);
-      if (delMatch && method === "DELETE") {
-        const agentId = decodeURIComponent(delMatch[1]);
-        let ruleMatch: string;
-        try {
-          ruleMatch = Buffer.from(delMatch[2], "base64url").toString("utf8");
-        } catch {
-          return bad(400, "The rule match must be base64url-encoded.");
+      if ((delIndex || delMatch) && method === "DELETE") {
+        const agentId = decodeURIComponent((delIndex ?? delMatch!)[1]);
+        let target: { match: string } | { index: number };
+        if (delIndex) {
+          target = { index: Number(delIndex[2]) };
+        } else {
+          let ruleMatch: string;
+          try {
+            ruleMatch = Buffer.from(delMatch![2], "base64url").toString("utf8");
+          } catch {
+            return bad(400, "The rule match must be base64url-encoded.");
+          }
+          if (ruleMatch === "") return bad(400, "Empty rule match.");
+          target = { match: ruleMatch };
         }
-        if (ruleMatch === "") return bad(400, "Empty rule match.");
-        const applied = await rules.applyDelete(raw, agentId, ruleMatch);
+        const applied = await rules.applyDelete(raw, agentId, target);
         if ("error" in applied) return rulesErrorToResult(applied.error);
         const committed = await rules.commitRules(applied.raw, ctx.reload);
         if (!committed.ok) return rulesErrorToResult(committed.error);
         audit(decidedByConsole(actor), "policy_accepted", { via: "console:rules" });
-        log("info", "policy rule deleted from the console", { actor, agentId, match: ruleMatch });
+        log("info", "policy rule deleted from the console", { actor, agentId, target });
         return ok({ deleted: true, etag: committed.etag });
       }
 

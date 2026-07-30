@@ -185,18 +185,20 @@ describe("policy rules API layer", () => {
     const { applyDelete, readPoliciesRaw } = await import("../src/gateway/policy-rules.js");
     const raw = readPoliciesRaw();
 
-    const gone = await applyDelete(raw, "nexgen-kimi", "nexgen:call:github_create_pr_draft");
+    const gone = await applyDelete(raw, "nexgen-kimi", {
+      match: "nexgen:call:github_create_pr_draft",
+    });
     if ("error" in gone) throw new Error(gone.error.message);
     expect(gone.raw).not.toContain("nexgen:call:github_create_pr_draft");
     expect(gone.raw).toContain("nexgen:call:*");
     // Comments outside the deleted node survive.
     expect(gone.raw).toContain("# Hard floor: never editable from the console.");
 
-    const missing = await applyDelete(raw, "nexgen-kimi", "does:not:exist");
+    const missing = await applyDelete(raw, "nexgen-kimi", { match: "does:not:exist" });
     if (!("error" in missing)) throw new Error("expected not_found");
     expect(missing.error.kind).toBe("not_found");
 
-    const noAgent = await applyDelete(raw, "ghost", "nexgen:call:*");
+    const noAgent = await applyDelete(raw, "ghost", { match: "nexgen:call:*" });
     if (!("error" in noAgent)) throw new Error("expected not_found");
     expect(noAgent.error.kind).toBe("not_found");
   });
@@ -264,5 +266,98 @@ describe("policy rules API layer", () => {
     expect(globWidens("nexgen:call:huly_reply", "nexgen:call:github_create_pr_draft")).toBe(false);
     // A glob over a different namespace does not touch the gate.
     expect(globWidens("railway:deploy:*", "nexgen:call:github_create_pr_draft")).toBe(false);
+  });
+});
+
+/**
+ * Shadowing. Not a hypothetical: this is the shape of the policy actually
+ * running on the kimi-tag gateways, discovered by calling the new endpoint
+ * against Railway. Production guards the first rule with
+ * `when: { branch: "kimi/*" }` so the gate below stays reachable; staging has
+ * the same rule WITHOUT the guard, which makes its human gate dead code.
+ * Nothing in the system reported that before.
+ */
+describe("reglas ensombrecidas", () => {
+  let home: string;
+  let policiesPath: string;
+
+  beforeEach(() => {
+    home = useTempHome();
+    policiesPath = path.join(home, "policies.yaml");
+  });
+  afterEach(() => cleanupTempHome(home));
+
+  const write = (rules: string) =>
+    fs.writeFileSync(
+      policiesPath,
+      `version: 1\nagents:\n  nexgen-kimi:\n    default_ttl: 15m\n    capabilities:\n${rules}`,
+    );
+
+  it("marca el gate humano muerto detrás de un auto_approve sin guardia (staging)", async () => {
+    write(
+      `      - { match: "nexgen:call:github_create_pr_draft", auto_approve: true, ttl: 15m }\n` +
+        `      - { match: "nexgen:call:github_create_pr_draft", require: human_approval }\n` +
+        `      - { match: "nexgen:call:*", auto_approve: true, ttl: 15m }\n`,
+    );
+    const { readRules } = await import("../src/gateway/policy-rules.js");
+    const rules = (await readRules()).agents[0].rules;
+
+    expect(rules[0].shadowedBy).toBeUndefined();
+    // El gate humano es inalcanzable: primer match gana.
+    expect(rules[1].shadowedBy).toBe(0);
+    // Y el glob ancho también queda tapado por la regla específica anterior?
+    // No: `nexgen:call:*` es MÁS ancho, la anterior no lo cubre.
+    expect(rules[2].shadowedBy).toBeUndefined();
+  });
+
+  it("un auto_approve con guardia `when` NO ensombrece lo que sigue (producción)", async () => {
+    write(
+      `      - { match: "nexgen:call:github_create_pr_draft", when: { branch: "kimi/*" }, auto_approve: true, ttl: 15m }\n` +
+        `      - { match: "nexgen:call:github_create_pr_draft", require: human_approval }\n`,
+    );
+    const { readRules } = await import("../src/gateway/policy-rules.js");
+    const rules = (await readRules()).agents[0].rules;
+    // La regla guardada puede no casar en tiempo de llamada, así que el gate
+    // sigue vivo. Marcarlo como muerto seria una falsa alarma.
+    expect(rules[1].shadowedBy).toBeUndefined();
+  });
+
+  it("un glob ancho ensombrece las reglas específicas que van detrás", async () => {
+    write(
+      `      - { match: "nexgen:call:*", auto_approve: true, ttl: 15m }\n` +
+        `      - { match: "nexgen:call:github_create_pr_draft", require: human_approval }\n`,
+    );
+    const { readRules } = await import("../src/gateway/policy-rules.js");
+    const rules = (await readRules()).agents[0].rules;
+    expect(rules[1].shadowedBy).toBe(0);
+  });
+
+  it("borrar por match se niega cuando hay duplicados; por índice funciona", async () => {
+    write(
+      `      - { match: "nexgen:call:github_create_pr_draft", auto_approve: true, ttl: 15m }\n` +
+        `      - { match: "nexgen:call:github_create_pr_draft", require: human_approval }\n`,
+    );
+    const { applyDelete, readPoliciesRaw } = await import("../src/gateway/policy-rules.js");
+    const raw = readPoliciesRaw();
+
+    // Ambiguo: elegir uno al azar podría borrar el gate humano en vez de la
+    // regla que lo tapa.
+    const ambiguous = await applyDelete(raw, "nexgen-kimi", {
+      match: "nexgen:call:github_create_pr_draft",
+    });
+    if (!("error" in ambiguous)) throw new Error("expected a refusal");
+    expect(ambiguous.error.kind).toBe("invalid");
+    expect(ambiguous.error.message).toMatch(/indexes 0, 1/);
+
+    // Por índice: quita el auto_approve y deja vivo el gate.
+    const byIndex = await applyDelete(raw, "nexgen-kimi", { index: 0 });
+    if ("error" in byIndex) throw new Error(byIndex.error.message);
+    expect(byIndex.raw).toContain("human_approval");
+    expect(byIndex.raw).not.toContain("auto_approve");
+
+    // Índice fuera de rango: 404, nunca un no-op silencioso.
+    const oob = await applyDelete(raw, "nexgen-kimi", { index: 9 });
+    if (!("error" in oob)) throw new Error("expected not_found");
+    expect(oob.error.kind).toBe("not_found");
   });
 });

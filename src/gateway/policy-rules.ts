@@ -59,8 +59,27 @@ export interface RuleView {
   auto_approve?: boolean;
   ttl?: string;
   require?: "human_approval";
+  /** Position in the agent's `capabilities` list — the only stable identity a
+   * rule has, because duplicate `match` values are legal (see `shadowedBy`). */
+  index: number;
   /** True when a `limits.deny` glob already kills this capability. */
   deniedByGlob?: string;
+  /**
+   * Index of an EARLIER rule that already decides every capability this one
+   * would match, making this rule unreachable.
+   *
+   * This is not a theoretical nicety. Evaluation is first-match-wins over the
+   * file order, and the running production/staging policies contain
+   * `nexgen:call:github_create_pr_draft` TWICE: an `auto_approve` and, right
+   * after it, a `require: human_approval`. In staging the first one has no
+   * `when` guard, so the human gate below it is dead code and nothing in the
+   * system said so. A console that renders rules as a flat list would show a
+   * gate that does not exist.
+   *
+   * A rule guarded by `when` never shadows: it may decline to match at call
+   * time, so what follows it is still reachable.
+   */
+  shadowedBy?: number;
 }
 
 export interface RulesSnapshot {
@@ -104,6 +123,32 @@ function denyGlobsFor(parsed: unknown, agentId: string): string[] {
   return agentDeny ?? p?.limits?.deny ?? [];
 }
 
+/**
+ * Index of the first earlier rule that makes `rules[i]` unreachable, or null.
+ *
+ * "Unreachable" here means: an earlier rule matches everything this one
+ * matches, and it always fires. Two conditions make the earlier rule NOT
+ * shadow: it carries a `when` guard (it may decline at call time, so later
+ * rules stay reachable), or its glob does not cover this rule's match.
+ *
+ * Coverage is approximated the same way as `globWidens` — by asking whether the
+ * earlier glob matches this rule's pattern text. Exact glob containment is
+ * undecidable in general; the bias is to report only clear cases, because a
+ * false "shadowed" badge on a live gate would teach operators to ignore the
+ * badge.
+ */
+function findShadow(rules: PolicyRule[], i: number): number | null {
+  const mine = rules[i]?.match;
+  if (typeof mine !== "string") return null;
+  for (let j = 0; j < i; j++) {
+    const earlier = rules[j];
+    if (earlier.when !== undefined) continue; // may decline at call time
+    if (earlier.match === mine) return j;
+    if (picomatch.isMatch(mine, earlier.match)) return j;
+  }
+  return null;
+}
+
 /** Reads the current rules, with the etag callers must send back. */
 export async function readRules(): Promise<RulesSnapshot> {
   const raw = readPoliciesRaw();
@@ -118,18 +163,22 @@ export async function readRules(): Promise<RulesSnapshot> {
   };
   const agents = Object.entries(parsed?.agents ?? {}).map(([agentId, a]) => {
     const deny = denyGlobsFor(parsed, agentId);
+    const list = a?.capabilities ?? [];
     return {
       agentId,
       ...(a?.default_ttl !== undefined ? { defaultTtl: a.default_ttl } : {}),
-      rules: (a?.capabilities ?? []).map((r) => {
+      rules: list.map((r, index) => {
         const hit = deny.find((g) => picomatch.isMatch(r.match, g) || r.match === g);
+        const shadow = findShadow(list, index);
         return {
           agentId,
           match: r.match,
+          index,
           ...(r.auto_approve !== undefined ? { auto_approve: r.auto_approve } : {}),
           ...(r.ttl !== undefined ? { ttl: r.ttl } : {}),
           ...(r.require !== undefined ? { require: r.require } : {}),
           ...(hit !== undefined ? { deniedByGlob: hit } : {}),
+          ...(shadow !== null ? { shadowedBy: shadow } : {}),
         } satisfies RuleView;
       }),
     };
@@ -271,11 +320,19 @@ export async function applyUpsert(
   return { raw: String(doc) };
 }
 
-/** Removes one rule. Missing agent or match → not_found (never a silent no-op). */
+/**
+ * Removes one rule, addressed by `match` or by explicit index.
+ *
+ * Why index addressing exists: duplicate `match` values are legal and the real
+ * policies have them (see `shadowedBy`). Deleting "the rule for X" when two
+ * rules claim X would silently pick one — and picking wrong could delete a
+ * human gate instead of the rule shadowing it. So an ambiguous match is
+ * refused, and the caller must say which index it means.
+ */
 export async function applyDelete(
   raw: string,
   agentId: string,
-  match: string,
+  target: { match: string } | { index: number },
 ): Promise<{ raw: string } | { error: RulesError }> {
   if (raw.trim() === "") {
     return { error: { kind: "not_found", message: "no policies file" } };
@@ -285,14 +342,40 @@ export async function applyDelete(
   const current =
     (doc.toJS() as { agents?: Record<string, { capabilities?: PolicyRule[] }> }).agents?.[agentId]
       ?.capabilities ?? [];
-  const idx = current.findIndex((r) => r.match === match);
-  if (idx < 0) {
-    return {
-      error: {
-        kind: "not_found",
-        message: `no rule '${match}' for agent '${agentId}'`,
-      },
-    };
+
+  let idx: number;
+  if ("index" in target) {
+    idx = target.index;
+    if (!Number.isInteger(idx) || idx < 0 || idx >= current.length) {
+      return {
+        error: {
+          kind: "not_found",
+          message: `agent '${agentId}' has no rule at index ${idx} (it has ${current.length})`,
+        },
+      };
+    }
+  } else {
+    const hits = current
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => r.match === target.match);
+    if (hits.length === 0) {
+      return {
+        error: { kind: "not_found", message: `no rule '${target.match}' for agent '${agentId}'` },
+      };
+    }
+    if (hits.length > 1) {
+      return {
+        error: {
+          kind: "invalid",
+          message:
+            `agent '${agentId}' has ${hits.length} rules matching '${target.match}' ` +
+            `(indexes ${hits.map((h) => h.i).join(", ")}). Deleting by match would pick one ` +
+            `arbitrarily and could remove a human gate instead of the rule shadowing it. ` +
+            `Delete by index instead.`,
+        },
+      };
+    }
+    idx = hits[0].i;
   }
   doc.deleteIn(["agents", agentId, "capabilities", idx]);
   return { raw: String(doc) };
