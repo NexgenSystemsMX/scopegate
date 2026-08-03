@@ -64,7 +64,8 @@
     "prepublishOnly": "npm run build"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "npm": ">=11.10"
   },
   "dependencies": {
     "@aws-sdk/client-sts": "^3.1093.0",
