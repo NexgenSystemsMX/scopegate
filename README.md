@@ -6,6 +6,19 @@
 [![CI](https://github.com/NexgenSystemsMX/scopegate/actions/workflows/release.yml/badge.svg)](https://github.com/NexgenSystemsMX/scopegate/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
+## 🧩 Nexum.Work Ecosystem
+
+This repo is one of the 4 pillars of Nexum.Work (canonical map: [org/ECOSYSTEM.md](https://github.com/NexgenSystemsMX/org/blob/main/ECOSYSTEM.md)).
+
+| Pillar | Repo | What it is |
+|---|---|---|
+| 🏢 Product | [NexgenSystemsMX/nexum](https://github.com/NexgenSystemsMX/nexum) | The platform — production fork of Huly, 19 services behind the `nexum.work` edge |
+| 🤖 Agent | [NexgenSystemsMX/kimi-tag](https://github.com/NexgenSystemsMX/kimi-tag) | The agent workers (@Kimi, Nexo, auditor) — the production ScopeGate gateways are embedded here |
+| 🔐 Credentials | [NexgenSystemsMX/scopegate](https://github.com/NexgenSystemsMX/scopegate) | **This repo** — ephemeral-credentials MCP gateway + ScopeGate Cloud |
+| ⌨️ CLI | [NexgenSystemsMX/nexum-cli](https://github.com/NexgenSystemsMX/nexum-cli) | Agent-first CLI (129 commands) — spawned by ScopeGate as a minted-env stdio upstream |
+
+📖 Source of truth: [org/ECOSYSTEM.md](https://github.com/NexgenSystemsMX/org/blob/main/ECOSYSTEM.md)
+
 The agent never holds credentials — it holds short-lived, minimum-scope
 **capabilities**. Secrets live in an AES-256-GCM encrypted local vault and are
 injected only at the outbound hop. A leaked context leaks nothing of durable

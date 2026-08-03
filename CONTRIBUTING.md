@@ -82,11 +82,23 @@ action is audited.
 
 ## Pull requests
 
-- Branch from `master`, keep diffs focused, describe the *why*.
-- Conventional-ish commit subjects are appreciated (`fix:`, `feat:`, `docs:`).
-- CI runs build + tests + e2e; releases cut from tags `v*` (see
-  `.github/workflows/release.yml`). Semver: `0.x` during the beta — minor =
-  features, patch = fixes.
+We run **trunk-based development** on `master`:
+
+1. Create a short-lived branch from an up-to-date `master`
+   (`feat/<topic>`, `fix/<topic>`, `docs/<topic>`).
+2. Keep the diff focused and describe the *why* in the PR body.
+3. Open a PR against `master`; CI (build + tests + e2e + Docker build)
+   must be green.
+4. Merge with **squash** (one clean commit on the trunk), then delete the
+   branch — the remote branch list should only ever hold active work.
+
+Commits follow **Conventional Commits**: `feat:`, `fix:`, `docs:`,
+`test:`, `chore:`, `refactor:` (optional scope, e.g. `feat(gateway): …`).
+The squash-merge title is what lands on `master`, so make it count.
+
+Releases cut from tags `v*` (see `.github/workflows/release.yml`). Semver:
+`0.x` during the beta — minor = features, patch = fixes. User-facing
+changes should update [CHANGELOG.md](CHANGELOG.md) under `Unreleased`.
 
 ## Reporting security issues
 
