@@ -38,7 +38,7 @@ reference material you pull in on demand.
 | [07 — Security rules](./07-security-rules.md) | Always. The non-negotiables. Re-read whenever unsure. |
 | [08 — Long tasks](./08-long-tasks.md) | Multi-hour work: task leases, grant renewals, idempotent writes, the end-to-end pattern. |
 
-## The seven guides
+## The eight guides
 
 - **01 — Quickstart: self-install** — detect, install and initialize
   ScopeGate non-interactively (`npm i -g scopegate`, `scopegate init`),
@@ -59,6 +59,9 @@ reference material you pull in on demand.
   human with the exact command.
 - **07 — Security rules** — the invariants you must never break: no secrets
   in chat, no self-approval, minimum scope, full audit trail.
+- **08 — Long tasks** — multi-hour work behind the gateway: task leases
+  (`scopegate_open_task_lease`), grant renewals, idempotent writes and the
+  end-to-end pattern.
 
 ## The self-configuration manifesto
 

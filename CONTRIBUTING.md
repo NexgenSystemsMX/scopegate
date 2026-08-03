@@ -10,8 +10,8 @@ Requirements: **Node.js ≥ 20** (developed on 22), npm 10. No native modules,
 no global services.
 
 ```bash
-git clone https://github.com/nexgen/scopegate.git
-cd scopegate/scopegate
+git clone https://github.com/NexgenSystemsMX/scopegate.git
+cd scopegate
 npm install
 npm run build        # tsc → dist/
 ```
@@ -82,7 +82,7 @@ action is audited.
 
 ## Pull requests
 
-- Branch from `main`, keep diffs focused, describe the *why*.
+- Branch from `master`, keep diffs focused, describe the *why*.
 - Conventional-ish commit subjects are appreciated (`fix:`, `feat:`, `docs:`).
 - CI runs build + tests + e2e; releases cut from tags `v*` (see
   `.github/workflows/release.yml`). Semver: `0.x` during the beta — minor =

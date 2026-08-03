@@ -172,8 +172,7 @@ Plus: `github-official` in the registry (GitHub's own remote MCP with
 `github_app` auth — ~1h installation tokens, no PAT), and the `openapi`
 transport that turns any OpenAPI 3 spec into a governed upstream.
 
-Their manifests ship signed in [`registry/`](registry/README.md);
-`docs/Implementacion/EPIC-13..18` has the design docs.
+Their manifests ship signed in [`registry/`](registry/README.md).
 
 Environment variables:
 
@@ -281,6 +280,7 @@ payload contract lives in [src/telemetry/telemetry.ts](src/telemetry/telemetry.t
 - [docs-site/agent-protocol.md](docs-site/agent-protocol.md) — the SKILL protocol
 - [docs-site/cli-reference.md](docs-site/cli-reference.md) — every command
 - [docs-site/configuration.md](docs-site/configuration.md) — config reference
+- [docs/ecosistema.md](docs/ecosistema.md) — ScopeGate in the Nexgen ecosystem (Railway map, e2e flows)
 - [SKILL.md](SKILL.md) — drop-in agent protocol (skills dir or `CLAUDE.md`/`AGENTS.md`)
 
 ## Contributing & license

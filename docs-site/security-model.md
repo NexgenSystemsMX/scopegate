@@ -70,10 +70,10 @@ re-encrypts with a fresh master key, optionally migrating backends.
 - The audit chain proves tampering after the fact; it does not prevent a
   privileged attacker from deleting the file outright.
 
-Roadmap hardening (not in this repo yet): honeytoken tripwires
-([EPIC-11](../../docs/Implementacion/EPIC-11-honeytokens-red-team.md)),
-fleet revocation and SSO in the cloud plane
-([EPIC-10](../../docs/Implementacion/EPIC-10-cloud-management-plane.md)).
+Roadmap hardening (EPIC-10 enterprise stories): SSO/SAML with per-team roles
+in the cloud plane. Honeytoken tripwires (`scopegate honeytoken plant`) and
+fleet revocation (cloud panel, Fleet tab) already shipped — see the
+[CLI Reference](cli-reference.md).
 
 ## Telemetry (opt-in)
 

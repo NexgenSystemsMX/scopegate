@@ -93,8 +93,8 @@ Human-side commands for the approval flow: when `request_capability` returns
 `scopegate approve <approval_id>` (or `deny`). Pending human-approval
 requests live in `approvals.pending.jsonl`, agent policy proposals in
 `policies.pending.yaml`. (These subcommands ship with the approval-channel
-work — see [EPIC-08](../../docs/Implementacion/EPIC-08-human-approval-channels.md);
-the gateway-side `pending_human_approval` contract is already live.)
+work (EPIC-08); the gateway-side `pending_human_approval` contract is
+already live.)
 
 ## `scopegate git-credential`
 

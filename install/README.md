@@ -1,12 +1,18 @@
 # ScopeGate installer (`curl | sh`)
 
-`install.sh` is served at `https://get.scopegate.dev`:
+`install.sh` is served at `https://scopegate.io/install.sh` (canonical):
 
 ```bash
-curl -sSL https://get.scopegate.dev | sh                    # interactive
-curl -sSL https://get.scopegate.dev | sh -s -- --yes        # non-interactive (agents, CI)
-curl -sSL https://get.scopegate.dev | sh -s -- --version 0.2.0 --no-init
+curl -sSL https://scopegate.io/install.sh | sh                    # interactive
+curl -sSL https://scopegate.io/install.sh | sh -s -- --yes        # non-interactive (agents, CI)
+curl -sSL https://scopegate.io/install.sh | sh -s -- --version 0.2.0 --no-init
 ```
+
+Domain note: **`scopegate.io` is the only canonical domain** (landing, docs
+and this installer). `get.scopegate.dev` is unowned and must never be
+linked — the production e2e (`e2e-landing-prod.mjs`) fails if it appears.
+`scopegate.dev` is only the default telemetry endpoint
+(`telemetry.scopegate.dev`), nothing else.
 
 ## What the script does
 
@@ -28,7 +34,7 @@ failure.
 ## Trust model (why curl|sh is acceptable here)
 
 - **Readable**: the script is ~120 lines of POSIX sh, no obfuscation, no
-  eval, no base64. Read it before piping: `curl -sSL https://get.scopegate.dev -o install.sh && less install.sh`.
+  eval, no base64. Read it before piping: `curl -sSL https://scopegate.io/install.sh -o install.sh && less install.sh`.
 - **HTTPS-only**, served as `text/plain` with a short cache.
 - **Verifiable**: the actual code is delivered by npm, not by the script.
   The script prints the registry SHA-1; verify with

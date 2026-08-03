@@ -2,9 +2,9 @@
 /**
  * Ecosystem production e2e (EPIC-20) — real operations through the deployed
  * ScopeGate gateway against the live surfaces: Huly (issue create + comment +
- * search), Railway (service/domain status), GitHub (repo read), and the
- * documented waiting-for-secrets state of Cloudflare/Google (tokens not yet
- * deposited by the operator).
+ * search), Railway (service/domain status), GitHub (repo read), Cloudflare
+ * (zone list) and Google (Drive list) — all five exercised live against
+ * production data.
  *
  * Required env (same as e2e-prod):
  *   SCOPEGATE_PROD_URL    e.g. https://scopegate-production.up.railway.app

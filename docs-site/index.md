@@ -50,10 +50,11 @@ billing), and the `/v1` API with enroll, signed policy distribution, verified
 audit ingest, fleet revocation and the panel-driven approval loop. Local-first
 holds: gateways keep working with their local policy when the cloud is down.
 
-Still future (see the roadmap EPICs under
-[`../../docs/Implementacion/`](../../docs/Implementacion/)):
+Still future (roadmap EPICs; what already shipped is covered in the pages
+above):
 
-- **Cloud hardening** — Postgres store, SSO/SAML with per-team roles, Stripe
-  metering, on-prem packaging, SIEM export (EPIC-10 enterprise stories).
+- **Cloud hardening** — SSO/SAML with per-team roles, Stripe metering,
+  on-prem packaging, SIEM export (EPIC-10 enterprise stories; the Postgres
+  store already shipped — `SCOPEGATE_CLOUD_DATABASE_URL`).
 - **Ecosystem growth** — more registry upstreams and warm-pool fleets
   (EPIC-12 follow-ups).
