@@ -157,6 +157,10 @@ services and do **not** run in CI):
   admin API auth-gated, `GET /install.sh` on the gateway, npm package
   resolution, and the `get.scopegate.dev` prohibition.
 
+## 5. Ecosystem roadmap
+
+- **QM + A2A native** (design approved 2026-08-03, not started): the kimi-tag worker will speak native A2A v1.0 (JSON-RPC server, signed Agent Card, M2M auth via ScopeGate, push notifications) and adopt QM's governance semantics (scopes, postures, grants, screening, skills). Full set: [`kimi-tag/docs/implementacion/a2a-qm/`](https://github.com/NexgenSystemsMX/kimi-tag/tree/main/docs/implementacion/a2a-qm) — CONTRASTE-PLAN1, PLAN-V2, ROADMAP F0-F5, EPIC-00..11 (PR [#75](https://github.com/NexgenSystemsMX/kimi-tag/pull/75)). This repo owns EPIC-02 (M2M auth), EPIC-04 (card signing) and EPIC-06 (QM keychain grants over capabilities).
+
 <!-- ECOSISTEMA-SYNC:2026-08-03 — English rendering of the common block synced across all 5 ecosystem repos (nexum, kimi-tag, scopegate, nexum-cli, org). The canonical Spanish version carries the same marker; edit both together. Source: Railway inventory + analysis of the 5 repos (2026-08-03). -->
 
 ## Nexgen Ecosystem
