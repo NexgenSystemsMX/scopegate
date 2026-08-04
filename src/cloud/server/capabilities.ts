@@ -21,6 +21,13 @@ export interface ActiveCapability {
   /** "human_approval" when the grant materialized from an approved request. */
   via: string | null;
   approvalId: string | null;
+  /* ------------------------- EPIC-06: QM keychain ------------------------ */
+  /** Grantee audience ("org" = org-wide); null = self (the holder). */
+  audience: string | null;
+  /** Keychain mode; null = "standing" (pre-EPIC-06 grants). */
+  mode: string | null;
+  /** Declarative purpose (instruction to the model — NOT enforceable). */
+  purpose: string | null;
 }
 
 function str(v: unknown): string | null {
@@ -83,6 +90,11 @@ export function listActiveCapabilities(
       rule: str(e.detail.rule),
       via: str(e.detail.via),
       approvalId: str(e.detail.approvalId),
+      // EPIC-06: keychain fields ride the same grant_issued detail (the audit
+      // exporter forwards it verbatim — null when the gateway pre-dates them).
+      audience: str(e.detail.audience),
+      mode: str(e.detail.mode),
+      purpose: str(e.detail.purpose),
     });
   }
 

@@ -95,6 +95,10 @@ export const AUDIT_KINDS = [
   "secret_added",
   "secret_rotated",
   "secret_deleted",
+  // EPIC-06 (QM keychain): consumo atómico de un grant `once` y promoción
+  // admin-gated de un grant a audiencia "org". Append-only, como el resto.
+  "grant_claimed",
+  "grant_promoted",
 ] as const;
 
 export type AuditKind = (typeof AUDIT_KINDS)[number];

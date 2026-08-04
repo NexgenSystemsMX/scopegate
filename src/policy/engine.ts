@@ -46,7 +46,7 @@ import {
   ensureDir,
 } from "../config/config.js";
 import { audit, type AuditKind } from "../audit/log.js";
-import { GrantStore } from "./grants.js";
+import { GrantStore, type Grant } from "./grants.js";
 import { matchesWhen } from "./when.js";
 import {
   LeaseStore,
@@ -145,7 +145,10 @@ export type DenyCode =
   | "invalid_ttl"
   | "config_error"
   /** Lease unusable for the request (dead, unknown, or out of scope). */
-  | "lease_error";
+  | "lease_error"
+  /** EPIC-06: the requested audience is not allowed (org is admin-only, or an
+   *  undeclared identity). */
+  | "audience_denied";
 
 export type Decision =
   | { allow: true; ttlMs: number; rule: string }
@@ -519,6 +522,10 @@ export class PolicyEngine {
   constructor(policies: PoliciesFile, deps: { grants?: GrantStore } = {}) {
     this.policies = policies;
     this.grants = deps.grants ?? new GrantStore();
+    // EPIC-06: `audience: "org"` matching needs the DECLARED identities, and
+    // those live in the (hot-reloadable) policy set — a closure over the
+    // engine keeps the check current across reloads.
+    this.grants.agentAccepted = (id: string) => this.acceptsAgentId(id);
   }
 
   /**
@@ -535,13 +542,28 @@ export class PolicyEngine {
     return new PolicyEngine(validatePoliciesFile(raw));
   }
 
-  /** Evaluate a capability request. Grants persist on disk and expire by TTL. */
+  /** Evaluate a capability request. Grants persist on disk and expire by TTL.
+   *
+   * EPIC-06 (QM keychain): `opts.audience` asks for a grant usable by ANOTHER
+   * declared identity. Audience ≠ self NEVER auto-approves — it always
+   * escalates to the human queue (the owner of last resort), and the literal
+   * "org" cannot be requested by an agent at all (admin-only, see
+   * adminIssueGrant/promoteGrant). `opts.mode: "once"` asks for a single-use
+   * grant (consumed atomically at authorization time); `opts.purpose` is a
+   * declarative instruction recorded on the grant — NOT enforceable.
+   */
   request(
     agentId: string,
     capability: string,
     ttl?: string,
     reason = "",
-    opts?: { leaseId?: string; args?: Record<string, unknown> },
+    opts?: {
+      leaseId?: string;
+      args?: Record<string, unknown>;
+      audience?: string;
+      mode?: "once" | "standing";
+      purpose?: string;
+    },
   ): Decision {
     // Pick up human decisions first: an approved request materializes its
     // one-shot grant here (fresh read by mtime — no cross-process watchers).
@@ -564,11 +586,46 @@ export class PolicyEngine {
       }
     }
 
+    // EPIC-06: audience validation. "org" is admin-born only; any other
+    // audience must be a declared identity (fail-closed with a clear reason).
+    const audience = opts?.audience;
+    const audienceRequested = audience !== undefined && audience !== agentId;
+    if (audience === "org") {
+      return {
+        allow: false,
+        code: "audience_denied",
+        reason:
+          `Audience 'org' cannot be requested by an agent — org-wide grants are born only ` +
+          `via the admin surface (direct issue or promote). Ask a human with admin access.`,
+      };
+    }
+    if (audienceRequested && !this.acceptsAgentId(audience)) {
+      return {
+        allow: false,
+        code: "audience_denied",
+        reason:
+          `Audience '${audience}' is not a declared agent identity on this gateway ` +
+          `(policies.yaml agents: sections). Declared: ${this.agentIds().join(", ") || "(none)"}.`,
+      };
+    }
+
     // Idempotent re-request: a live covering grant (including one just
     // materialized from an approval) is returned, not duplicated. For M6
     // `when`-guarded grants the call's args must satisfy the guard too.
+    // EPIC-06: for an audience≠self request the idempotency key is OWNERSHIP
+    // (the audience grant does not cover the requester, by design).
     const now = Date.now();
-    const existing = this.grants.coveringGrant(agentId, capability, now, opts?.args);
+    const existing = audienceRequested
+      ? this.grants
+          .active(agentId, now)
+          .find(
+            (g) =>
+              g.audience === audience &&
+              (g.capability === capability || picomatch.isMatch(capability, g.capability)) &&
+              (g.mode ?? "standing") === (opts?.mode ?? "standing") &&
+              (!g.when || matchesWhen(g.when, opts?.args)),
+          )
+      : this.grants.coveringGrant(agentId, capability, now, opts?.args);
     if (existing) {
       let ttlMs = Math.max(0, existing.expiresAt - now);
       // A tightened team policy re-clamps (never extends) live grants.
@@ -604,6 +661,52 @@ export class PolicyEngine {
             `Hard limits are non-negotiable — do NOT retry with broader scope; a human must change policies.yaml.`,
         };
       }
+    }
+
+    // EPIC-06: audience ≠ self NEVER auto-approves — hard limits already
+    // evaluated above; from here the request always escalates to the human
+    // queue (the keychain's owner-of-last-resort), whatever the rules say.
+    if (audienceRequested) {
+      let approvalTtlMs = DEFAULT_APPROVAL_TTL_MS;
+      try {
+        approvalTtlMs = limits.approval_ttl
+          ? parseTtlStrict(limits.approval_ttl, "limits.approval_ttl")
+          : DEFAULT_APPROVAL_TTL_MS;
+      } catch {
+        /* validated at load; keep the safe default defensively */
+      }
+      const purpose = opts?.purpose ?? reason;
+      const { request: ap, created } = createApprovalRequest({
+        agentId,
+        capability,
+        ttl: ttl ?? null,
+        reason,
+        approvalTtlMs,
+        audience,
+        ...(opts?.mode ? { mode: opts.mode } : {}),
+        ...(purpose ? { purpose } : {}),
+      });
+      if (created) {
+        bestEffortAudit(agentId, "approval_requested", {
+          id: ap.id,
+          capability,
+          ttl: ap.ttl,
+          reason,
+          audience,
+          ...(opts?.mode ? { mode: opts.mode } : {}),
+          ...(purpose ? { purpose } : {}),
+          expiresAt: new Date(ap.expiresAt).toISOString(),
+        });
+      }
+      return {
+        allow: false,
+        reason:
+          `Audience '${audience}' differs from the requester — a grant for another identity ` +
+          `always requires human approval (QM keychain: only the owner may grant).`,
+        escalation: "human_approval",
+        approvalId: ap.id,
+        approvalExpiresAt: ap.expiresAt,
+      };
     }
 
     // Agent-supplied TTL: strict parse, clear deny on garbage.
@@ -695,6 +798,7 @@ export class PolicyEngine {
         } catch (e) {
           return { allow: false, code: "config_error", reason: (e as Error).message };
         }
+        const purpose = opts?.purpose ?? (reason || undefined);
         const grant = this.grants.issue({
           agentId,
           capability,
@@ -703,6 +807,8 @@ export class PolicyEngine {
           rule: rule.match,
           ...(rule.when ? { when: rule.when } : {}),
           ...(opts?.leaseId ? { leaseId: opts.leaseId } : {}),
+          ...(opts?.mode ? { mode: opts.mode } : {}),
+          ...(purpose ? { purpose } : {}),
         });
         bestEffortAudit(agentId, "grant_issued", {
           id: grant.id,
@@ -711,6 +817,8 @@ export class PolicyEngine {
           expiresAt: new Date(grant.expiresAt).toISOString(),
           rule: rule.match,
           ...(teamRule ? { teamRule: teamRule.match } : {}),
+          ...(opts?.mode ? { mode: opts.mode } : {}),
+          ...(purpose ? { purpose } : {}),
         });
         // agent can shorten, never extend
         return { allow: true, ttlMs, rule: rule.match };
@@ -946,34 +1054,326 @@ export class PolicyEngine {
     return this.grants.coveringGrant(agentId, capability, Date.now(), args);
   }
 
+  /**
+   * EPIC-06 (QM keychain): authorize ONE tool call — the single check+claim
+   * operation that replaces the old isGranted/coveringGrant pair in the
+   * dispatcher. With `mode: "once"` grants, checking and claiming must be one
+   * atomic step: otherwise the gate itself would consume the grant, or two
+   * concurrent calls would both pass.
+   *
+   * Returns the covering grant (claimed, when `once`) or WHY the call is not
+   * covered:
+   *   - "none"       — nothing related to this caller matches (the dispatcher
+   *                    falls back to the implicit auto-approve request, the
+   *                    historical behaviour);
+   *   - "used"       — the matching once grant was already consumed;
+   *   - "revoked"    — the matching grant was revoked;
+   *   - "expired"    — the grant died between check and claim (race);
+   *   - "audience"   — a live related grant exists but its audience excludes
+   *                    this caller;
+   *   - "hard_limit" — cross-agent consumption (audience/org grant) that hits
+   *                    the CALLER's deny globs: those are non-negotiable even
+   *                    for a valid grant.
+   *
+   * Note on purpose: it rides along on the grant (audit + model instruction)
+   * and is deliberately NEVER evaluated here — purpose is not enforceable.
+   */
+  authorizeCall(
+    agentId: string,
+    capability: string,
+    args?: Record<string, unknown>,
+  ):
+    | { grant: Grant }
+    | { denied: "used" | "revoked" | "expired" | "audience" | "hard_limit" | "none" } {
+    this.refreshApprovals(agentId);
+    this.purgeAndAudit();
+    const now = Date.now();
+    const grant = this.grants.coveringGrant(agentId, capability, now, args);
+    if (grant) {
+      if (grant.agentId !== agentId) {
+        // Cross-agent consumption: the caller's OWN hard limits still gate —
+        // an org/audience grant never overrides a deny glob (fail-closed).
+        const limits = effectiveLimitsFor(this.policies, agentId);
+        for (const glob of limits.deny ?? []) {
+          if (picomatch.isMatch(capability, glob)) return { denied: "hard_limit" };
+        }
+      }
+      if (grant.mode === "once") {
+        const claimed = this.grants.claimOnce(grant.id, agentId);
+        if (claimed !== "ok") return { denied: claimed };
+        bestEffortAudit(agentId, "grant_claimed", {
+          id: grant.id,
+          capability,
+          holder: grant.agentId,
+          ...(grant.audience ? { audience: grant.audience } : {}),
+          ...(grant.purpose ? { purpose: grant.purpose } : {}),
+        });
+      }
+      return { grant };
+    }
+    const last = this.grants.latestForCapability(agentId, capability, now, args);
+    if (!last) return { denied: "none" };
+    if (last.status === "used") return { denied: "used" };
+    if (last.status === "revoked") return { denied: "revoked" };
+    // Live and related, but the audience excludes this caller.
+    return { denied: "audience" };
+  }
+
   activeGrants(agentId: string) {
     this.purgeAndAudit();
     return this.grants.active(agentId);
   }
 
-  /** Revoke a single grant by id (cascade incluida); audita grants_revoked. */
-  revokeGrantById(agentId: string, grantId: string): number {
-    const removed = this.grants.revokeById(grantId);
-    if (removed > 0) {
-      bestEffortAudit(reloadAuditAgent(), "grants_revoked", {
-        revokedAgentId: agentId,
-        grantId,
-        count: removed,
-      });
-    }
-    return removed;
+  /**
+   * EPIC-06: grants the agent can USE (own + named audience + org) plus its
+   * own lifecycle tombstones — the engine behind scopegate_list_capabilities'
+   * extended view.
+   */
+  usableGrants(agentId: string) {
+    this.purgeAndAudit();
+    return this.grants.usableBy(agentId, Date.now(), { includeTombstones: true });
   }
 
-  /** Revoke every grant of an agent; audits grants_revoked with the count. */
-  revokeAgent(agentId: string): number {
-    const removed = this.grants.revokeAgent(agentId);
-    if (removed > 0) {
-      bestEffortAudit(reloadAuditAgent(), "grants_revoked", {
-        revokedAgentId: agentId,
-        count: removed,
+  /**
+   * EPIC-06: revoke a grant and its WHOLE descendant chain (delegated
+   * children, promoted org grants, their children in turn — recursive).
+   * Revocation is a tombstone (status "revoked" + revokedAt) and the audit
+   * carries the full chain: who revoked (via/author), how many fell by
+   * cascade and the grant ids involved.
+   */
+  revokeCascade(
+    grantId: string,
+    opts: { via: string; author?: string; revokedAgentId?: string },
+  ): { count: number; chain: { id: string; agentId: string; capability: string; audience?: string }[] } {
+    const revoked = this.grants.revokeById(grantId);
+    const chain = revoked.map((g) => ({
+      id: g.id,
+      agentId: g.agentId,
+      capability: g.capability,
+      ...(g.audience ? { audience: g.audience } : {}),
+    }));
+    if (revoked.length > 0) {
+      bestEffortAudit(opts.author ?? reloadAuditAgent(), "grants_revoked", {
+        ...(opts.revokedAgentId ? { revokedAgentId: opts.revokedAgentId } : {}),
+        grantId,
+        via: opts.via,
+        count: revoked.length,
+        cascade: revoked.length - 1,
+        chain: chain.map((c) => c.id),
       });
     }
-    return removed;
+    return { count: revoked.length, chain };
+  }
+
+  /** Revoke a single grant by id (cascade incluida); audita grants_revoked. */
+  revokeGrantById(agentId: string, grantId: string): number {
+    return this.revokeCascade(grantId, { via: "engine", revokedAgentId: agentId }).count;
+  }
+
+  /**
+   * EPIC-06: agent self-service revocation (the scopegate_revoke_capability
+   * tool) — an agent may only give up a grant IT HOLDS. Self-revocation is
+   * privilege attenuation, so it needs no approval; the cascade still kills
+   * every descendant (delegations, promotions).
+   */
+  revokeOwnGrant(
+    agentId: string,
+    grantId: string,
+  ): { count: number; chain: { id: string; agentId: string; capability: string; audience?: string }[] } {
+    const grant = this.grants.byId(agentId, grantId);
+    if (!grant) {
+      throw new Error(
+        `No live grant '${grantId}' held by agent '${agentId}' — an agent can only revoke its own grants (everything else is admin).`,
+      );
+    }
+    return this.revokeCascade(grantId, { via: "agent", author: agentId, revokedAgentId: agentId });
+  }
+
+  /** Revoke every grant of an agent (identity kill — honeytoken suspension,
+   *  fleet revocation): scorched earth in the store, with the revoked chain
+   *  still recorded in the audit. */
+  revokeAgent(agentId: string): number {
+    const revoked = this.grants.revokeAgent(agentId);
+    if (revoked.length > 0) {
+      bestEffortAudit(reloadAuditAgent(), "grants_revoked", {
+        revokedAgentId: agentId,
+        count: revoked.length,
+        cascade: revoked.filter((g) => g.agentId !== agentId).length,
+        chain: revoked.map((g) => g.id),
+      });
+    }
+    return revoked.length;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* EPIC-06 (QM keychain): admin surface — cross-agent list, direct issue,  */
+  /* promote-to-org. Every path re-evaluates hard limits: an admin can never */
+  /* jump the deny globs or the TTL ceilings either (fail-closed).           */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Cross-agent grant listing for the admin console (any holder, tombstones
+   * included so the lifecycle is visible), filtered by holder / audience /
+   * mode. `audience` matches the EFFECTIVE audience (absent = holder).
+   */
+  listGrants(filter?: { agent?: string; audience?: string; mode?: string }): Grant[] {
+    this.purgeAndAudit();
+    let all = this.grants.all();
+    if (filter?.agent) all = all.filter((g) => g.agentId === filter.agent);
+    if (filter?.audience) {
+      all = all.filter((g) => (g.audience ?? g.agentId) === filter.audience);
+    }
+    if (filter?.mode) all = all.filter((g) => (g.mode ?? "standing") === filter.mode);
+    return all;
+  }
+
+  /**
+   * Admin direct issue (POST /admin/grants): `{agentId | audience: "org"}` —
+   * the only way an org-wide grant is born besides promote. `purpose` is
+   * MANDATORY (mirror of QM's mint, which demands it verbatim). Hard limits
+   * are re-evaluated exactly as for an agent request: deny globs and max_ttl
+   * (of the holder, or the GLOBAL limits for an org grant) are non-negotiable.
+   * Throws an Error with an actionable message on any refusal.
+   */
+  adminIssueGrant(
+    actor: string,
+    input: {
+      agentId?: string;
+      audience?: string;
+      capability: string;
+      ttl?: string;
+      mode?: "once" | "standing";
+      purpose: string;
+      when?: Record<string, string | number | boolean>;
+    },
+  ): Grant {
+    const capability = String(input.capability ?? "").trim();
+    if (!capability) throw new Error("capability is required.");
+    const purpose = String(input.purpose ?? "").trim();
+    if (!purpose) {
+      throw new Error("purpose is required for admin grants — it is the declarative instruction recorded in the audit trail.");
+    }
+    if (input.mode !== undefined && input.mode !== "once" && input.mode !== "standing") {
+      throw new Error(`Invalid mode '${String(input.mode)}' — expected 'once' or 'standing'.`);
+    }
+    const audience = input.audience?.trim() || undefined;
+    if (audience !== undefined && audience !== "org" && !this.acceptsAgentId(audience)) {
+      throw new Error(
+        `Audience '${audience}' is not a declared agent identity on this gateway. Declared: ${this.agentIds().join(", ") || "(none)"}.`,
+      );
+    }
+    const holder = input.agentId?.trim() || (audience === "org" ? "org" : (audience ?? ""));
+    if (!holder) {
+      throw new Error("Provide agentId (holder) or audience: \"org\" — one of the two is required.");
+    }
+    if (holder !== "org" && !this.acceptsAgentId(holder)) {
+      throw new Error(
+        `Agent '${holder}' is not a declared identity on this gateway. Declared: ${this.agentIds().join(", ") || "(none)"}.`,
+      );
+    }
+    // Hard limits: holder's effective limits, or the GLOBAL set for org grants.
+    const limits =
+      holder === "org"
+        ? (this.policies.limits ?? {})
+        : effectiveLimitsFor(this.policies, holder);
+    for (const glob of limits.deny ?? []) {
+      if (picomatch.isMatch(capability, glob)) {
+        throw new Error(
+          `Capability '${capability}' is blocked by a hard limit (deny '${glob}'). Hard limits are non-negotiable — not even for an admin.`,
+        );
+      }
+    }
+    let ttlMs: number;
+    try {
+      ttlMs = input.ttl === undefined ? DEFAULT_TTL_MS : parseTtlStrict(input.ttl);
+    } catch (e) {
+      throw new Error((e as Error).message);
+    }
+    if (limits.max_ttl !== undefined) {
+      ttlMs = Math.min(ttlMs, parseTtlStrict(limits.max_ttl, "limits.max_ttl"));
+    }
+    const grant = this.grants.issue({
+      agentId: holder,
+      capability,
+      ttlMs,
+      rule: "admin",
+      // "org" always lands on the grant (even though the holder is "org" too —
+      // without it the self-rule would cover nobody); a specific audience only
+      // when it differs from the holder.
+      ...(audience && (audience === "org" || audience !== holder) ? { audience } : {}),
+      ...(input.mode ? { mode: input.mode } : {}),
+      purpose,
+      requestedBy: actor,
+      ...(input.when ? { when: input.when } : {}),
+    });
+    // The event is authored by the holder so fleet projections attribute the
+    // capability correctly; the human actor rides in the detail.
+    bestEffortAudit(holder === "org" ? actor : holder, "grant_issued", {
+      id: grant.id,
+      capability,
+      ttlMs,
+      expiresAt: new Date(grant.expiresAt).toISOString(),
+      via: "admin",
+      actor,
+      ...(grant.audience ? { audience: grant.audience } : {}),
+      ...(grant.mode ? { mode: grant.mode } : {}),
+      purpose,
+    });
+    return grant;
+  }
+
+  /**
+   * Admin-gated promotion to audience "org" (POST /admin/grants/:id/promote):
+   * the QM `promote` equivalent. The org grant is a CHILD of the original —
+   * revoking the original takes the promotion down with it (same cascade as
+   * delegation). Mode is inherited; ttl = min(remaining, global max_ttl);
+   * `purpose` is mandatory. Audit: `grant_promoted` with parent/child/actor.
+   *
+   * Promoting a `once` grant is allowed but documented: the FIRST caller
+   * consumes it org-wide and `usedBy` records who — rarely useful.
+   */
+  promoteGrant(
+    actor: string,
+    grantId: string,
+    purpose: string,
+  ): { parent: Grant; child: Grant } {
+    const trimmedPurpose = String(purpose ?? "").trim();
+    if (!trimmedPurpose) {
+      throw new Error("purpose is required to promote a grant — it is the declarative instruction recorded in the audit trail.");
+    }
+    const parent = this.grants.byIdAny(grantId);
+    if (!parent) {
+      throw new Error(`No live grant '${grantId}' — it may be expired, used or revoked.`);
+    }
+    const now = Date.now();
+    let ttlMs = Math.max(1, parent.expiresAt - now);
+    const globalMaxTtl = this.policies.limits?.max_ttl;
+    if (globalMaxTtl !== undefined) {
+      ttlMs = Math.min(ttlMs, parseTtlStrict(globalMaxTtl, "limits.max_ttl"));
+    }
+    const child = this.grants.issue({
+      agentId: parent.agentId, // attribution stays with the original holder
+      capability: parent.capability,
+      ttlMs,
+      audience: "org",
+      ...(parent.mode ? { mode: parent.mode } : {}),
+      purpose: trimmedPurpose,
+      parentGrantId: parent.id,
+      rule: "promoted",
+      requestedBy: actor,
+      ...(parent.redact?.length ? { redact: parent.redact } : {}),
+      ...(parent.when ? { when: parent.when } : {}),
+    });
+    bestEffortAudit(parent.agentId, "grant_promoted", {
+      parent: parent.id,
+      child: child.id,
+      capability: parent.capability,
+      actor,
+      purpose: trimmedPurpose,
+      mode: child.mode ?? "standing",
+      expiresAt: new Date(child.expiresAt).toISOString(),
+    });
+    return { parent, child };
   }
 
   /* ---------------------------------------------------------------------- */
@@ -1676,12 +2076,18 @@ export class PolicyEngine {
         if (dec.decision === "approved") {
           try {
             const ttlMs = this.materializedTtl(agentId, req);
+            // EPIC-06: the keychain fields of the request ride into the
+            // materialized grant (audience ≠ self is exactly why it
+            // escalated; purpose defaults to the request's reason).
             const grant = this.grants.issue({
               agentId,
               capability: req.capability,
               ttlMs,
               approvalId: req.id,
               rule: "human_approval",
+              ...(req.audience ? { audience: req.audience } : {}),
+              ...(req.mode ? { mode: req.mode } : {}),
+              ...(req.purpose ? { purpose: req.purpose } : {}),
             });
             bestEffortAudit(agentId, "approval_approved", {
               id: req.id,
@@ -1695,6 +2101,9 @@ export class PolicyEngine {
               expiresAt: new Date(grant.expiresAt).toISOString(),
               via: "human_approval",
               approvalId: req.id,
+              ...(req.audience ? { audience: req.audience } : {}),
+              ...(req.mode ? { mode: req.mode } : {}),
+              ...(req.purpose ? { purpose: req.purpose } : {}),
             });
             // Mejora #2 (approval continuation): a queued intent attached to
             // this approval is executed NOW, with the fresh grant — the agent
@@ -1832,9 +2241,13 @@ export class PolicyEngine {
     return ttlMs;
   }
 
-  /** Purge expired grants and audit grant_expired for each. */
+  /** Purge expired grants and audit grant_expired for each. EPIC-06:
+   *  tombstones (used/revoked) expire silently — their lifecycle event
+   *  (grant_claimed / grants_revoked) already exists; re-auditing an expiry
+   *  for them would be noise. */
   private purgeAndAudit(): void {
     for (const g of this.grants.purgeExpired()) {
+      if (g.status === "used" || g.status === "revoked") continue;
       bestEffortAudit(g.agentId, "grant_expired", {
         id: g.id,
         capability: g.capability,

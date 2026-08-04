@@ -73,9 +73,21 @@ Request an ephemeral grant before privileged work. Capability format:
 | `ttl` | string | no | `'<n>s'`, `'<n>m'` or `'<n>h'`; the policy ceiling always wins |
 | `reason` | string | yes | one line; recorded in the audit log |
 | `lease_id` | string | no | bind the grant to a task lease (validated: live + upstream scope) |
-| `execute_on_approval` | object | no | `{tool, args}` continuation — see below |
+| `mode` | string | no | `once` \| `standing` (default) — `once` authorizes EXACTLY ONE call (consumed atomically at authorization; a second call is denied `grant_used`) |
+| `audience` | string | no | another DECLARED agentId that may use the grant — never auto-approves (a human always decides); `'org'` is admin-only |
+| `purpose` | string | no | declarative instruction recorded on the grant + audit — **NOT enforced** (defaults to `reason`) |
+| `execute_on_approval` | object | no | `{tool, args}` continuation — see below (cannot be combined with `audience`) |
 | `wait` | boolean | no | on escalation, block until the human decides (returns the grant inline) |
 | `timeout_s` | number | no | max seconds for `wait` (default 60, max 120) |
+
+**QM keychain grants.** `mode`, `audience` and `purpose` extend grants with the
+keychain semantics: a `once` grant is claimed atomically by the FIRST authorized
+call (claim = use — no refunds when the upstream call later fails); a grant whose
+`audience` names another agent never covers the requester and always requires
+human approval; org-wide grants (`audience: "org"`) are born only on the admin
+surface (`POST /admin/grants` or `/admin/grants/:id/promote`). `purpose` rides
+the grant and the signed audit as an instruction to the model — the engine
+enforces capability + audience + mode + TTL + revocation, never the purpose.
 
 **Inline wait (`wait: true`).** When the request escalates to human approval,
 `wait: true` long-polls the decision instead of returning `pending_human_approval`:
@@ -429,14 +441,37 @@ chain (`grant_delegated` with `parent_grant`) attributes every action.
 
 ## scopegate_list_capabilities
 
-List your active (non-expired) grants with remaining TTL. No arguments.
+List the grants you can USE right now (own + named audience + org-wide) with
+remaining TTL, plus your own recent lifecycle tombstones. No arguments.
 
 ```json
 { "agentId": "kimi-code",
-  "active_grants": [ { "id": "9d1e0b3a-…", "capability": "github:call:create_pull_request", "remaining_seconds": 812 } ] }
+  "active_grants": [ { "id": "9d1e0b3a-…", "capability": "github:call:create_pull_request", "remaining_seconds": 812,
+    "mode": "standing", "audience": "kimi-code", "status": "active" } ] }
 ```
 
-`id` is the grant's UUID; `remaining_seconds` is clamped at 0. Example call: `{ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "scopegate_list_capabilities", "arguments": {} } }`
+`id` is the grant's UUID; `remaining_seconds` is clamped at 0. Keychain fields:
+`mode` (`standing`|`once`), `audience` (grantee — `"org"` means org-wide),
+`purpose` (declarative instruction — NOT enforced), `status`
+(`active`|`used`|`revoked`), `used_by`/`used_at` on consumed `once` grants, and
+`held_by` when another identity holds the grant for you. Example call: `{ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "scopegate_list_capabilities", "arguments": {} } }`
+
+## scopegate_revoke_capability
+
+Give up one of YOUR live grants before it expires (privilege attenuation — never
+needs approval). You can only revoke grants you hold; anything else requires the
+admin console.
+
+| field | type | required | notes |
+|---|---|---|---|
+| `grant_id` | string | yes | your live grant id (see `scopegate_list_capabilities`) |
+
+The cascade kills every descendant with it (delegated child grants and org
+promotions) and the response reports it: `{ "revoked": true, "grant_id": "…",
+"cascade_revoked": 0, "chain": [ … ] }`. Revocation is sticky — regaining the
+capability takes an explicit new `scopegate_request_capability` (attributed in
+the audit); calls against a consumed/revoked grant are denied with
+`grant_used` / `grant_revoked`.
 
 ## scopegate_register_upstream
 

@@ -14,13 +14,26 @@ export const MANAGEMENT_TOOLS: Tool[] = [
   {
     name: "scopegate_request_capability",
     description:
-      "Request an ephemeral capability for the current task. Format: '<upstream>:<action>:<resource>' (e.g. 'github:write:easyorder/*'). Returns a grant with TTL if policy auto-approves; status 'pending_human_approval' (with an approval_id) when a human must approve — poll the SAME capability afterwards, never a broader one. Hard limits (deny globs, max_ttl) are non-negotiable. Request the MINIMUM scope and the SHORTEST ttl that completes the task. Optional: pass execute_on_approval {tool, args} (tool's capability must equal the requested one) and the call executes automatically the moment the human approves — collect it with scopegate_collect or scopegate_wait.",
+      "Request an ephemeral capability for the current task. Format: '<upstream>:<action>:<resource>' (e.g. 'github:write:easyorder/*'). Returns a grant with TTL if policy auto-approves; status 'pending_human_approval' (with an approval_id) when a human must approve — poll the SAME capability afterwards, never a broader one. Hard limits (deny globs, max_ttl) are non-negotiable. Request the MINIMUM scope and the SHORTEST ttl that completes the task. Optional: pass execute_on_approval {tool, args} (tool's capability must equal the requested one) and the call executes automatically the moment the human approves — collect it with scopegate_collect or scopegate_wait. QM keychain options: `mode: 'once'` issues a single-use grant (consumed atomically by the first authorized call — a second call is denied 'used'); `audience` asks for a grant usable by ANOTHER declared agent (always escalates to human approval; 'org' is admin-only); `purpose` is a DECLARATIVE instruction recorded on the grant and in the audit — it is NOT enforced by the engine.",
     inputSchema: {
       type: "object",
       properties: {
         capability: { type: "string", description: "Capability string, e.g. 'github:write:easyorder/*'" },
         ttl: { type: "string", description: "Requested TTL like '5m', '15m', '1h'. Policy ceiling always wins." },
         reason: { type: "string", description: "One-line justification (goes to the audit log)." },
+        mode: {
+          type: "string",
+          enum: ["once", "standing"],
+          description: "Optional keychain mode (default 'standing'): 'once' = the grant authorizes EXACTLY ONE call, consumed atomically at authorization time.",
+        },
+        audience: {
+          type: "string",
+          description: "Optional grantee audience: another declared agentId that may USE the grant (never auto-approved — a human always decides). 'org' is reserved to the admin surface.",
+        },
+        purpose: {
+          type: "string",
+          description: "Optional declarative purpose — instruction to the model + audit field. NOT enforceable (defaults to `reason`).",
+        },
         execute_on_approval: {
           type: "object",
           description: "Optional continuation: {tool: '<upstream>__<tool>', args: {...}} to execute automatically when the human approves. The tool's capability must equal the requested capability.",
@@ -257,8 +270,20 @@ export const MANAGEMENT_TOOLS: Tool[] = [
   {
     name: "scopegate_list_capabilities",
     description:
-      "List the currently active (non-expired) capability grants for this agent, with remaining TTL.",
+      "List the currently active (non-expired) capability grants usable by this agent, with remaining TTL. QM keychain fields included when present: mode ('standing'|'once'), audience (grantee — 'org' means org-wide), purpose (declarative instruction, NOT enforced), status, used_by for consumed once grants, and held_by when another identity holds the grant for you.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "scopegate_revoke_capability",
+    description:
+      "Give up one of YOUR live grants before it expires (privilege attenuation — never needs approval). The cascade kills every descendant: delegated child grants and org promotions die with it. You can only revoke grants you HOLD; anything else requires the admin console.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        grant_id: { type: "string", description: "Your live grant id (see scopegate_list_capabilities)." },
+      },
+      required: ["grant_id"],
+    },
   },
   {
     name: "scopegate_register_upstream",

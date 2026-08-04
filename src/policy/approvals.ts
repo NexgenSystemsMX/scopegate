@@ -84,6 +84,15 @@ export interface ApprovalRequest {
   plan?: { capability: string; ttl?: string }[];
   /** Lease every plan grant binds to on approval (mejora #1 + #4). */
   leaseId?: string;
+  /* ------------------------- EPIC-06: QM keychain ------------------------ */
+  /** Grantee audience asked for (agentId declared, never "org" from an
+   *  agent). Present only when it differs from the requester — its presence
+   *  is exactly why the request escalated (audience ≠ self never auto-approves). */
+  audience?: string;
+  /** Keychain mode asked for (default "standing"). */
+  mode?: "once" | "standing";
+  /** Declarative purpose (default: the request's reason). NOT enforceable. */
+  purpose?: string;
 }
 
 export interface ApprovalDecision {
@@ -184,7 +193,10 @@ export function readDecisions(): Map<string, ApprovalDecision> {
 /**
  * Queue a new approval request. Idempotent per (agentId, capability): when an
  * open request (pending, unexpired, undecided) already exists, it is returned
- * with `created: false` instead of flooding the human's queue.
+ * with `created: false` instead of flooding the human's queue. EPIC-06: the
+ * dedup key also covers the keychain fields (audience/mode) when present —
+ * a request for the same capability but a DIFFERENT audience is a different
+ * request.
  */
 export function createApprovalRequest(input: {
   agentId: string;
@@ -195,6 +207,10 @@ export function createApprovalRequest(input: {
   /** Capability-plan bundle (mejora #4): one decision covers every item. */
   plan?: { capability: string; ttl?: string }[];
   leaseId?: string;
+  /** EPIC-06 keychain fields carried to the materialized grant. */
+  audience?: string;
+  mode?: "once" | "standing";
+  purpose?: string;
 }): { request: ApprovalRequest; created: boolean } {
   const now = Date.now();
   const decisions = readDecisions();
@@ -202,6 +218,8 @@ export function createApprovalRequest(input: {
     (r) =>
       r.agentId === input.agentId &&
       r.capability === input.capability &&
+      (r.audience ?? undefined) === (input.audience ?? undefined) &&
+      (r.mode ?? undefined) === (input.mode ?? undefined) &&
       (!r.status || r.status === "pending") &&
       r.expiresAt > now &&
       !decisions.has(r.id),
@@ -218,6 +236,9 @@ export function createApprovalRequest(input: {
     expiresAt: now + (input.approvalTtlMs ?? DEFAULT_APPROVAL_TTL_MS),
     ...(input.plan?.length ? { plan: input.plan } : {}),
     ...(input.leaseId ? { leaseId: input.leaseId } : {}),
+    ...(input.audience ? { audience: input.audience } : {}),
+    ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.purpose ? { purpose: input.purpose } : {}),
   };
   ensureDir();
   fs.appendFileSync(APPROVALS_PENDING_PATH, JSON.stringify(request) + "\n", {

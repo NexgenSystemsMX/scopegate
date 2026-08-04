@@ -1,0 +1,6 @@
+# Signed registry artifacts: the Ed25519 signature and the per-manifest
+# sha256 hashes commit to the EXACT bytes (LF). Git must never convert them
+# to CRLF on checkout (Windows core.autocrlf=true breaks verification).
+registry/index.json text eol=lf
+registry/index.sig text eol=lf
+registry/*.yaml text eol=lf
