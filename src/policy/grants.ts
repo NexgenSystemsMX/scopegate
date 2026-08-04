@@ -24,9 +24,12 @@
  * NOT enforceable), `status: "active"|"used"|"revoked"` and claim/revoke
  * timestamps. All of them are OPTIONAL: a grants.json written before EPIC-06
  * loads untouched and every pre-existing grant behaves exactly as
- * `standing` + self-audience + `active` (zero migration). Used/revoked grants
- * stay in the file as TOMBSTONES until their TTL expires — that is what lets
- * a second claim answer "used"/"revoked" instead of a bare "no grant".
+ * `standing` + self-audience + `active` (zero migration). Surgically
+ * revoked/used grants stay in the file as TOMBSTONES until their TTL expires
+ * — that is what lets a second claim answer "used"/"revoked" instead of a
+ * bare "no grant". The ONE exception is the identity kill (`revokeAgent`:
+ * honeytoken suspension, fleet revocation), which wipes the agent's grants
+ * from the store outright — the EPIC-11 security contract.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -384,41 +387,43 @@ export class GrantStore {
    * must not outlive the parent that authorized it. EPIC-06: the cascade is
    * RECURSIVE (the whole descendant chain) and revocation is a TOMBSTONE
    * (`status: "revoked"` + `revokedAt`) kept until TTL expiry, so a later
-   * claim/authorization attempt can be told apart from "no grant". Returns
-   * the grants revoked BY THIS CALL (already-revoked tombstones are not
-   * double-counted); empty when the id is unknown.
+   * claim/authorization attempt can be told apart from "no grant" (sticky
+   * surgical revocation). Returns the grants revoked BY THIS CALL (already-
+   * revoked tombstones are not double-counted); empty when the id is unknown.
    */
   revokeById(grantId: string): Grant[] {
     return this.revokeCascade(new Set([grantId]));
   }
 
   /**
-   * Revoke every grant of an agent — with cascade (mejora #5, EPIC-06
-   * recursive): child grants delegated FROM the revoked grants die with their
-   * parents, and so do their own children in turn. Tombstones, same contract
-   * as revokeById.
+   * IDENTITY KILL — revoke every grant of an agent (honeytoken suspension,
+   * fleet revocation), with the full recursive cascade. Unlike the surgical
+   * revokeById, this is SCORCHED EARTH: the agent's grants (prior tombstones
+   * included) and every descendant are REMOVED from the store, not
+   * tombstoned — the security contract of EPIC-11 is that after a suspension
+   * nothing of the agent survives in grants.json. That is safe because both
+   * callers deny EVERY request of the killed identity at their own fail-
+   * closed checkpoint (honeytoken / cloud revocation) before any grant is
+   * ever consulted, so the tombstones would never be read anyway. Returns
+   * the grants revoked BY THIS CALL (pre-existing tombstones are wiped
+   * silently, not double-counted).
    */
   revokeAgent(agentId: string): Grant[] {
     const seed = new Set(
       this.grants.filter((g) => g.agentId === agentId).map((g) => g.id),
     );
-    return this.revokeCascade(seed);
+    if (seed.size === 0) return [];
+    const ids = this.expandDescendants(seed);
+    const wipedLive = this.grants.filter((g) => ids.has(g.id) && isLive(g));
+    this.grants = this.grants.filter((g) => !ids.has(g.id));
+    this.save();
+    return wipedLive;
   }
 
   /** Shared cascade: seed ids + every transitive descendant, tombstoned. */
   private revokeCascade(seed: Set<string>): Grant[] {
     if (seed.size === 0) return [];
-    const ids = new Set(seed);
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const g of this.grants) {
-        if (g.parentGrantId !== undefined && ids.has(g.parentGrantId) && !ids.has(g.id)) {
-          ids.add(g.id);
-          grew = true;
-        }
-      }
-    }
+    const ids = this.expandDescendants(seed);
     const now = Date.now();
     const revoked: Grant[] = [];
     for (const g of this.grants) {
@@ -430,5 +435,21 @@ export class GrantStore {
     }
     if (revoked.length > 0) this.save();
     return revoked;
+  }
+
+  /** Transitive closure over parentGrantId starting from a seed id set. */
+  private expandDescendants(seed: Set<string>): Set<string> {
+    const ids = new Set(seed);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const g of this.grants) {
+        if (g.parentGrantId !== undefined && ids.has(g.parentGrantId) && !ids.has(g.id)) {
+          ids.add(g.id);
+          grew = true;
+        }
+      }
+    }
+    return ids;
   }
 }

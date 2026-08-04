@@ -49,7 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   denied with an explicit reason (`grant_used` / `grant_revoked`) instead
   of silently re-requesting through the implicit auto-approve path —
   regaining the capability takes an explicit, attributed
-  `scopegate_request_capability`.
+  `scopegate_request_capability`. Tombstones are the SURGICAL revocation
+  semantics (single grant + cascade); the identity kill (`revokeAgent`:
+  honeytoken suspension, fleet revocation) still wipes the agent's grants
+  from the store outright (EPIC-11 security contract, redteam attack 06).
 
 ### Documentation
 

@@ -714,6 +714,74 @@ describe("audit firmado: ciclo de vida completo verificable", () => {
 });
 
 /* ------------------------------------------------------------------------ */
+/* Identity kill (honeytoken suspension / fleet revocation): scorched earth   */
+/* ------------------------------------------------------------------------ */
+
+describe("identity kill: la suspensión borra TODO del store (regresión redteam 06)", () => {
+  it("revokeAgent wipes every grant of the agent from grants.json — once, used, audience and descendants included", async () => {
+    const engine = await freshEngine();
+    const { GRANTS_PATH } = await import("../src/policy/grants.js");
+
+    // A standing grant, a once grant (claimed → used tombstone), an audience
+    // grant, and a delegated child owned by ANOTHER agent.
+    engine.request("agent-a", "huly:call:a", "30m", "standing");
+    engine.request("agent-a", "huly:call:b", "30m", "once", { mode: "once" });
+    engine.authorizeCall("agent-a", "huly:call:b"); // consumes → used tombstone
+    engine.adminIssueGrant("human:console:test", {
+      agentId: "agent-a",
+      audience: "agent-b",
+      capability: "huly:call:c",
+      purpose: "para B",
+    });
+    const standing = engine.activeGrants("agent-a").find((g) => g.capability === "huly:call:a");
+    engine.delegate("agent-a", {
+      grant_id: standing.id,
+      child_agent_id: "agent-b",
+      scope_subset: "huly:call:a",
+    });
+    // Sanity: the store holds several entries for/with agent-a (tombstone incl.).
+    expect(engine.listGrants().length).toBeGreaterThanOrEqual(4);
+
+    // THE IDENTITY KILL — exactly what the honeytoken suspension calls.
+    // Returns the newly-revoked LIVE grants (standing + audience + child = 3);
+    // the used tombstone is wiped silently (already consumed, not re-counted).
+    const revoked = engine.revokeAgent("agent-a");
+    expect(revoked).toBe(3);
+
+    // The security contract (redteam attack 06): NOTHING of the agent
+    // survives in grants.json — not even tombstones.
+    const file = JSON.parse(fs.readFileSync(GRANTS_PATH, "utf8")) as {
+      grants: { agentId: string; parentGrantId?: string }[];
+    };
+    expect(file.grants.filter((g) => g.agentId === "agent-a")).toHaveLength(0);
+    expect(file.grants.filter((g) => g.agentId === "agent-b")).toHaveLength(0); // delegated child wiped too
+    expect(engine.listGrants()).toHaveLength(0);
+
+    // The chain still landed in the signed audit (wiped from store ≠ forgotten).
+    const { readAuditEvents } = await import("../src/audit/verify.js");
+    const evt = readAuditEvents().find((e) => e.kind === "grants_revoked");
+    expect(evt?.detail).toMatchObject({ revokedAgentId: "agent-a", count: 3 });
+    expect((evt?.detail.chain as string[]).length).toBe(3);
+  });
+
+  it("…while the SURGICAL revocation (revokeById) keeps the sticky tombstone", async () => {
+    const engine = await freshEngine();
+    const { GRANTS_PATH } = await import("../src/policy/grants.js");
+    engine.request("agent-a", "huly:call:x", "30m", "t");
+    const grant = engine.activeGrants("agent-a")[0];
+
+    engine.revokeCascade(grant.id, { via: "test" });
+    // Tombstone present in the file, invisible to authorization views.
+    const file = JSON.parse(fs.readFileSync(GRANTS_PATH, "utf8")) as {
+      grants: { id: string; status?: string }[];
+    };
+    expect(file.grants.find((g) => g.id === grant.id)?.status).toBe("revoked");
+    expect(engine.authorizeCall("agent-a", "huly:call:x")).toEqual({ denied: "revoked" });
+    expect(engine.activeGrants("agent-a")).toHaveLength(0);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
 /* Tool level (MCP over the in-process fake gateway)                          */
 /* ------------------------------------------------------------------------ */
 

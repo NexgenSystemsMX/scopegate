@@ -1189,7 +1189,9 @@ export class PolicyEngine {
     return this.revokeCascade(grantId, { via: "agent", author: agentId, revokedAgentId: agentId });
   }
 
-  /** Revoke every grant of an agent; audits grants_revoked with the count. */
+  /** Revoke every grant of an agent (identity kill — honeytoken suspension,
+   *  fleet revocation): scorched earth in the store, with the revoked chain
+   *  still recorded in the audit. */
   revokeAgent(agentId: string): number {
     const revoked = this.grants.revokeAgent(agentId);
     if (revoked.length > 0) {
