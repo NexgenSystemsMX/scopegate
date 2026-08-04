@@ -214,6 +214,9 @@ describe("audit signing (EPIC-07)", () => {
       // Consola de administración: mutaciones del vault hechas por una persona
       // identificada (human:console:<cuenta>). Append-only, como el resto.
       "secret_added", "secret_rotated", "secret_deleted",
+      // EPIC-06 (QM keychain): consumo atómico de grants `once` y promoción
+      // admin-gated a audiencia "org". Append-only, coordinado por la epic.
+      "grant_claimed", "grant_promoted",
     ];
     expect([...AUDIT_KINDS].sort()).toEqual(expected.sort());
   });

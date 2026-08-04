@@ -81,12 +81,17 @@ to the human with the exact command:
 
 | Tool | Use when |
 |---|---|
-| `scopegate_request_capability` | Before privileged actions (may return `pending_human_approval`) |
-| `scopegate_list_capabilities` | To check what you can do now / remaining TTL |
+| `scopegate_request_capability` | Before privileged actions (may return `pending_human_approval`; supports `mode: "once"`, `audience`, `purpose`) |
+| `scopegate_list_capabilities` | To check what you can do now / remaining TTL (mode, audience, purpose, status) |
+| `scopegate_revoke_capability` | To give up one of YOUR grants early (attenuation; cascade kills delegations/promotions) |
 | `scopegate_register_upstream` | Human asks to connect a new service |
 | `scopegate_diagnose` | Any auth/connection error (self-repair; check `action_required`) |
 | `scopegate_propose_policy` | A needed capability was denied |
 | `scopegate_vault_status` | To see which secretRef NAMES exist (never values) |
+
+Keychain notes: a `once` grant authorizes EXACTLY ONE call (claim = use — no
+refunds); a grant for another `audience` always needs human approval; `purpose`
+is a declarative instruction, never enforced by the engine.
 
 ## Full documentation
 

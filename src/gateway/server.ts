@@ -262,6 +262,12 @@ export async function runGateway(
               expiresAt: g.expiresAt,
               remaining_seconds: Math.max(0, Math.round((g.expiresAt - Date.now()) / 1000)),
               ...(g.leaseId !== undefined ? { leaseId: g.leaseId } : {}),
+              // EPIC-06: QM keychain fields (console read surface).
+              mode: g.mode ?? "standing",
+              audience: g.audience ?? g.agentId,
+              ...(g.purpose ? { purpose: g.purpose } : {}),
+              status: g.status ?? "active",
+              ...(g.usedBy ? { usedBy: g.usedBy, usedAt: g.usedAt } : {}),
             })),
             leases: policy.leasesForAgent(agentId).map((l) => ({
               lease_id: l.leaseId,
@@ -281,6 +287,14 @@ export async function runGateway(
             if (grant === undefined) return false;
             policy.revokeGrantById(agentId, id);
             return true;
+          },
+          // EPIC-06 (QM keychain): cross-agent grant admin surface.
+          listGrants: (filter) => policy.listGrants(filter),
+          issueGrant: (actor, input) => policy.adminIssueGrant(actor, input),
+          promoteGrant: (actor, id, purpose) => policy.promoteGrant(actor, id, purpose),
+          revokeGrantCascade: (id, actor) => {
+            const revoked = policy.revokeCascade(id, { via: "console", author: actor });
+            return revoked.count > 0 ? revoked : null;
           },
           upstreamNames: () => cfg.upstreams.filter((u) => u.enabled !== false).map((u) => u.name),
           agents: () =>
@@ -367,9 +381,26 @@ export function createAgentServer(deps: {
     const capability = intent.tool.includes("__")
       ? intent.tool.replace("__", ":call:")
       : intent.tool;
-    const grant = policy.coveringGrant(intent.agentId, capability);
-    const grantTtlMs = grant ? Math.max(0, grant.expiresAt - Date.now()) : undefined;
+    // EPIC-06: the continuation consumes the grant through the same atomic
+    // check+claim as a direct call — a `once` grant approved for this intent
+    // is consumed HERE, never twice.
+    const authz = policy.authorizeCall(intent.agentId, capability);
     const startedAt = Date.now();
+    if ("denied" in authz) {
+      auditOrThrow(intent.agentId, "intent_executed", {
+        approvalId: intent.approvalId,
+        tool: intent.tool,
+        status: "failed",
+        durationMs: Date.now() - startedAt,
+        error: `grant not available at execution time (${authz.denied})`,
+      });
+      return {
+        ok: false,
+        error: `The grant for '${capability}' is not available at execution time (${authz.denied}) — request a fresh capability.`,
+      };
+    }
+    const grant = authz.grant;
+    const grantTtlMs = Math.max(0, grant.expiresAt - Date.now());
     try {
       const result = await proxy.call(intent.tool, intent.args, { grantTtlMs });
       auditOrThrow(intent.agentId, "intent_executed", {
@@ -572,6 +603,26 @@ export function createAgentServer(deps: {
                 "Ask the human to review the tainted content and approve (or scopegate deny). Never route around it.",
             });
           }
+          // EPIC-06 (QM keychain): optional audience/mode/purpose. `mode` is
+          // validated here so a typo fails with a clear tool error instead of
+          // silently issuing a standing grant.
+          const reqMode = args.mode === undefined ? undefined : String(args.mode);
+          if (reqMode !== undefined && reqMode !== "once" && reqMode !== "standing") {
+            return err(`Invalid mode '${reqMode}' — expected 'once' or 'standing'.`);
+          }
+          const reqAudience =
+            typeof args.audience === "string" && args.audience.trim().length > 0
+              ? args.audience.trim()
+              : undefined;
+          const reqPurpose =
+            typeof args.purpose === "string" && args.purpose.trim().length > 0
+              ? args.purpose.trim()
+              : undefined;
+          const keychainFields = {
+            ...(reqAudience ? { audience: reqAudience } : {}),
+            ...(reqMode ? { mode: reqMode as "once" | "standing" } : {}),
+            ...(reqPurpose ? { purpose: reqPurpose } : {}),
+          };
           const decision = policy.request(
             agentId,
             capability,
@@ -582,6 +633,7 @@ export function createAgentServer(deps: {
                 typeof args.lease_id === "string" && args.lease_id.length > 0
                   ? args.lease_id
                   : undefined,
+              ...keychainFields,
             },
           );
           auditOrThrow(
@@ -603,6 +655,9 @@ export function createAgentServer(deps: {
               expires_in_seconds: Math.round(decision.ttlMs / 1000),
               matched_rule: decision.rule,
               ...(leaseId ? { lease_id: leaseId, renewable: true } : {}),
+              ...(reqMode ? { mode: reqMode } : {}),
+              ...(reqAudience ? { audience: reqAudience } : {}),
+              ...(reqPurpose ?? args.reason ? { purpose: reqPurpose ?? String(args.reason) } : {}),
             });
           }
           if (decision.escalation === "human_approval") {
@@ -642,7 +697,7 @@ export function createAgentServer(deps: {
                   capability,
                   args.ttl as string | undefined,
                   String(args.reason),
-                  { leaseId },
+                  { leaseId, ...keychainFields },
                 );
                 if (granted.allow) {
                   return text({
@@ -653,6 +708,9 @@ export function createAgentServer(deps: {
                     via: "human_approval",
                     approval_id: approvalId,
                     ...(leaseId ? { lease_id: leaseId, renewable: true } : {}),
+                    ...(reqMode ? { mode: reqMode } : {}),
+                    ...(reqAudience ? { audience: reqAudience } : {}),
+                    ...(reqPurpose ?? args.reason ? { purpose: reqPurpose ?? String(args.reason) } : {}),
                   });
                 }
                 return text({
@@ -693,6 +751,18 @@ export function createAgentServer(deps: {
             let continuation: Record<string, unknown> | undefined;
             const eoa = args.execute_on_approval;
             if (eoa !== undefined) {
+              // EPIC-06: a continuation makes no sense with an audience grant —
+              // the materialized grant would belong to the AUDIENCE while the
+              // queued intent executes as the REQUESTER, so it could never be
+              // covered. Refuse the combination with a clear reason instead of
+              // letting the intent die at execution time.
+              if (reqAudience) {
+                return err(
+                  "execute_on_approval cannot be combined with 'audience' — the grant materializes for the audience, " +
+                    "but the queued intent executes as the requester and would never be covered. " +
+                    "Have the audience agent make its own request instead.",
+                );
+              }
               const tool = typeof eoa === "object" && eoa !== null ? String((eoa as Record<string, unknown>).tool ?? "") : "";
               const eoaArgs = typeof eoa === "object" && eoa !== null && typeof (eoa as Record<string, unknown>).args === "object" && (eoa as Record<string, unknown>).args !== null
                 ? (eoa as Record<string, unknown>).args as Record<string, unknown>
@@ -739,6 +809,9 @@ export function createAgentServer(deps: {
                 ? new Date(decision.approvalExpiresAt).toISOString()
                 : undefined,
               reason: decision.reason,
+              ...(reqAudience ? { audience: reqAudience } : {}),
+              ...(reqMode ? { mode: reqMode } : {}),
+              ...(reqPurpose ? { purpose: reqPurpose } : {}),
               ...(continuation ? { continuation } : {}),
               instructions:
                 `A human must approve this request. Ask them to run in their terminal: ` +
@@ -871,7 +944,10 @@ export function createAgentServer(deps: {
         }
 
         case "scopegate_list_capabilities": {
-          const grants = policy.activeGrants(agentId).map((g) => ({
+          // EPIC-06: usable-by view (own + named audience + org) with the QM
+          // keychain fields — purpose is attached verbatim as a DECLARATIVE
+          // instruction for the model; the engine never enforces it.
+          const grants = policy.usableGrants(agentId).map((g) => ({
             id: g.id,
             capability: g.capability,
             remaining_seconds: Math.max(
@@ -879,6 +955,12 @@ export function createAgentServer(deps: {
               Math.round((g.expiresAt - Date.now()) / 1000),
             ),
             ...(g.leaseId ? { lease_id: g.leaseId, renewable: true } : {}),
+            mode: g.mode ?? "standing",
+            audience: g.audience ?? g.agentId,
+            ...(g.purpose ? { purpose: g.purpose } : {}),
+            status: g.status ?? "active",
+            ...(g.usedBy ? { used_by: g.usedBy, used_at: new Date(g.usedAt ?? 0).toISOString() } : {}),
+            ...(g.agentId !== agentId ? { held_by: g.agentId } : {}),
           }));
           const leases = policy.leasesForAgent(agentId).map((l) => ({
             lease_id: l.leaseId,
@@ -888,6 +970,29 @@ export function createAgentServer(deps: {
             writes: { used: l.writesUsed, max: l.maxWrites },
           }));
           return text({ agentId, active_grants: grants, leases });
+        }
+
+        case "scopegate_revoke_capability": {
+          // EPIC-06: agent self-service revocation (privilege attenuation —
+          // no approval needed). Owner-only; the cascade (delegations,
+          // promotions) dies with the grant and is reported.
+          const grantId = String(args.grant_id ?? "");
+          if (!grantId) return err("Missing required argument 'grant_id' (see scopegate_list_capabilities).");
+          try {
+            const revoked = policy.revokeOwnGrant(agentId, grantId);
+            return text({
+              revoked: true,
+              grant_id: grantId,
+              cascade_revoked: revoked.count - 1,
+              chain: revoked.chain,
+              note:
+                revoked.count > 1
+                  ? `The grant and ${revoked.count - 1} descendant grant(s) (delegations/promotions) were revoked.`
+                  : "The grant was revoked; no descendants were affected.",
+            });
+          } catch (e) {
+            return err(errorMessage(e));
+          }
         }
 
         case "scopegate_open_task_lease": {
@@ -1546,8 +1651,66 @@ export function createAgentServer(deps: {
                 "Ask the human to review the tainted content and approve (or scopegate deny). Never route around it.",
             });
           }
-          if (!policy.isGranted(agentId, capability, args as Record<string, unknown>)) {
-            // Implicit request: succeeds only if an auto_approve rule matches.
+          // EPIC-06 (QM keychain): check + claim as ONE atomic operation —
+          // with `once` grants the gate must consume the grant in the same
+          // step that authorizes the call, or two concurrent calls would both
+          // pass. authorizeCall returns the (possibly just-claimed) grant, or
+          // exactly WHY the call is not covered.
+          const authz = policy.authorizeCall(agentId, capability, args as Record<string, unknown>);
+          let grant: import("../policy/grants.js").Grant | undefined;
+          if ("denied" in authz && authz.denied !== "none") {
+            // A grant exists (or existed) but cannot authorize this call —
+            // say exactly why instead of silently re-requesting. In
+            // particular a revocation is now STICKY: regaining the capability
+            // requires an explicit new request (attributed in the audit).
+            const denyReasons: Record<string, { code: string; message: string }> = {
+              used: {
+                code: "grant_used",
+                message:
+                  `Capability '${capability}' was covered by a single-use (once) grant that is already consumed ` +
+                  `(claim = use — no refunds). Request a fresh one with scopegate_request_capability.`,
+              },
+              revoked: {
+                code: "grant_revoked",
+                message:
+                  `The grant covering '${capability}' was revoked. Request a fresh capability with ` +
+                  `scopegate_request_capability — the explicit re-request is what makes the revocation visible in the audit.`,
+              },
+              expired: {
+                code: "grant_expired",
+                message:
+                  `The grant covering '${capability}' expired between the check and the claim — ` +
+                  `retry the call or request a fresh capability with scopegate_request_capability.`,
+              },
+              audience: {
+                code: "grant_audience",
+                message:
+                  `A live grant for '${capability}' exists but its audience does not cover agent '${agentId}'. ` +
+                  `Request your own grant with scopegate_request_capability.`,
+              },
+              hard_limit: {
+                code: "ceiling_blocked",
+                message:
+                  `Capability '${capability}' is blocked by YOUR hard limits (deny glob) even though an org/audience ` +
+                  `grant covers it — hard limits are non-negotiable.`,
+              },
+            };
+            const dr = denyReasons[authz.denied];
+            auditOrThrow(agentId, "capability_denied", {
+              capability,
+              tool: name,
+              code: dr.code,
+              reason: dr.message,
+            });
+            return {
+              ...text(classifyError({ message: dr.message, code: dr.code })),
+              isError: true,
+            };
+          }
+          if ("denied" in authz) {
+            // "none": nothing related covers the call — the historical
+            // implicit request path (succeeds only if an auto_approve rule
+            // matches), byte-compatible with pre-EPIC-06 behaviour.
             const d = policy.request(agentId, capability, undefined, "", {
               args: args as Record<string, unknown>,
             });
@@ -1572,12 +1735,14 @@ export function createAgentServer(deps: {
                 isError: true,
               };
             }
+            grant = policy.coveringGrant(agentId, capability, args as Record<string, unknown>);
+          } else {
+            grant = authz.grant;
           }
           auditOrThrow(agentId, "tool_call", { tool: name, upstream: tool.upstream }, args);
           // Remaining TTL of the covering grant → clamps any token the minter
           // mints for this call (token_ttl = min(provider ceiling, grant TTL)).
           // The same grant carries the redact categories of its issuing rule.
-          const grant = policy.coveringGrant(agentId, capability, args as Record<string, unknown>);
           // Mejora #1: lease write budget — a lease-covered WRITE consumes one
           // unit of the task budget; exhausted (or dead) lease denies the call.
           if (grant?.leaseId && isWriteTool(tool.upstream, tool.upstreamName)) {

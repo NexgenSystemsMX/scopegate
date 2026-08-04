@@ -26,11 +26,23 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { audit } from "../audit/log.js";
 import { POLICIES_PATH, ensureDir } from "../config/config.js";
 import { validatePoliciesFile } from "../policy/engine.js";
+import type { Grant } from "../policy/grants.js";
 import type { UpsertInput as RuleUpsertInput } from "./policy-rules.js";
 import { listApprovals } from "../policy/approvals.js";
 import { approveRequest, denyRequest, approvalsForReview } from "../commands/approvals-cli.js";
 import type { Vault } from "../vault/vault.js";
 import { log } from "./proxy.js";
+
+/** EPIC-06: body of POST /admin/grants (admin direct issue). */
+export interface AdminGrantIssueInput {
+  agentId?: string;
+  audience?: string;
+  capability: string;
+  ttl?: string;
+  mode?: "once" | "standing";
+  purpose: string;
+  when?: Record<string, string | number | boolean>;
+}
 
 export interface AdminContext {
   vault: Vault;
@@ -38,6 +50,27 @@ export interface AdminContext {
   capabilities: () => { active_grants: unknown[]; leases: unknown[] };
   /** Revoke a grant/lease by id. Returns false when the id is unknown. */
   revokeCapability: (id: string) => boolean;
+  /**
+   * EPIC-06 (QM keychain): cross-agent grant listing (tombstones included),
+   * filtered by holder / effective audience / mode.
+   */
+  listGrants: (filter: { agent?: string; audience?: string; mode?: string }) => Grant[];
+  /**
+   * EPIC-06: admin direct issue. Hard limits are re-evaluated inside — an
+   * admin never jumps deny globs or TTL ceilings. Throws Error on refusal.
+   */
+  issueGrant: (actor: string, input: AdminGrantIssueInput) => Grant;
+  /** EPIC-06: promote a live grant to audience "org" (child of the original). */
+  promoteGrant: (actor: string, grantId: string, purpose: string) => { parent: Grant; child: Grant };
+  /**
+   * EPIC-06: revoke with the full recursive cascade. Returns null when the id
+   * is unknown; otherwise the count and the chain (for the console's blast
+   * radius display). The engine audits grants_revoked with the console actor.
+   */
+  revokeGrantCascade: (
+    grantId: string,
+    actor: string,
+  ) => { count: number; chain: { id: string; agentId: string; capability: string; audience?: string }[] } | null;
   /** Upstream names declared in the running config. */
   upstreamNames: () => string[];
   /**
@@ -245,6 +278,75 @@ export async function routeAdmin(
       // grants_revoked ya describe exactamente esto.
       audit(decidedByConsole(actor), "grants_revoked", { id, via: "console" });
       return ok({ id, revoked: true });
+    }
+
+    // --- grants (EPIC-06, QM keychain) --------------------------------------
+    // Cross-agent surface for the console: list with the keychain fields,
+    // direct issue (the only birth of org grants besides promote), promote
+    // to org, and revoke with the full cascade reported.
+    if (p === "/admin/grants" && method === "GET") {
+      const agent = url.searchParams.get("agent");
+      const audience = url.searchParams.get("audience");
+      const mode = url.searchParams.get("mode");
+      return ok({
+        grants: ctx.listGrants({
+          ...(agent ? { agent } : {}),
+          ...(audience ? { audience } : {}),
+          ...(mode ? { mode } : {}),
+        }),
+      });
+    }
+    if (p === "/admin/grants" && method === "POST") {
+      const b = (body ?? {}) as Record<string, unknown>;
+      try {
+        const grant = ctx.issueGrant(decidedByConsole(actor), {
+          ...(typeof b.agentId === "string" ? { agentId: b.agentId } : {}),
+          ...(typeof b.audience === "string" ? { audience: b.audience } : {}),
+          capability: String(b.capability ?? ""),
+          ...(typeof b.ttl === "string" ? { ttl: b.ttl } : {}),
+          ...(b.mode === "once" || b.mode === "standing" ? { mode: b.mode } : {}),
+          purpose: String(b.purpose ?? ""),
+          ...(b.when && typeof b.when === "object" && !Array.isArray(b.when)
+            ? { when: b.when as Record<string, string | number | boolean> }
+            : {}),
+        });
+        log("info", "grant issued from the console", {
+          actor,
+          capability: grant.capability,
+          audience: grant.audience ?? grant.agentId,
+        });
+        return ok(grant);
+      } catch (e) {
+        return bad(422, (e as Error).message);
+      }
+    }
+    const promoteMatch = /^\/admin\/grants\/([\w-]+)\/promote$/.exec(p);
+    if (promoteMatch && method === "POST") {
+      const b = (body ?? {}) as { purpose?: unknown };
+      try {
+        const { parent, child } = ctx.promoteGrant(
+          decidedByConsole(actor),
+          promoteMatch[1],
+          String(b.purpose ?? ""),
+        );
+        log("info", "grant promoted to org from the console", {
+          actor,
+          parent: parent.id,
+          child: child.id,
+        });
+        return ok({ promoted: true, parent: parent.id, child });
+      } catch (e) {
+        const msg = (e as Error).message;
+        return bad(msg.startsWith("No live grant") ? 404 : 422, msg);
+      }
+    }
+    const grantMatch = /^\/admin\/grants\/([\w-]+)$/.exec(p);
+    if (grantMatch && method === "DELETE") {
+      const id = grantMatch[1];
+      const revoked = ctx.revokeGrantCascade(id, decidedByConsole(actor));
+      if (!revoked) return bad(404, `Unknown grant '${id}'.`);
+      log("info", "grant revoked from the console", { actor, id, cascade: revoked.count - 1 });
+      return ok({ id, revoked: revoked.count, chain: revoked.chain });
     }
 
     // --- approvals --------------------------------------------------------

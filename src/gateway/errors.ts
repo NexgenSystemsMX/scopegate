@@ -42,6 +42,9 @@ export interface AgentErrorEnvelope {
   error: true;
   kind: AgentErrorKind;
   message: string;
+  /** The authoritative policy/denial code when one exists (EPIC-06 grant
+   *  lifecycle codes included) — machine-readable beyond the coarse `kind`. */
+  code?: string;
   retry_after_s?: number;
   next_action: AgentNextAction;
   next_step: string;
@@ -107,11 +110,13 @@ function envelope(
   next_action: AgentNextAction,
   next_step: string,
   retry_after_s?: number,
+  code?: string,
 ): AgentErrorEnvelope {
   return {
     error: true,
     kind,
     message,
+    ...(code !== undefined && code !== "" ? { code } : {}),
     ...(retry_after_s !== undefined ? { retry_after_s } : {}),
     next_action,
     next_step,
@@ -137,6 +142,26 @@ export function classifyError(input: {
       message,
       "human",
       "Hard policy denial — do NOT retry or broaden scope. Call scopegate_propose_policy with a justification, or ask a human to review policies.yaml.",
+      undefined,
+      code,
+    );
+  }
+  // EPIC-06 grant lifecycle codes: the grant is gone (consumed, revoked,
+  // raced out of existence) or its audience excludes the caller — the way
+  // back is always an explicit, attributed re-request.
+  if (
+    code === "grant_used" ||
+    code === "grant_revoked" ||
+    code === "grant_expired" ||
+    code === "grant_audience"
+  ) {
+    return envelope(
+      "missing_scope",
+      message,
+      "request_capability",
+      "Call scopegate_request_capability with the SAME capability (never broader) — the previous grant is gone for good.",
+      undefined,
+      code,
     );
   }
   if (code === "capability_rate_limited" || isRateLimitMessage(message)) {
