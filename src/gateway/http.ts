@@ -12,6 +12,35 @@
  *   per-session state buys nothing. The per-request cost is just handler
  *   registration: all expensive state (upstream connections, vault, policy)
  *   is shared through the createAgentServer closure.
+ * - THE SINGLE-TENANCY LINE ABOVE IS LOAD-BEARING (EPIC-49.1). It is not a
+ *   deployment footnote: it is the ONLY boundary the `audience: "org"` grant
+ *   has. In the policy plane `org` is a LITERAL with no tenant inside it —
+ *   `GrantStore.coversCaller` (src/policy/grants.ts) resolves it to
+ *   `agentAccepted(id)`, i.e. "any identity DECLARED on this gateway", and the
+ *   policy set has NO notion of workspace, so nothing anywhere compares the
+ *   caller's tenant with the holder's. Stated in the language of the QM
+ *   program, which is where this invariant is audited:
+ *   audience: "org" significa este workspace solo porque una instancia de
+ *   gateway sirve exactamente un workspace — la audiencia no lo comprueba.
+ * - WHAT BREAKS THE DAY THAT STOPS BEING TRUE. Serve two workspaces from one
+ *   instance — a shared gateway, an `agents:` glob that spans both, or the
+ *   `*` catch-all (which `agentIdAccepted` honours: see src/policy/engine.ts)
+ *   left in place next to a second tenant's ids — and EVERY live
+ *   `audience: "org"` grant becomes usable by the other tenant's identities.
+ *   Silently: no code changes, no grant changes, no audit signal, because the
+ *   match still succeeds and nothing was ever asserted about workspaces. The
+ *   repair is the rename to `workspace:<id>` plus a fail-closed startup guard
+ *   (EPIC-49.2/49.3), NOT a policy edit — a policy edit cannot express a
+ *   boundary the data model does not have.
+ * - WHAT THIS COMMENT DOES NOT CLAIM. `agentIdAccepted` is not a workspace
+ *   check today either: `docker/bootstrap-prod.mjs` writes `nexgen-kimi`,
+ *   `demo-agent` and a `*` catch-all into the production policy set, so the
+ *   accept predicate already answers YES to any id presented on
+ *   `X-ScopeGate-Agent`. What keeps org grants inside one workspace right now
+ *   is the deployment topology plus $SCOPEGATE_HTTP_TOKEN, not the grant
+ *   model. The executable statement of all of this is
+ *   tests/audiencia-invariante.test.ts; the runbook entry with the owner is
+ *   docs/runbook/invariante-audiencia.md.
  * - AuthN: EVERY request except GET /health requires
  *   `Authorization: Bearer $SCOPEGATE_HTTP_TOKEN` (timing-safe compare).
  *   The env var is MANDATORY in http mode: startup aborts without it
