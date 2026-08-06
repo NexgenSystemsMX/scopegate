@@ -238,6 +238,20 @@ export class GrantStore {
    *   - `audience: "org"` → any identity DECLARED on the gateway (agentAccepted);
    *   - any other `audience` → exactly that logical agentId.
    * Note the holder is NOT covered when the audience names someone else.
+   *
+   * EPIC-49.1 — THE INVARIANT THIS BRANCH RESTS ON, written where it is read.
+   * `"org"` is a literal: there is no workspace anywhere in this data model,
+   * and `agentAccepted` answers "declared on this gateway", never "same
+   * workspace" (with a `*` section in `agents:` it answers yes to ANY id —
+   * `agentIdAccepted`, src/policy/engine.ts). The reason that is not a
+   * cross-tenant leak is stated in src/gateway/http.ts and lives outside this
+   * file: the gateway is single-tenant — one agent identity per instance — so
+   * "declared here" and "this workspace" happen to be the same set. The day
+   * one instance serves two workspaces that equality is gone and every live
+   * org grant reaches the other tenant with no code change and no audit
+   * signal. Fixing it is the rename to `workspace:<id>` plus the fail-closed
+   * startup guard (EPIC-49.2/49.3), not a policy edit. Executable statement:
+   * tests/audiencia-invariante.test.ts.
    */
   private coversCaller(g: Grant, agentId: string): boolean {
     if (g.audience === undefined) return g.agentId === agentId;
