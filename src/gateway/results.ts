@@ -193,6 +193,56 @@ export function getByPath(payload: unknown, dotPath: string): { found: boolean; 
   return { found: true, value: current };
 }
 
+export interface CappedSlice {
+  capped: true;
+  bytes: number;
+  max_bytes: number;
+  preview: string;
+  note: string;
+}
+
+/**
+ * Bound a `result_get` slice to the same inline budget every other tool result
+ * respects.
+ *
+ * Why this exists: `result_get` takes a dot-path into an ALREADY stored
+ * oversized payload, and a broad path (or the root of a big sub-object) returns
+ * almost all of it. That return value never went through
+ * `handleOversizedResult`, so it was the one tool result in the gateway with no
+ * ceiling at all. Downstream that is worse than it sounds: the agent SDK
+ * normally spills a >50 000-char tool result to a file and leaves a ~2 KB
+ * preview in the conversation, but it deliberately abstains when the result is
+ * already flagged `truncated` — and the MCP layer sets exactly that flag when it
+ * cuts at 100 000 chars. So an uncapped slice lands in the history at its full
+ * 100 000 chars and is re-sent on every subsequent step of the turn. With a
+ * client that has no prompt cache (measured on a fleet running against a
+ * self-hosted DeepSeek swarm, which re-pays 97 % of its payload every step) one
+ * such slice on step 3 of a 30-step run costs ~765 000 extra tokens.
+ *
+ * Why a cap and NOT another stored ref, unlike `handleOversizedResult`: the
+ * input here is itself a ref. Storing a slice of a stored payload chains refs,
+ * and if the model asks for the same broad path again it gets a fresh ref every
+ * time and never converges. Capping inline terminates, and `note` carries the
+ * one thing the model cannot deduce on its own — that asking again, or wider,
+ * returns strictly less, so the way forward is a narrower path or
+ * `scopegate_result_grep`.
+ */
+export function capSlice(value: unknown, maxBytes = DEFAULT_MAX_INLINE_BYTES): unknown | CappedSlice {
+  const bytes = payloadBytes(value);
+  if (bytes <= maxBytes) return value;
+  const serialized = JSON.stringify(value, null, 2) ?? "null";
+  return {
+    capped: true,
+    bytes,
+    max_bytes: maxBytes,
+    preview: serialized.slice(0, PREVIEW_CHARS),
+    note:
+      `This slice is ${bytes} bytes, over the ${maxBytes}-byte inline budget, so only a preview is inlined. ` +
+      `Narrow the path (see stats.top_keys in the original preview) or search with scopegate_result_grep. ` +
+      `Re-requesting the same or a wider path returns no more than this — do NOT retry it.`,
+  };
+}
+
 export interface GrepHit {
   path: string;
   line: string;

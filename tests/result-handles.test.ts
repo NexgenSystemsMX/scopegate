@@ -83,3 +83,85 @@ describe("result handles", () => {
     expect(m.loadResult(stored.ref, "alice")).toBeUndefined();
   });
 });
+
+/**
+ * capSlice: the inline budget for a result_get slice.
+ *
+ * Before this, result_get was the one tool result in the gateway that returned
+ * an unbounded payload: a broad dot-path handed back nearly the whole stored
+ * object. It matters downstream because the agent SDK's own >50 000-char spill
+ * abstains on results already flagged `truncated`, and the MCP layer sets that
+ * flag when it cuts at 100 000 chars — so an uncapped slice reached the model's
+ * history at full size and was re-sent on every later step of the turn.
+ */
+// The budget is a parameter, so these drive it DOWN instead of building payloads
+// up. Same branches, ~1 KB of serialization instead of megabytes: the first
+// version of this block used 4000-item arrays and 40 KB blobs, and the extra CPU
+// was enough to make the fake-timer test in oauth-daemon.test.ts time out when
+// the suite runs in parallel. Cheap tests are not just polite here, they are the
+// difference between a green suite and a phantom failure two files away.
+describe("capSlice", () => {
+  type Capped = import("../src/gateway/results.js").CappedSlice;
+
+  it("passes a slice under the budget through untouched, identity included", async () => {
+    const m = await mod();
+    const small = { title: "issue 1", body: "short" };
+    // Same reference back, not a copy: the common path must not serialize.
+    expect(m.capSlice(small, 16 * 1024)).toBe(small);
+    expect(m.capSlice("plain string", 16 * 1024)).toBe("plain string");
+    expect(m.capSlice(null, 16 * 1024)).toBe(null);
+  });
+
+  it("caps a slice over the budget and reports the real size", async () => {
+    const m = await mod();
+    const slice = { items: [{ id: 1, title: "issue 1" }, { id: 2, title: "issue 2" }] };
+    const bytes = m.payloadBytes(slice);
+
+    const capped = m.capSlice(slice, 32) as Capped;
+    expect(capped.capped).toBe(true);
+    expect(capped.bytes).toBe(bytes);
+    expect(capped.max_bytes).toBe(32);
+    // What reaches the model is the 2 KB preview, whatever the slice weighed.
+    expect(capped.preview.length).toBeLessThanOrEqual(2048);
+  });
+
+  it("bounds what reaches the model even when the slice is far over budget", async () => {
+    const m = await mod();
+    const slice = { blob: "x".repeat(8000) };
+    const capped = m.capSlice(slice, 512) as Capped;
+    expect(capped.bytes).toBeGreaterThan(8000);
+    // The whole capped envelope, preview included, stays near the preview cap —
+    // that is the property the fix exists for.
+    expect(m.payloadBytes(capped)).toBeLessThan(3000);
+  });
+
+  it("tells the model that retrying wider is pointless, and offers result_grep", async () => {
+    // The note is what makes this terminate. capSlice deliberately does NOT
+    // store a new ref (the input is already a ref, so chaining could loop
+    // forever on the same broad path); instead the model is told the one thing
+    // it cannot infer — that asking again returns no more.
+    const m = await mod();
+    const capped = m.capSlice({ blob: "x".repeat(200) }, 32) as Capped;
+    expect(capped.note).toContain("scopegate_result_grep");
+    expect(capped.note).toContain("do NOT retry");
+    expect(capped).not.toHaveProperty("result_ref");
+  });
+
+  it("honours the budget it is given, since it is per-agent policy", async () => {
+    // handleOversizedResult reads policy.maxInlineBytesFor(agentId); the cap has
+    // to follow the same number or the two disagree for that agent.
+    const m = await mod();
+    const payload = { blob: "y".repeat(200) };
+    expect(m.capSlice(payload, 64 * 1024)).toBe(payload);
+    expect((m.capSlice(payload, 32) as Capped).capped).toBe(true);
+  });
+
+  it("defaults to the same budget as the spill mechanism", async () => {
+    const m = await mod();
+    expect(m.DEFAULT_MAX_INLINE_BYTES).toBe(16 * 1024);
+    // Just over the default, without building anything large.
+    const justOver = { blob: "z".repeat(m.DEFAULT_MAX_INLINE_BYTES) };
+    expect((m.capSlice(justOver) as Capped).capped).toBe(true);
+    expect(m.capSlice({ a: 1 })).toEqual({ a: 1 });
+  });
+});

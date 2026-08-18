@@ -55,6 +55,7 @@ import { readAuditEvents } from "../audit/verify.js";
 import { taintOf, taintMode } from "./taint.js";
 import {
   buildPreview,
+  capSlice,
   DEFAULT_MAX_INLINE_BYTES,
   getByPath,
   grepPayload,
@@ -1137,7 +1138,12 @@ export function createAgentServer(deps: {
                   : undefined,
             });
           }
-          return text({ found: true, ref, path, value: got.value });
+          // The slice obeys the same inline budget as every other tool result.
+          // Without this, a broad path returned nearly the whole stored payload
+          // uncapped — the only unbounded result in the gateway. See capSlice
+          // for why it caps inline instead of storing another ref.
+          const maxInline = policy.maxInlineBytesFor(agentId) ?? DEFAULT_MAX_INLINE_BYTES;
+          return text({ found: true, ref, path, value: capSlice(got.value, maxInline) });
         }
 
         case "scopegate_result_grep": {
@@ -1564,14 +1570,23 @@ export function createAgentServer(deps: {
           }
           const result = resultFor(approvalId);
           if (result) {
-            return text({
-              status: result.status,
-              approval_id: result.approvalId,
-              tool: result.tool,
-              executed_at: new Date(result.executedAt).toISOString(),
-              duration_ms: result.durationMs,
-              ...(result.status === "executed" ? { result: result.result } : { error: result.error }),
-            });
+            // `result.result` is the upstream payload of the intent that ran on
+            // approval, and it arrives here WITHOUT having passed through the
+            // synchronous path's handleOversizedResult — the queued executor
+            // returns it verbatim. An approved write that answers with a large
+            // body therefore entered the conversation uncapped, which is the
+            // same leak result_get had. Same absorber, same budget.
+            return handleOversizedResult(
+              text({
+                status: result.status,
+                approval_id: result.approvalId,
+                tool: result.tool,
+                executed_at: new Date(result.executedAt).toISOString(),
+                duration_ms: result.durationMs,
+                ...(result.status === "executed" ? { result: result.result } : { error: result.error }),
+              }),
+              "scopegate_collect",
+            );
           }
           const intent = latestIntentFor(approvalId);
           if (intent) {
@@ -1609,14 +1624,21 @@ export function createAgentServer(deps: {
             }
             const result = resultFor(approvalId);
             if (result) {
-              return text({
-                status: result.status,
-                approval_id: result.approvalId,
-                tool: result.tool,
-                executed_at: new Date(result.executedAt).toISOString(),
-                duration_ms: result.durationMs,
-                ...(result.status === "executed" ? { result: result.result } : { error: result.error }),
-              });
+              // Same payload and same leak as scopegate_collect above: wait is
+              // just the polling flavour of collecting the same outcome, so it
+              // needs the same absorber. Fixing only one of the two leaves the
+              // hole open for whichever verb the agent happens to use.
+              return handleOversizedResult(
+                text({
+                  status: result.status,
+                  approval_id: result.approvalId,
+                  tool: result.tool,
+                  executed_at: new Date(result.executedAt).toISOString(),
+                  duration_ms: result.durationMs,
+                  ...(result.status === "executed" ? { result: result.result } : { error: result.error }),
+                }),
+                "scopegate_wait",
+              );
             }
             const intent = latestIntentFor(approvalId);
             if (intent && intent.status === "expired") {
