@@ -1,8 +1,15 @@
 /* ScopeGate Cloud panel — dependency-free vanilla JS (no build step).
  *
  * Tabs: Overview, Fleet, Approvals, Capabilities, Audit, Policy, Billing,
- * Settings. Auth: the admin token is kept in localStorage and sent as
- * `Authorization: Bearer <token>` to the same-origin /v1 API.
+ * Settings. Auth: the admin token is sent as `Authorization: Bearer <token>` to
+ * the same-origin /v1 API, from `sessionStorage` — NOT `localStorage`.
+ *
+ * Por qué (E4, 2026-10-15): en `localStorage` el token sobrevive al cierre del
+ * navegador y se comparte entre pestañas, así que un descuido lo deja ahí durante
+ * semanas. `sessionStorage` muere con la pestaña y no cruza entre ellas. Es una
+ * mitigación PARCIAL y conviene no venderla como más: un XSS en este mismo origen
+ * lee `sessionStorage` igual que `localStorage`. La solución de verdad es una
+ * sesión en el servidor con cookie `HttpOnly`, y este plano de control no la tiene.
  */
 "use strict";
 
@@ -10,8 +17,11 @@ const LS_TOKEN = "scopegate.cloud.adminToken";
 const LS_TEAM = "scopegate.cloud.teamId";
 const REFRESH_MS = 15_000;
 
+/** Sólo el TOKEN va aquí. El id de equipo no es un secreto y se queda en localStorage. */
+const tokenStore = sessionStorage;
+
 const state = {
-  token: localStorage.getItem(LS_TOKEN) || null,
+  token: tokenStore.getItem(LS_TOKEN) || null,
   teamId: localStorage.getItem(LS_TEAM) || null,
   teams: [],
   activeTab: "overview",
@@ -99,12 +109,12 @@ async function login(token) {
     state.token = null;
     throw e;
   }
-  localStorage.setItem(LS_TOKEN, token);
+  tokenStore.setItem(LS_TOKEN, token);
   await boot();
 }
 
 function logout() {
-  localStorage.removeItem(LS_TOKEN);
+  tokenStore.removeItem(LS_TOKEN);
   state.token = null;
   location.reload();
 }
@@ -769,7 +779,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (state.token) {
     boot().catch((e) => {
-      localStorage.removeItem(LS_TOKEN);
+      tokenStore.removeItem(LS_TOKEN);
       state.token = null;
       showError($("#login-error"), "Session rejected: " + (e.message || e));
     });

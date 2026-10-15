@@ -233,8 +233,52 @@ export class LocalVaultCore implements VaultOps {
   }
 
   delete(ref: string): void {
+    // Sólo hay algo que perder si el ref existe: no se escribe copia en un
+    // borrado de algo que no está (y así no se pisa el .bak de un borrado previo).
+    if (ref in this.secrets) this.backupBeforeDelete(ref);
     delete this.secrets[ref];
     this.persist();
+  }
+
+  /**
+   * Copia `vault.enc` ANTES de borrar un ref, y verifica que la copia descifra.
+   *
+   * Por qué existe: `delete` reescribe el fichero completo sin el ref, y no hay
+   * versionado salvo la copia de la rotación de clave. Si el proceso muere entre
+   * el `rm` y el `add` de un bootstrap declarativo —y `sg-bootstrap` hace
+   * exactamente ese par para los refs declarativos—, el ref queda borrado sin
+   * copia, y no hay `secret get` que lo recupere: se pierde para siempre.
+   *
+   * Se nombra POR REF, no por instante: así el conjunto es acotado (una copia por
+   * ref, no una por borrado) y cada copia contiene el estado inmediatamente
+   * anterior al borrado de ESE ref, que es justo el que hay que recuperar.
+   *
+   * FAIL-CLOSED: si la copia no se puede escribir o no descifra, se aborta el
+   * borrado. Una copia que no descifra no es una red de seguridad, es un fichero
+   * que ocupa sitio; y borrar sin copia recuperable es como se pierde un secreto.
+   */
+  private backupBeforeDelete(ref: string): void {
+    if (!fs.existsSync(VAULT_PATH)) return;
+    const safe = ref.replace(/[^A-Za-z0-9._-]/g, "_");
+    const backupPath = `${VAULT_PATH}.pre-delete-${safe}.bak`;
+    const tmp = `${backupPath}.tmp`;
+    try {
+      fs.writeFileSync(tmp, fs.readFileSync(VAULT_PATH), { mode: 0o600 });
+      fs.renameSync(tmp, backupPath);
+      const parsed = JSON.parse(fs.readFileSync(backupPath, "utf8")) as VaultFile;
+      decryptVaultFile(parsed, this.masterKey);
+    } catch (e) {
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {
+        /* best effort */
+      }
+      throw new Error(
+        `refusing to delete '${ref}': could not write a verifiable backup at ` +
+          `${backupPath} (${errMsg(e)}). Deleting without a recoverable copy is ` +
+          `how a secret is lost for good.`,
+      );
+    }
   }
 
   /** Names only — safe to show to agents/humans. Never values. */

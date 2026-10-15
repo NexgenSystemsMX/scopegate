@@ -157,3 +157,38 @@ describe("buildDecisionText / notifyApprovalDecided", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("notifySecretRefs — refs del notificador para el guard de borrado", () => {
+  it("incluye slackWebhookRef y el ref de cada canal", async () => {
+    const { notifySecretRefs } = await import("../src/notify/config.js");
+    expect(
+      notifySecretRefs({
+        enabled: true,
+        slackWebhookRef: "slack_webhook_url",
+        notifiers: [
+          { type: "webhook", ref: "sg_webhook_hmac", url: "https://worker.test/sg-events" },
+          { type: "huly", ref: "huly_nexgen", channel: "aprobaciones" },
+          { type: "webhook", url: "https://worker.test/sin-ref" },
+        ],
+      }),
+    ).toEqual(["slack_webhook_url", "sg_webhook_hmac", "huly_nexgen"]);
+  });
+
+  it("una config deshabilitada no reporta ningún ref", async () => {
+    const { notifySecretRefs } = await import("../src/notify/config.js");
+    expect(notifySecretRefs({ enabled: false })).toEqual([]);
+  });
+
+  it("deduplica un ref usado por dos canales", async () => {
+    const { notifySecretRefs } = await import("../src/notify/config.js");
+    expect(
+      notifySecretRefs({
+        enabled: true,
+        notifiers: [
+          { type: "webhook", ref: "sg_webhook_hmac", url: "https://a.test" },
+          { type: "webhook", ref: "sg_webhook_hmac", url: "https://b.test" },
+        ],
+      }),
+    ).toEqual(["sg_webhook_hmac"]);
+  });
+});

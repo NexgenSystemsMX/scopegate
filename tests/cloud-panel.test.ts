@@ -431,10 +431,23 @@ describe("panel backend endpoints (PLAN-LANDING-PANEL F2)", () => {
     const feedTeam = await api(ctx, `/v1/approvals/decisions?teamId=${teamId}`, { token: enrollToken });
     expect(feedTeam.json.decisions.length).toBe(2);
 
-    // since-cursor trims the feed.
-    const ts = (feedTeam.json.decisions as { ts: string }[])[0].ts;
-    const feedSince = await api(ctx, `/v1/approvals/decisions?teamId=${teamId}&since=${encodeURIComponent(ts)}`, { token: enrollToken });
-    expect(feedSince.json.decisions.length).toBe(1);
+    // since-cursor trims the feed. Se usa `since` + `sinceId` (cursor por
+    // (ts, approvalId)): con `since` solo, dos decisiones en el MISMO
+    // milisegundo se descartaban ambas y el test era intermitente.
+    const all = feedTeam.json.decisions as { ts: string; approvalId: string }[];
+    expect(all.length).toBe(2);
+    const sorted = [...all].sort((x, y) =>
+      x.ts === y.ts ? x.approvalId.localeCompare(y.approvalId) : x.ts.localeCompare(y.ts),
+    );
+    const cursor = sorted[0];
+    const feedSince = await api(
+      ctx,
+      `/v1/approvals/decisions?teamId=${teamId}&since=${encodeURIComponent(cursor.ts)}&sinceId=${encodeURIComponent(cursor.approvalId)}`,
+      { token: enrollToken },
+    );
+    expect(feedSince.json.decisions.map((d: { approvalId: string }) => d.approvalId)).toEqual([
+      sorted[1].approvalId,
+    ]);
 
     // Anonymous → 401; agent of the team against another team → 403.
     expect((await api(ctx, `/v1/approvals/decisions?teamId=${teamId}`, { token: null })).status).toBe(401);

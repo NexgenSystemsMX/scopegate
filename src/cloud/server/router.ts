@@ -54,10 +54,13 @@ export interface RouterDeps {
 const MAX_BODY_BYTES = 8 * 1024 * 1024; // 8 MiB — audit batches can be chunky
 
 type Auth =
-  | { kind: "admin" }
+  | { kind: "admin"; roles: string[] }
   | { kind: "agent"; agent: Agent }
   | { kind: "team"; team: Team }
   | { kind: "none" };
+
+/** Roles the admin TOKEN holds. The env token is the root credential: all of them. */
+const ADMIN_TOKEN_ROLES = ["owner", "approver", "viewer"];
 
 function safeEqual(a: string, b: string): boolean {
   const ba = Buffer.from(a);
@@ -78,14 +81,17 @@ function bearerToken(req: IncomingMessage): string | null {
 function authenticate(req: IncomingMessage, deps: RouterDeps): Auth {
   const token = bearerToken(req);
   if (token !== null) {
-    if (safeEqual(token, deps.adminToken)) return { kind: "admin" };
+    if (safeEqual(token, deps.adminToken)) return { kind: "admin", roles: ADMIN_TOKEN_ROLES };
     const agent = deps.store.findAgentBySecretHash(hashAgentSecret(token));
     if (agent) return { kind: "agent", agent };
     const team = deps.store.findTeamByEnrollToken(token);
     if (team) return { kind: "team", team };
   }
-  // SSO adapter (admin-equivalent in this dev-grade plane — see sso.ts).
-  if (deps.sso.authenticate(req) !== null) return { kind: "admin" };
+  // SSO adapter (admin-equivalent in this dev-grade plane — see sso.ts). The
+  // roles come from the adapter, NOT from a constant here: a real IdP maps its
+  // groups to owner/approver/viewer and that mapping is what decides access.
+  const sso = deps.sso.authenticate(req);
+  if (sso !== null) return { kind: "admin", roles: sso.roles ?? [] };
   return { kind: "none" };
 }
 
@@ -94,6 +100,27 @@ function requireAdmin(auth: Auth): void {
   if (auth.kind !== "admin") {
     throw auth.kind === "none" ? unauthorized() : forbidden("admin scope required");
   }
+}
+
+/**
+ * Require admin scope AND one of `allowed` roles.
+ *
+ * Why this exists: `requireAdmin` only looked at `auth.kind`, so every
+ * authenticated admin — whatever its roles — could rewrite the policy that
+ * every enrolled gateway pulls, revoke capabilities and resolve approvals. The
+ * dev SSO adapter hands out every role, which is why the gap was invisible in
+ * practice; it stops being invisible the moment a real IdP is plugged in.
+ *
+ * The env admin TOKEN (ADMIN_TOKEN) holds every role on purpose: it is the root
+ * credential and token-authenticated callers are unaffected by this change.
+ */
+function requireRole(auth: Auth, ...allowed: string[]): void {
+  if (auth.kind !== "admin") {
+    throw auth.kind === "none" ? unauthorized() : forbidden("admin scope required");
+  }
+  if (allowed.length === 0) return;
+  if (allowed.some((r) => auth.roles.includes(r))) return;
+  throw forbidden(`requires role: ${allowed.join(" or ")}`);
 }
 
 /**
@@ -248,9 +275,14 @@ export async function handleApiRequest(
     if (!teamId) throw badRequest("teamId query param is required");
     const agent = requireTeamAccess(auth, teamId);
     const since = asNonEmptyString(url.searchParams.get("since")) ?? undefined;
+    // `sinceId` opcional: sin él el cursor es sólo `ts` y descarta en silencio
+    // los eventos que comparten milisegundo con el último visto. Con él, el
+    // cursor es (ts, approvalId) y no pierde nada. Aditivo: los clientes que no
+    // lo mandan reciben exactamente lo mismo que antes.
+    const sinceId = asNonEmptyString(url.searchParams.get("sinceId")) ?? undefined;
     // An agent credential sees only its own decisions; team/admin see all.
     sendJson(res, 200, {
-      decisions: listDecisions(store, teamId, since, agent?.agentId),
+      decisions: listDecisions(store, teamId, since, agent?.agentId, sinceId),
     });
     return true;
   }
@@ -270,6 +302,9 @@ export async function handleApiRequest(
     requireAdmin(auth);
 
     if (method === "POST" && path === "/v1/admin/teams") {
+      // Crear un team emite un enrollToken: es la operación que da acceso a
+      // gateways nuevos. Sólo owner.
+      requireRole(auth, "owner");
       const body = await readJsonBody(req);
       const name = isRecord(body) ? asNonEmptyString(body.name) : null;
       if (!name) throw badRequest("name is required");
@@ -299,11 +334,15 @@ export async function handleApiRequest(
     }
 
     if (method === "PUT" && path === "/v1/admin/policy") {
+      // La política firmada es lo que TODOS los gateways enrolados descargan.
+      requireRole(auth, "owner");
       sendJson(res, 200, putPolicy(store, cloudIdentity, await readJsonBody(req)));
       return true;
     }
 
     if (method === "POST" && path === "/v1/admin/revocations") {
+      // Asimetría (§6.3): aprobar y revocar requieren approver u owner.
+      requireRole(auth, "approver", "owner");
       sendJson(res, 201, addRevocation(store, await readJsonBody(req)));
       return true;
     }
@@ -337,6 +376,8 @@ export async function handleApiRequest(
     }
 
     if (method === "POST" && path === "/v1/admin/alerts") {
+      // Configurar el webhook de alertas es una mutación de infraestructura.
+      requireRole(auth, "owner");
       const body = await readJsonBody(req);
       const teamId = isRecord(body) ? asNonEmptyString(body.teamId) : null;
       const webhookUrl = isRecord(body) ? asNonEmptyString(body.webhookUrl) : null;
@@ -374,6 +415,9 @@ export async function handleApiRequest(
     }
 
     if (method === "POST" && path === "/v1/admin/approvals/resolve") {
+      // Asimetría (§6.3): resolver una aprobación es la acción que un `viewer`
+      // nunca debe poder hacer — es el corazón de que ScopeGate signifique algo.
+      requireRole(auth, "approver", "owner");
       sendJson(res, 200, resolveApproval(store, await readJsonBody(req)));
       return true;
     }

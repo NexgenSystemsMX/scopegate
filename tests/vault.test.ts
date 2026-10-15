@@ -115,3 +115,68 @@ describe("Vault", () => {
     expect(fs.statSync(MASTER_KEY_PATH).mode & 0o777).toBe(0o600);
   });
 });
+
+describe("copia antes de borrar (E6)", () => {
+  it("deja un .bak que, restaurado, devuelve el ref borrado", async () => {
+    // Sin esto, `delete` reescribe el fichero sin copia: si el proceso muere
+    // entre el `rm` y el `add` de un bootstrap declarativo, el ref se pierde
+    // para siempre (no hay `secret get`).
+    const { Vault } = await import("../src/vault/vault.js");
+    const { VAULT_PATH } = await import("../src/config/config.js");
+    const v = Vault.open();
+    v.set("github_token", "ghp_secretvalue");
+    v.set("otro_ref", "valor");
+    v.delete("github_token");
+
+    const bak = `${VAULT_PATH}.pre-delete-github_token.bak`;
+    expect(fs.existsSync(bak)).toBe(true);
+
+    // La prueba que importa: restaurar la copia recupera el ref.
+    fs.copyFileSync(bak, VAULT_PATH);
+    const restaurado = Vault.open();
+    expect(restaurado.get("github_token")).toBe("ghp_secretvalue");
+    expect(restaurado.get("otro_ref")).toBe("valor");
+  });
+
+  it("borrar un ref que no existe no escribe ninguna copia", async () => {
+    const { Vault } = await import("../src/vault/vault.js");
+    const { VAULT_PATH } = await import("../src/config/config.js");
+    const v = Vault.open();
+    v.set("existe", "v");
+    v.delete("no_existe");
+
+    const dir = path.dirname(VAULT_PATH);
+    const baks = fs.readdirSync(dir).filter((f) => f.includes(".pre-delete-"));
+    expect(baks).toEqual([]);
+  });
+
+  it("la copia se nombra POR REF y cada copia contiene el ref que protege", async () => {
+    const { Vault } = await import("../src/vault/vault.js");
+    const { VAULT_PATH } = await import("../src/config/config.js");
+    const v = Vault.open();
+    v.set("a", "1");
+    v.set("b", "2");
+    v.delete("a");
+    v.delete("b");
+
+    const dir = path.dirname(VAULT_PATH);
+    const baks = fs.readdirSync(dir).filter((f) => f.includes(".pre-delete-")).sort();
+    expect(baks).toContain("vault.enc.pre-delete-a.bak");
+    expect(baks).toContain("vault.enc.pre-delete-b.bak");
+
+    // Propiedad REAL, y la única que promete el diseño: la copia de un ref
+    // contiene ese ref. El orden importa y conviene dejarlo escrito —
+    // `pre-delete-a.bak` se tomó cuando el blob era {a,b} y por tanto recupera los
+    // dos; `pre-delete-b.bak` se tomó cuando ya faltaba `a`, así que sólo trae `b`.
+    // Para una pérdida multi-ref, la copia que recupera más es la del PRIMER
+    // borrado del lote.
+    fs.copyFileSync(`${VAULT_PATH}.pre-delete-a.bak`, VAULT_PATH);
+    const desdeA = Vault.open();
+    expect(desdeA.get("a")).toBe("1");
+    expect(desdeA.get("b")).toBe("2");
+
+    fs.copyFileSync(`${VAULT_PATH}.pre-delete-b.bak`, VAULT_PATH);
+    const desdeB = Vault.open();
+    expect(desdeB.get("b")).toBe("2");
+  });
+});

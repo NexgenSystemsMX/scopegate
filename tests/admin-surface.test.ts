@@ -57,6 +57,7 @@ function ctx(over: Partial<AdminContext> = {}): AdminContext {
     ],
     upstreamsUsingSecret: () => [],
     reload: async () => {},
+    respawnUpstreams: async () => [],
     ...over,
   };
 }
@@ -169,6 +170,64 @@ describe("rutas", () => {
     );
     expect(out?.status).toBe(409);
     expect(JSON.stringify(out?.body)).toContain("nexgen");
+  });
+
+  it("no borra un secreto que sólo el notificador usa (ref de notify.json)", async () => {
+    // `sg_webhook_hmac` vive en notify.json, no en `upstreams[].auth`. Hasta el
+    // 2026-10-15 el guard devolvía usedBy: [] y el DELETE pasaba con 200, en
+    // silencio: el gateway omitía la firma y el receptor respondía 401 sin
+    // reintento, así que la aprobación se perdía para siempre.
+    const out = await routeAdmin(
+      req({ method: "DELETE", url: "/admin/secrets/sg_webhook_hmac", token: ADMIN_TOKEN, actor: "acc-1" }),
+      res,
+      null,
+      ctx({ upstreamsUsingSecret: () => ["notify"] }),
+      auth,
+    );
+    expect(out?.status).toBe(409);
+    expect(JSON.stringify(out?.body)).toContain("notify");
+  });
+
+  it("PUT de un secreto respawnea los upstreams del ref y lo reporta", async () => {
+    // Sin esto, escribir el vault no cambia el runtime y verificar por huella
+    // da verde falso mientras el hijo stdio sigue con el valor viejo.
+    const dropped: (string[] | undefined)[] = [];
+    const out = await routeAdmin(
+      req({ method: "PUT", url: "/admin/secrets/github_app_key", token: ADMIN_TOKEN, actor: "acc-1" }),
+      res,
+      { value: "nuevo-valor" },
+      ctx({
+        upstreamsUsingSecret: () => ["nexgen", "notify"],
+        respawnUpstreams: async (names?: string[]) => {
+          dropped.push(names);
+          return names ?? [];
+        },
+      }),
+      auth,
+    );
+    expect(out?.status).toBe(200);
+    // 'notify' no es un upstream: no se respawnea
+    expect(dropped).toEqual([["nexgen"]]);
+    expect(JSON.stringify(out?.body)).toContain("respawned");
+  });
+
+  it("POST /admin/reload respawnea todos los upstreams habilitados", async () => {
+    let called = 0;
+    const out = await routeAdmin(
+      req({ method: "POST", url: "/admin/reload", token: ADMIN_TOKEN, actor: "acc-1" }),
+      res,
+      null,
+      ctx({
+        respawnUpstreams: async () => {
+          called++;
+          return ["nexgen", "railway"];
+        },
+      }),
+      auth,
+    );
+    expect(out?.status).toBe(200);
+    expect(called).toBe(1);
+    expect(JSON.stringify(out?.body)).toContain("railway");
   });
 
   it("revocar una capacidad inexistente da 404", async () => {

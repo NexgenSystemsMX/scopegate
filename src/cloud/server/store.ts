@@ -30,6 +30,7 @@ import type {
   StoredAuditEvent,
   Team,
 } from "./model.js";
+import { orderDecisions } from "./model.js";
 
 export interface Store {
   // teams
@@ -70,7 +71,17 @@ export interface Store {
   // approval decisions (panel → gateway feed; idempotent per approvalId)
   addApprovalDecision(decision: ApprovalDecision): void;
   approvalDecision(teamId: string, approvalId: string): ApprovalDecision | undefined;
-  approvalDecisions(teamId: string, since?: string): ApprovalDecision[];
+  /**
+   * Panel → gateway decision feed.
+   *
+   * `since` alone is a LOSSY cursor: comparing only by `ts` silently drops
+   * every event that shares a millisecond with the last one seen, which is
+   * plausible whenever several approvals are resolved in a loop. Passing
+   * `sinceId` (the `approvalId` of the last event seen) makes the cursor
+   * `(ts, approvalId)` — lossless — while callers that omit it keep the exact
+   * previous behaviour.
+   */
+  approvalDecisions(teamId: string, since?: string, sinceId?: string): ApprovalDecision[];
 
   /** All stored events for a team in chronological (file) order — audit export. */
   allAuditEvents(teamId: string): StoredAuditEvent[];
@@ -347,10 +358,17 @@ export class FileStore implements Store {
     );
   }
 
-  approvalDecisions(teamId: string, since?: string): ApprovalDecision[] {
-    return this.decisions.filter(
-      (d) => d.teamId === teamId && (since === undefined || d.ts > since),
-    );
+  approvalDecisions(teamId: string, since?: string, sinceId?: string): ApprovalDecision[] {
+    return this.decisions
+      .filter((d) => {
+        if (d.teamId !== teamId) return false;
+        if (since === undefined) return true;
+        if (d.ts !== since) return d.ts > since;
+        // Mismo milisegundo: sin `sinceId` se conserva el comportamiento previo
+        // (`d.ts > since` ⇒ false); con él, el cursor pasa a ser (ts, id).
+        return sinceId === undefined ? false : d.approvalId > sinceId;
+      })
+      .sort(orderDecisions);
   }
 
   // --------------------------------------------------------- audit export

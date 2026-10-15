@@ -87,3 +87,26 @@ export function makeDevSsoAdapter(adminToken: string): SsoAdapter {
     },
   };
 }
+
+/**
+ * Opt-in para el adaptador de cabecera. **Apagado por defecto.**
+ *
+ * Por qué: la cabecera `X-Admin-Token` es una **superficie de autenticación
+ * extra** que ningún cliente enviado usa — el panel del cloud autentica con
+ * `Authorization: Bearer`, que el router ya acepta como token de admin. Dejarla
+ * encendida significa **dos maneras de entrar donde basta una**, y la de la
+ * cabecera la controla el cliente. El router ya cubre el caso real.
+ *
+ * `makeDevSsoAdapter` sigue existiendo para demos locales y tests, pero hay que
+ * pedirlo explícitamente: no se hereda.
+ */
+export const ALLOW_HEADER_SSO_ENV = "SCOPEGATE_CLOUD_ALLOW_HEADER_SSO";
+
+/**
+ * Adaptador que nunca autentica. Es el que se cablea cuando no hay opt-in.
+ * No hay que cambiar nada más: el camino `Authorization: Bearer` sigue en pie,
+ * y es el que usa todo el mundo.
+ */
+export function makeNullSsoAdapter(): SsoAdapter {
+  return { name: "null", authenticate: () => null };
+}

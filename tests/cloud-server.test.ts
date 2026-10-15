@@ -652,12 +652,19 @@ describe("cloud server (EPIC-10)", () => {
     expect(
       (await api(ctx, `/v1/revocations?teamId=${teamBId}`, { token: agentSecret })).status,
     ).toBe(403);
-    // SSO dev adapter: X-Admin-Token header authenticates as admin
+    // La cabecera `X-Admin-Token` está APAGADA por defecto (2026-10-15). Era una
+    // segunda vía de autenticación que ningún cliente enviado usa: el panel va
+    // con `Authorization: Bearer`, que el router ya acepta como token de admin.
+    // Dos maneras de entrar donde basta una es superficie de más, y la de la
+    // cabecera la controla el cliente. Con el adaptador nulo, no autentica.
     const viaSso = await api(ctx, "/v1/admin/agents?teamId=" + teamId, {
       token: null,
       headers: { "x-admin-token": ADMIN },
     });
-    expect(viaSso.status).toBe(200);
+    expect(viaSso.status).toBe(401);
+    // El camino que sí se usa sigue funcionando.
+    const viaBearer = await api(ctx, "/v1/admin/agents?teamId=" + teamId, { token: ADMIN });
+    expect(viaBearer.status).toBe(200);
   });
 
   it("serves the landing at / and the panel at /panel (vanilla, same-origin)", async () => {
@@ -681,6 +688,14 @@ describe("cloud server (EPIC-10)", () => {
     expect(js.status).toBe(200);
     const jsText = await js.text();
     expect(jsText).toContain("/v1/admin/teams");
+    // E4: el token de admin va en sessionStorage. Es un guard de FUENTE, barato y
+    // honesto sobre lo que es: el panel no tiene build ni test de navegador, así que
+    // esto no prueba nada frente a XSS — un XSS en el mismo origen lee sessionStorage
+    // igual. Sólo impide que alguien devuelva el token a localStorage sin darse cuenta.
+    expect(jsText).toContain("const tokenStore = sessionStorage");
+    expect(jsText).not.toContain("localStorage.getItem(LS_TOKEN)");
+    expect(jsText).not.toContain("localStorage.setItem(LS_TOKEN)");
+    expect(jsText).not.toContain("localStorage.removeItem(LS_TOKEN)");
 
     // Backward-compat redirects from the panel's old location at /.
     const oldIndex = await fetch(ctx.base + "/index.html", { redirect: "manual" });
@@ -717,6 +732,339 @@ describe("cloud server (EPIC-10)", () => {
     ];
     for (const s of samples) {
       expect(cloudGuard(s), `parity on ${JSON.stringify(s)}`).toBe(gatewayGuard(s));
+    }
+  });
+});
+
+describe("cloud server — fail-closed del admin por defecto (2026-10-15)", () => {
+  let home: string;
+  const KEYS = [
+    "ADMIN_TOKEN",
+    "SCOPEGATE_CLOUD_ADMIN_TOKEN",
+    "SCOPEGATE_CLOUD_ALLOW_DEFAULT_ADMIN_TOKEN",
+    "SCOPEGATE_CLOUD_ALLOW_HEADER_SSO",
+  ] as const;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    home = useTempHome();
+    for (const k of KEYS) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+  });
+
+  afterEach(() => {
+    for (const k of KEYS) {
+      const prev = saved[k];
+      if (prev === undefined) delete process.env[k];
+      else process.env[k] = prev;
+    }
+    cleanupTempHome(home);
+  });
+
+  it("no arranca si el token de admin es el de fábrica", async () => {
+    // Antes sólo imprimía un WARN y seguía escuchando: un plano de control con
+    // contraseña conocida, publicable en un dominio, que emite enroll tokens y
+    // firma las políticas que todos los gateways descargan.
+    const { startCloudServer } = await import("../src/cloud/server/index.js");
+    await expect(
+      startCloudServer({ port: 0, home: path.join(home, "cf1"), announce: false }),
+    ).rejects.toThrow(/refusing to start/);
+  });
+
+  it("arranca con el de fábrica sólo con la escotilla explícita", async () => {
+    process.env.SCOPEGATE_CLOUD_ALLOW_DEFAULT_ADMIN_TOKEN = "1";
+    const { startCloudServer, DEFAULT_ADMIN_TOKEN } = await import(
+      "../src/cloud/server/index.js"
+    );
+    const cloud = await startCloudServer({
+      port: 0,
+      home: path.join(home, "cf2"),
+      announce: false,
+    });
+    try {
+      expect(cloud.adminToken).toBe(DEFAULT_ADMIN_TOKEN);
+    } finally {
+      await cloud.close();
+    }
+  });
+
+  it("un ADMIN_TOKEN explícito arranca sin escotilla", async () => {
+    const strong = "a".repeat(32);
+    process.env.ADMIN_TOKEN = strong;
+    const { startCloudServer } = await import("../src/cloud/server/index.js");
+    const cloud = await startCloudServer({
+      port: 0,
+      home: path.join(home, "cf3"),
+      announce: false,
+    });
+    try {
+      expect(cloud.adminToken).toBe(strong);
+    } finally {
+      await cloud.close();
+    }
+  });
+});
+
+describe("cloud admin — aplicación de roles (2026-10-15)", () => {
+  let home: string;
+  let deps: unknown;
+
+  type Out = { status: number; body: string };
+
+  function fakeRes(): { res: unknown; out: Out } {
+    const out: Out = { status: 0, body: "" };
+    const res = {
+      writeHead: (s: number) => {
+        out.status = s;
+        return res;
+      },
+      end: (b?: string) => {
+        out.body = b ?? "";
+        return res;
+      },
+      setHeader: () => res,
+    };
+    return { res, out };
+  }
+
+  function fakeReq(method: string, headers: Record<string, string>, body?: unknown): unknown {
+    const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
+    return {
+      method,
+      url: "/",
+      headers,
+      async *[Symbol.asyncIterator]() {
+        for (const c of chunks) yield c;
+      },
+    };
+  }
+
+  async function call(
+    method: string,
+    path: string,
+    headers: Record<string, string>,
+    body?: unknown,
+  ): Promise<Out> {
+    const { handleApiRequest } = await import("../src/cloud/server/router.js");
+    const { res, out } = fakeRes();
+    await handleApiRequest(
+      fakeReq(method, headers, body) as never,
+      res as never,
+      new URL(path, "http://cloud.test"),
+      deps as never,
+    );
+    return out;
+  }
+
+  beforeEach(async () => {
+    home = useTempHome();
+    const { FileStore } = await import("../src/cloud/server/store.js");
+    const { loadOrCreateCloudIdentity } = await import("../src/cloud/server/keys.js");
+    const { makeSlackAlerter } = await import("../src/cloud/server/alerts.js");
+    deps = {
+      store: new FileStore(home),
+      cloudIdentity: loadOrCreateCloudIdentity(home),
+      adminToken: "the-admin-token",
+      sso: {
+        name: "stub",
+        authenticate(req: { headers: Record<string, unknown> }) {
+          // Sólo `viewer`: lo que un IdP real concedería a un lector.
+          if (req.headers["x-viewer-token"] !== "v") return null;
+          return { subject: "u1", roles: ["viewer"], via: "stub" };
+        },
+      },
+      alerter: makeSlackAlerter(async () => {}),
+    };
+  });
+
+  afterEach(() => {
+    cleanupTempHome(home);
+  });
+
+  it("un viewer NO puede publicar política (owner) → 403", async () => {
+    // Antes, requireAdmin sólo miraba auth.kind: cualquier admin autenticado
+    // reescribía la política que TODOS los gateways enrolados descargan.
+    // Se afirma el throw del guard: handleApiRequest es la capa de enrutado y
+    // el mapeo HttpError → status HTTP vive en el servidor (cubierto por los
+    // tests de 401/403 de scope agente/team).
+    await expect(
+      call("PUT", "/v1/admin/policy", { "x-viewer-token": "v" }, { teamId: "t" }),
+    ).rejects.toThrow(/requires role: owner/);
+  });
+
+  it("un viewer NO puede resolver una aprobación → 403", async () => {
+    // La asimetría (§6.3): resolver aprobaciones es el corazón de que
+    // ScopeGate signifique algo.
+    await expect(
+      call(
+        "POST",
+        "/v1/admin/approvals/resolve",
+        { "x-viewer-token": "v" },
+        { teamId: "t", approvalId: "a", decision: "approve" },
+      ),
+    ).rejects.toThrow(/requires role: approver or owner/);
+  });
+
+  it("un viewer NO puede revocar → 403", async () => {
+    await expect(
+      call("POST", "/v1/admin/revocations", { "x-viewer-token": "v" }, { teamId: "t" }),
+    ).rejects.toThrow(/requires role: approver or owner/);
+  });
+
+  it("un viewer SÍ puede leer (GET) → 200", async () => {
+    const out = await call("GET", "/v1/admin/teams", { "x-viewer-token": "v" });
+    expect(out.status).toBe(200);
+    expect(out.body).toContain("teams");
+  });
+
+  it("el token de admin conserva acceso total (sin regresión)", async () => {
+    // El ADMIN_TOKEN del entorno es la credencial raíz: todos los roles.
+    const out = await call(
+      "POST",
+      "/v1/admin/teams",
+      { authorization: "Bearer the-admin-token" },
+      { name: "equipo" },
+    );
+    expect(out.status).toBe(201);
+    expect(out.body).toContain("enrollToken");
+  });
+});
+
+describe("cursor del feed de decisiones — (ts, approvalId) sin pérdida (2026-10-15)", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = useTempHome();
+  });
+
+  afterEach(() => {
+    cleanupTempHome(home);
+  });
+
+  function decision(approvalId: string, ts: string) {
+    return {
+      approvalId,
+      teamId: "team-1",
+      agentId: "agent-1",
+      decision: "approved" as const,
+      decidedBy: "human:cloud:panel",
+      ts,
+    };
+  }
+
+  it("dos decisiones con el MISMO ts: `since` solo las descarta, `sinceId` no", async () => {
+    // El defecto original: `d.ts > since` descartaba en silencio todo evento que
+    // compartiera milisegundo con el último visto. Resolver varias aprobaciones
+    // en bucle lo hace perfectamente plausible.
+    const { FileStore } = await import("../src/cloud/server/store.js");
+    const store = new FileStore(home);
+    const ts = "2026-10-15T09:00:00.000Z";
+    store.addApprovalDecision(decision("apr-a", ts));
+    store.addApprovalDecision(decision("apr-b", ts));
+
+    // Comportamiento previo, conservado para quien no manda `sinceId`.
+    expect(store.approvalDecisions("team-1", ts)).toEqual([]);
+
+    // Cursor (ts, approvalId): devuelve exactamente el que falta.
+    expect(store.approvalDecisions("team-1", ts, "apr-a").map((d) => d.approvalId)).toEqual([
+      "apr-b",
+    ]);
+  });
+
+  it("con ts distintos, `sinceId` no cambia nada respecto al comportamiento previo", async () => {
+    const { FileStore } = await import("../src/cloud/server/store.js");
+    const store = new FileStore(home);
+    store.addApprovalDecision(decision("apr-a", "2026-10-15T09:00:00.000Z"));
+    store.addApprovalDecision(decision("apr-b", "2026-10-15T09:00:01.000Z"));
+
+    const withoutId = store.approvalDecisions("team-1", "2026-10-15T09:00:00.000Z");
+    const withId = store.approvalDecisions("team-1", "2026-10-15T09:00:00.000Z", "apr-a");
+    expect(withoutId.map((d) => d.approvalId)).toEqual(["apr-b"]);
+    expect(withId.map((d) => d.approvalId)).toEqual(["apr-b"]);
+  });
+
+  it("sin `since` devuelve todo, con o sin `sinceId`", async () => {
+    const { FileStore } = await import("../src/cloud/server/store.js");
+    const store = new FileStore(home);
+    store.addApprovalDecision(decision("apr-a", "2026-10-15T09:00:00.000Z"));
+    store.addApprovalDecision(decision("apr-b", "2026-10-15T09:00:00.000Z"));
+
+    expect(store.approvalDecisions("team-1").length).toBe(2);
+    expect(store.approvalDecisions("team-1", undefined, "apr-a").length).toBe(2);
+  });
+
+  it("`since` combinado con `sinceId` respeta el orden (ts, approvalId)", async () => {
+    const { FileStore } = await import("../src/cloud/server/store.js");
+    const store = new FileStore(home);
+    const ts = "2026-10-15T09:00:00.000Z";
+    // Insertados en orden inverso a propósito: el cursor ordena por (ts, id),
+    // no por orden de inserción.
+    store.addApprovalDecision(decision("apr-c", ts));
+    store.addApprovalDecision(decision("apr-a", ts));
+    store.addApprovalDecision(decision("apr-b", ts));
+
+    expect(store.approvalDecisions("team-1", ts, "apr-a").map((d) => d.approvalId)).toEqual([
+      "apr-b",
+      "apr-c",
+    ]);
+    expect(store.approvalDecisions("team-1", ts, "apr-c")).toEqual([]);
+  });
+});
+
+describe("cloud admin — la cabecera X-Admin-Token es opt-in (2026-10-15)", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = useTempHome();
+    delete process.env.SCOPEGATE_CLOUD_ALLOW_HEADER_SSO;
+  });
+
+  afterEach(() => {
+    delete process.env.SCOPEGATE_CLOUD_ALLOW_HEADER_SSO;
+    cleanupTempHome(home);
+  });
+
+  it("por defecto la cabecera NO autentica y el Bearer SÍ", async () => {
+    const { startCloudServer } = await import("../src/cloud/server/index.js");
+    const cloud = await startCloudServer({
+      port: 0,
+      home: path.join(home, "a"),
+      adminToken: "tok-123456",
+      announce: false,
+    });
+    try {
+      const viaHeader = await fetch(`http://127.0.0.1:${cloud.port}/v1/admin/teams`, {
+        headers: { "x-admin-token": "tok-123456" },
+      });
+      expect(viaHeader.status).toBe(401);
+      const viaBearer = await fetch(`http://127.0.0.1:${cloud.port}/v1/admin/teams`, {
+        headers: { authorization: "Bearer tok-123456" },
+      });
+      expect(viaBearer.status).toBe(200);
+    } finally {
+      await cloud.close();
+    }
+  });
+
+  it("con el opt-in explícito, la cabecera vuelve a autenticar", async () => {
+    // Existe para demos locales y tests, pero hay que pedirlo: no se hereda.
+    process.env.SCOPEGATE_CLOUD_ALLOW_HEADER_SSO = "1";
+    const { startCloudServer } = await import("../src/cloud/server/index.js");
+    const cloud = await startCloudServer({
+      port: 0,
+      home: path.join(home, "b"),
+      adminToken: "tok-123456",
+      announce: false,
+    });
+    try {
+      const viaHeader = await fetch(`http://127.0.0.1:${cloud.port}/v1/admin/teams`, {
+        headers: { "x-admin-token": "tok-123456" },
+      });
+      expect(viaHeader.status).toBe(200);
+    } finally {
+      await cloud.close();
     }
   });
 });

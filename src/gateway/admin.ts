@@ -83,6 +83,17 @@ export interface AdminContext {
   upstreamsUsingSecret: (ref: string) => string[];
   /** Ask the gateway to reload config + policies after a write. */
   reload: () => Promise<void>;
+  /**
+   * Drop-and-respawn the given upstreams (all enabled when omitted) so a
+   * credential just written to the vault reaches the child process. Returns the
+   * upstream names actually respawned.
+   *
+   * `reload()` alone does NOT do this: `connectAll()` hands back the existing
+   * connection, and the spawn env is fixed when the child starts — which is why
+   * verifying a rotation by fingerprint alone can report green while the child
+   * still uses the old credential.
+   */
+  respawnUpstreams: (names?: string[]) => Promise<string[]>;
 }
 
 export interface AdminAuth {
@@ -243,13 +254,26 @@ export async function routeAdmin(
         }
         const existed = ctx.vault.has(ref);
         ctx.vault.set(ref, value);
+        // Escribir el vault NO cambia el runtime: `connectAll()` devuelve la
+        // conexión existente y el env del hijo stdio se fija al arrancarlo. Sin
+        // este respawn, quien verificara por fingerprint vería el valor nuevo
+        // mientras el hijo seguía usando el viejo hasta el siguiente mint
+        // refresh (~1h GitHub / ~12h Huly) o un reinicio del servicio.
+        const affected = ctx.upstreamsUsingSecret(ref).filter((n) => n !== "notify");
+        const respawned = await ctx.respawnUpstreams(affected);
         await ctx.reload();
         audit(decidedByConsole(actor), existed ? "secret_rotated" : "secret_added", {
           ref,
           fingerprint: fingerprint(value),
         });
         log("info", `secret '${ref}' ${existed ? "rotated" : "added"} from the console`, { actor });
-        return ok({ ref, rotated: existed, added: !existed, fingerprint: fingerprint(value) });
+        return ok({
+          ref,
+          rotated: existed,
+          added: !existed,
+          fingerprint: fingerprint(value),
+          respawned,
+        });
       }
       if (method === "DELETE") {
         const users = ctx.upstreamsUsingSecret(ref);
@@ -263,6 +287,17 @@ export async function routeAdmin(
         return ok({ ref, deleted: true });
       }
       return bad(405, "Method not allowed on this secret.");
+    }
+
+    // --- forced reload ----------------------------------------------------
+    // Drop-and-respawn de todos los upstreams habilitados. Es la capa 2 de la
+    // verificación: la huella del vault prueba la INTENCIÓN, esto prueba el
+    // EFECTO — sin ello, la única forma de forzarlo era reiniciar el servicio.
+    if (p === "/admin/reload" && method === "POST") {
+      const respawned = await ctx.respawnUpstreams();
+      audit(decidedByConsole(actor), "upstreams_respawned", { upstreams: respawned });
+      log("info", `forced reload: respawned ${respawned.length} upstream(s)`, { actor });
+      return ok({ respawned });
     }
 
     // --- capabilities -----------------------------------------------------

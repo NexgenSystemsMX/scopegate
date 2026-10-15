@@ -86,6 +86,20 @@ export interface ApprovalDecision {
 }
 
 /**
+ * Orden del feed de decisiones, y la MISMA clave que usa el cursor
+ * `since`/`sinceId` — tiene que serlo. Si la salida no va ordenada por la clave
+ * del cursor, un cliente que pagine con el último elemento que recibió obtiene
+ * un cursor que no es el máximo, y entonces salta o repite eventos.
+ *
+ * Para datos append-only en orden temporal el resultado es idéntico al orden de
+ * inserción; la única diferencia aparece con un `ts` desordenado, y ahí el
+ * orden por (ts, approvalId) es el correcto.
+ */
+export function orderDecisions(a: ApprovalDecision, b: ApprovalDecision): number {
+  return a.ts === b.ts ? a.approvalId.localeCompare(b.approvalId) : a.ts.localeCompare(b.ts);
+}
+
+/**
  * Audit event as stored by the cloud: the gateway's signed event verbatim
  * (schema from src/audit/log.ts) plus cloud-side ingest metadata.
  */

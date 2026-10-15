@@ -1481,7 +1481,7 @@ export class UpstreamProxy {
    * Connect fresh FIRST, swap the connection map, then close the old
    * transport after a grace period (in-flight calls finish on the old one).
    */
-  private async respawnMintedConnection(name: string): Promise<void> {
+  private async respawnMintedConnection(name: string, reason = "mint refresh"): Promise<void> {
     const up = this.upstreams.find((u) => u.name === name && u.enabled !== false);
     if (!up) return;
     const old = this.connections.get(name);
@@ -1492,7 +1492,38 @@ export class UpstreamProxy {
         void this.closeConnection(old, name);
       }, 15_000).unref?.();
     }
-    log("info", `stdio connection to '${name}' respawned proactively (mint refresh)`, {});
+    log("info", `stdio connection to '${name}' respawned proactively (${reason})`, {});
+  }
+
+  /**
+   * Force a drop-and-respawn of the named upstreams — every enabled one when
+   * `names` is omitted — so a credential rotated in the vault actually reaches
+   * the child process.
+   *
+   * Why this is needed to tell the truth about a rotation: `connectAll()`
+   * returns the EXISTING connection (`getConnection` starts with
+   * `if (existing) return existing`), and the spawn env is baked when the child
+   * starts. So writing the vault alone changes nothing at runtime: a caller who
+   * verified by fingerprint saw the new value while the spawned child kept
+   * using the old credential until the next mint refresh (~1h GitHub, ~12h
+   * Huly) or a service restart. This is the primitive that makes the effect
+   * observable on demand.
+   *
+   * Reuses the mint-refresh path: connect fresh first, swap, close the old one
+   * after a grace period so in-flight calls finish. Returns the upstream names
+   * actually respawned.
+   */
+  async respawnUpstreams(names?: string[], reason = "forced reload"): Promise<string[]> {
+    const wanted = names ?? this.upstreams.filter((u) => u.enabled !== false).map((u) => u.name);
+    const targets = [...new Set(wanted)].filter((n) =>
+      this.upstreams.some((u) => u.name === n && u.enabled !== false),
+    );
+    for (const name of targets) {
+      await this.respawnMintedConnection(name, reason).catch((e) => {
+        log("warn", `forced respawn of '${name}' failed: ${errorMessage(e)}`, {});
+      });
+    }
+    return targets;
   }
 
   /** Grace between `close()` and checking whether the child actually died. */

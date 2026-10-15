@@ -549,6 +549,7 @@ function adminCtx(engine: Engine): AdminContext {
     agents: () => [],
     upstreamsUsingSecret: () => [],
     reload: async () => {},
+    respawnUpstreams: async () => [],
   };
 }
 

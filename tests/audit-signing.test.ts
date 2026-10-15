@@ -214,6 +214,10 @@ describe("audit signing (EPIC-07)", () => {
       // Consola de administración: mutaciones del vault hechas por una persona
       // identificada (human:console:<cuenta>). Append-only, como el resto.
       "secret_added", "secret_rotated", "secret_deleted",
+      // 2026-10-15 (append-only): drop-and-respawn forzado de upstreams, para
+      // que una credencial recién escrita en el vault sea observable en el
+      // runtime sin reiniciar el servicio.
+      "upstreams_respawned",
       // EPIC-06 (QM keychain): consumo atómico de grants `once` y promoción
       // admin-gated a audiencia "org". Append-only, coordinado por la epic.
       "grant_claimed", "grant_promoted",

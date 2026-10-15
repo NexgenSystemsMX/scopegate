@@ -173,3 +173,48 @@ describe("M8: spawn env hygiene", () => {
     await proxy.closeAll();
   });
 });
+
+describe("guard de arranque: SCOPEGATE_ENV_PASSTHROUGH (2026-10-15)", () => {
+  it("lanza cuando la escotilla está puesta", async () => {
+    // La escotilla entrega process.env COMPLETO a cada hijo stdio, saltándose el
+    // borrado por SPAWN_ENV_SECRET_RE: con las llaves maestras en el mismo
+    // entorno, cualquier herramienta que el agente invoque las ve todas.
+    const { assertEnvPassthroughDisabled } = await import("../src/gateway/server.js");
+    expect(() =>
+      assertEnvPassthroughDisabled({
+        SCOPEGATE_ENV_PASSTHROUGH: "1",
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/Refusing to start/);
+  });
+
+  it("no lanza cuando no está puesta, ni con otros valores", async () => {
+    const { assertEnvPassthroughDisabled } = await import("../src/gateway/server.js");
+    expect(() => assertEnvPassthroughDisabled({} as NodeJS.ProcessEnv)).not.toThrow();
+    expect(() =>
+      assertEnvPassthroughDisabled({
+        SCOPEGATE_ENV_PASSTHROUGH: "0",
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
+    expect(() =>
+      assertEnvPassthroughDisabled({
+        SCOPEGATE_ENV_PASSTHROUGH: "true",
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
+  });
+
+  it("permite la escotilla sólo con el override explícito", async () => {
+    const { assertEnvPassthroughDisabled } = await import("../src/gateway/server.js");
+    expect(() =>
+      assertEnvPassthroughDisabled({
+        SCOPEGATE_ENV_PASSTHROUGH: "1",
+        SCOPEGATE_ALLOW_ENV_PASSTHROUGH: "1",
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
+    // el override por sí solo no arma nada: sin la escotilla no hay nada que permitir
+    expect(() =>
+      assertEnvPassthroughDisabled({
+        SCOPEGATE_ALLOW_ENV_PASSTHROUGH: "1",
+      } as NodeJS.ProcessEnv),
+    ).not.toThrow();
+  });
+});
