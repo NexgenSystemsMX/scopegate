@@ -79,6 +79,111 @@ describe("M2.1: proactive respawn scheduler", () => {
   }, 30_000);
 });
 
+describe("respawn forzado: la credencial minteada cambia de verdad", () => {
+  /** Spawn fake-upstream --http and resolve once it reports its port. */
+  function startHttpUpstream(): Promise<{
+    child: import("node:child_process").ChildProcess;
+    port: number;
+  }> {
+    return new Promise(async (resolve, reject) => {
+      const { spawn } = await import("node:child_process");
+      const path = await import("node:path");
+      const { fileURLToPath } = await import("node:url");
+      const FAKE = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "fake-upstream.mjs",
+      );
+      const child = spawn(process.execPath, [FAKE, "--http"], {
+        stdio: ["ignore", "pipe", "inherit"],
+        env: { ...process.env, SCOPEGATE_HOME: home },
+      });
+      let buf = "";
+      child.stdout?.on("data", (d) => {
+        buf += d.toString();
+        const m = /FAKE_UPSTREAM_PORT=(\d+)/.exec(buf);
+        if (m) resolve({ child, port: Number(m[1]) });
+      });
+      child.on("error", reject);
+      child.on("exit", (code) =>
+        reject(new Error(`http fake upstream exited early (${code})`)),
+      );
+      setTimeout(() => reject(new Error("no port reported")), 10_000);
+    });
+  }
+
+  it("`respawnUpstreams` invalida la caché del minter: el token NO se repite", async () => {
+    // El respawn sólo reconectaba los hijos. Para auth minteada eso sirve el
+    // TOKEN CACHEADO — el mismo que el hijo ya tenía — porque `Minter.resolve`
+    // devuelve el cache hit mientras le quede vida. Es decir: la rotación se
+    // verificaba por fingerprint y el upstream seguía autenticando con el token
+    // viejo hasta el refresh natural (~1h GitHub / ~12h Huly). El caso `env` no
+    // lo delataba (ese hijo relee el vault al arrancar), y por eso `redis_url`
+    // parecía demostrar que estaba cerrado.
+    const { UpstreamProxy } = await import("../src/gateway/proxy.js");
+    const { Vault } = await import("../src/vault/vault.js");
+    const { Minter } = await import("../src/minter/minter.js");
+
+    let mints = 0;
+    // Provider falso: cada mint emite un valor distinto, así que "mismo token"
+    // sólo puede significar "cache hit".
+    const provider = {
+      type: "jwt",
+      supports: (a: { type: string }) => a.type === "jwt",
+      maxTtlMs: () => 3_600_000,
+      mint: async () => {
+        mints++;
+        const value = `tok-${mints}`;
+        return {
+          value,
+          headers: { Authorization: `Bearer ${value}` },
+          expiresAt: Date.now() + 3_600_000,
+        };
+      },
+    };
+
+    const { child, port } = await startHttpUpstream();
+    const vault = Vault.open();
+    const proxy = new UpstreamProxy(
+      [
+        {
+          name: "fakehttp",
+          transport: { kind: "http", url: `http://127.0.0.1:${port}` },
+          auth: { type: "jwt", secretRef: "fake_key" },
+        },
+      ],
+      vault,
+      {
+        agentId: "test-agent",
+        minter: new Minter(vault, [provider as never]),
+        // Sin attestation: no es lo que se mide aquí y sólo añade firma por hop.
+        attestationDefault: false,
+      },
+    );
+    const authOf = async (): Promise<string> => {
+      const res = (await proxy.call("fakehttp__echo_auth", {})) as {
+        content: { text: string }[];
+      };
+      return res.content[0].text;
+    };
+    try {
+      await proxy.connectAll();
+      const before = await authOf();
+      expect(before).toContain("Bearer tok-");
+
+      const respawned = await proxy.respawnUpstreams(["fakehttp"]);
+      expect(respawned).toEqual(["fakehttp"]);
+
+      const after = await authOf();
+      expect(after).not.toBe(before);
+      expect(after).toContain("Bearer tok-");
+    } finally {
+      await proxy.closeAll();
+      child.kill();
+    }
+  }, 30_000);
+});
+
 describe("M2.2: isError auth self-heal", () => {
   it("detects in-band auth failures on minted upstreams and ignores clean errors", async () => {
     const { UpstreamProxy } = await import("../src/gateway/proxy.js");

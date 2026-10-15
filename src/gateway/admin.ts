@@ -249,7 +249,13 @@ export async function routeAdmin(
       const ref = secretMatch[1];
       if (method === "PUT") {
         const value = (body as { value?: unknown } | null)?.value;
-        if (typeof value !== "string" || value === "") {
+        // `value.trim() === ""` y no `value === ""`: un valor de sólo espacios
+        // pasaba el filtro y el consumidor (`notify/channels.ts`) lo trimmea al
+        // usarlo. El resultado es el MISMO daño que borrar el secreto —la firma
+        // HMAC sale vacía, el receptor responde 401 y no hay reintento, así que
+        // el evento de aprobación se pierde— pero por una puerta que el guard de
+        // borrado no cubría.
+        if (typeof value !== "string" || value.trim() === "") {
           return bad(400, "Body must be {\"value\": \"<secret>\"} with a non-empty string.");
         }
         const existed = ctx.vault.has(ref);

@@ -188,6 +188,39 @@ describe("rutas", () => {
     expect(JSON.stringify(out?.body)).toContain("notify");
   });
 
+  it("PUT con un valor de sólo espacios se rechaza igual que el vacío", async () => {
+    // El guard sólo miraba `value === ""`. Un valor de sólo espacios lo pasaba
+    // y el consumidor (`notify/channels.ts`) lo trimmea al firmar: la cabecera
+    // HMAC salía vacía, el receptor respondía 401 sin reintento y el evento de
+    // aprobación se perdía — el mismo daño que el borrado del secreto, por otra
+    // puerta.
+    for (const value of [" ", "\t", "\n", "   \t\n "]) {
+      const store = new Map<string, string>([["github_app_key", "original"]]);
+      const out = await routeAdmin(
+        req({
+          method: "PUT",
+          url: "/admin/secrets/github_app_key",
+          token: ADMIN_TOKEN,
+          actor: "acc-1",
+        }),
+        res,
+        { value },
+        ctx({
+          vault: {
+            listRefs: () => [...store.keys()],
+            get: (r: string) => store.get(r) ?? "",
+            has: (r: string) => store.has(r),
+            set: (r: string, v: string) => store.set(r, v),
+            delete: (r: string) => store.delete(r),
+          } as never,
+        }),
+        auth,
+      );
+      expect(out?.status, `valor ${JSON.stringify(value)}`).toBe(400);
+      expect(store.get("github_app_key")).toBe("original");
+    }
+  });
+
   it("PUT de un secreto respawnea los upstreams del ref y lo reporta", async () => {
     // Sin esto, escribir el vault no cambia el runtime y verificar por huella
     // da verde falso mientras el hijo stdio sigue con el valor viejo.

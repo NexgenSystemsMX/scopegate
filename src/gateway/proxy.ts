@@ -319,6 +319,36 @@ export interface CallContext {
   tool?: string;
 }
 
+/**
+ * Fail-closed check for the env-inheritance escape hatch.
+ *
+ * `SCOPEGATE_ENV_PASSTHROUGH=1` makes `buildSpawnEnv` hand the WHOLE process
+ * environment to every stdio child, skipping the `SPAWN_ENV_SECRET_RE` scrub.
+ * In a deployed gateway that environment holds the vault master key backend
+ * setting, `GH_APP_PRIVATE_KEY`, `HULY_BOT_PASSWORD` and
+ * `SCOPEGATE_ADMIN_TOKEN` — so the flag turns a hardened gateway into a
+ * one-bit exfiltration primitive: any tool the agent can invoke sees every
+ * credential the gateway holds.
+ *
+ * It is a legacy escape hatch, measured ABSENT on all 21 deployed
+ * ScopeGate services across both environments (2026-10-15). Keep it that way.
+ * Exported (and parameterised over `env`) so the check is testable without
+ * booting — and without killing the test runner; `server.ts` re-exports it for
+ * the callers that already imported it from there.
+ *
+ * Called from the UpstreamProxy constructor, which is the one place EVERY entry
+ * point goes through — the CLI, the embedded API and `scopegate status`.
+ */
+export function assertEnvPassthroughDisabled(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.SCOPEGATE_ENV_PASSTHROUGH !== "1") return;
+  if (env.SCOPEGATE_ALLOW_ENV_PASSTHROUGH === "1") return;
+  throw new Error(
+    "SCOPEGATE_ENV_PASSTHROUGH=1 would inherit the entire process environment " +
+      "into every spawned upstream, bypassing the secret scrub. Refusing to start. " +
+      "Unset it, or set SCOPEGATE_ALLOW_ENV_PASSTHROUGH=1 to re-enable deliberately.",
+  );
+}
+
 export class UpstreamProxy {
   private connections = new Map<string, Connection>();
   /**
@@ -385,6 +415,15 @@ export class UpstreamProxy {
     private vault: Vault,
     deps: { agentId?: string; minter?: Minter; attestationDefault?: boolean } = {},
   ) {
+    // La escotilla se comprueba AQUÍ, en el constructor, y no sólo al arrancar
+    // por el CLI. La guarda vivía en el entry point del CLI (`runGateway`), así
+    // que los otros dos caminos que construyen el proxy — `createGatewayServer`
+    // de la API embebida y `scopegate status` — arrancaban con
+    // SCOPEGATE_ENV_PASSTHROUGH=1 y entregaban el entorno COMPLETO del proceso a
+    // cada hijo stdio, saltándose el borrado por SPAWN_ENV_SECRET_RE: con las
+    // llaves maestras en ese entorno, cualquier herramienta que el agente invoque
+    // las ve todas. El constructor cubre los tres de una vez.
+    assertEnvPassthroughDisabled();
     this.agentId = deps.agentId ?? process.env.SCOPEGATE_AGENT_ID ?? "gateway";
     this.minter = deps.minter ?? new Minter(vault);
     this.attestationDefault = deps.attestationDefault ?? true;
@@ -1512,6 +1551,16 @@ export class UpstreamProxy {
    * Reuses the mint-refresh path: connect fresh first, swap, close the old one
    * after a grace period so in-flight calls finish. Returns the upstream names
    * actually respawned.
+   *
+   * Cada respawn invalida ANTES la caché del minter de ese upstream. Sin eso,
+   * el respawn de un upstream con auth minteada (jwt, github_app, oauth2,
+   * aws_sts, huly, google_sa, composite) reconecta el hijo con el token
+   * CACHEADO — el mismo que ya tenía — porque `Minter.resolve` sirve el cache
+   * hit mientras le quede vida: la rotación parecía aplicada (fingerprint
+   * nuevo, "respawned") mientras el upstream seguía autenticando con el token
+   * viejo hasta el refresh natural (~1h GitHub / ~12h Huly). El caso `env` no
+   * lo delataba nunca, porque ese hijo relee el vault al arrancar; por eso un
+   * respawn sin invalidar es el peor verde falso: parece haber rotado.
    */
   async respawnUpstreams(names?: string[], reason = "forced reload"): Promise<string[]> {
     const wanted = names ?? this.upstreams.filter((u) => u.enabled !== false).map((u) => u.name);
@@ -1519,6 +1568,7 @@ export class UpstreamProxy {
       this.upstreams.some((u) => u.name === n && u.enabled !== false),
     );
     for (const name of targets) {
+      this.minter.invalidate(name);
       await this.respawnMintedConnection(name, reason).catch((e) => {
         log("warn", `forced respawn of '${name}' failed: ${errorMessage(e)}`, {});
       });

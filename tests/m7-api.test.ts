@@ -67,6 +67,32 @@ describe("M7 embeddable API", () => {
     ).rejects.toThrow(/SCOPEGATE_HOME/);
   });
 
+  it("createGatewayServer se niega a arrancar con SCOPEGATE_ENV_PASSTHROUGH=1", async () => {
+    // La guarda vivía sólo en el entry del CLI: la API embebida (y `scopegate
+    // status`) construían el proxy sin comprobarla, así que con el flag puesto
+    // arrancaban y entregaban el entorno COMPLETO del proceso a cada hijo stdio
+    // —saltándose el borrado por forma de secreto—. Ahora la comprobación vive
+    // en el constructor de UpstreamProxy, que es el camino común a todos.
+    const prev = process.env.SCOPEGATE_ENV_PASSTHROUGH;
+    const prevAllow = process.env.SCOPEGATE_ALLOW_ENV_PASSTHROUGH;
+    delete process.env.SCOPEGATE_ALLOW_ENV_PASSTHROUGH;
+    process.env.SCOPEGATE_ENV_PASSTHROUGH = "1";
+    try {
+      const { createGatewayServer } = await import("../src/api.js");
+      await expect(
+        createGatewayServer({
+          config: { version: 1, agentId: "test-agent", upstreams: [] },
+          policies: { version: 1, agents: {} },
+          auditBoot: false,
+        }),
+      ).rejects.toThrow(/Refusing to start/);
+    } finally {
+      if (prev === undefined) delete process.env.SCOPEGATE_ENV_PASSTHROUGH;
+      else process.env.SCOPEGATE_ENV_PASSTHROUGH = prev;
+      if (prevAllow !== undefined) process.env.SCOPEGATE_ALLOW_ENV_PASSTHROUGH = prevAllow;
+    }
+  });
+
   it("the published dist surface exists (api.js + types + testkit)", () => {
     const dist = path.join(process.cwd(), "dist");
     expect(fs.existsSync(path.join(dist, "api.js"))).toBe(true);

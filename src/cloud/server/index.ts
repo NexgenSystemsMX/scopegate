@@ -90,11 +90,23 @@ export interface RunningCloud {
   close: () => Promise<void>;
 }
 
+/**
+ * Un token vacío o de sólo espacios cuenta como AUSENTE.
+ *
+ * `??` sólo captura null/undefined, así que `ADMIN_TOKEN=""` (el caso real: una
+ * variable de Railway creada pero sin valor) se colaba como token válido y el
+ * arranque seguía adelante con `""` en lugar de caer al fail-closed del token de
+ * fábrica. No era un bypass —`bearerToken` descarta tokens vacíos— pero dejaba
+ * un panel que nadie podía usar y ningún arranque que lo dijera. `option` sí
+ * conserva su semántica de `??`: lo que pasa el llamante es lo que se usa.
+ */
 export function resolveAdminToken(option?: string): string {
+  const fromEnv = (raw: string | undefined): string | undefined =>
+    raw !== undefined && raw.trim() !== "" ? raw : undefined;
   return (
     option ??
-    process.env.ADMIN_TOKEN ??
-    process.env.SCOPEGATE_CLOUD_ADMIN_TOKEN ??
+    fromEnv(process.env.ADMIN_TOKEN) ??
+    fromEnv(process.env.SCOPEGATE_CLOUD_ADMIN_TOKEN) ??
     DEFAULT_ADMIN_TOKEN
   );
 }
