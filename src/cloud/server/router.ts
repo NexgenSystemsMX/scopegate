@@ -320,11 +320,21 @@ export async function handleApiRequest(
     }
 
     if (method === "GET" && path === "/v1/admin/teams") {
+      // El listado es de lectura, pero el `enrollToken` de cada team NO lo es:
+      // es su credencial raíz. `POST /v1/enroll` es anónimo por diseño (el
+      // gateway que se enrola todavía no tiene credencial) y acepta un agentId
+      // existente re-emitiendo un agentSecret nuevo — o sea que quien lea un
+      // enrollToken puede suplantar a un agente enrolado y dejar en 401 al
+      // gateway legítimo. Este endpoint ya exigía admin scope, pero eso no
+      // distingue roles: un `viewer` del panel se llevaba el token de todos los
+      // equipos. Sólo owner lo ve; el resto de campos sigue igual porque el
+      // panel necesita listar equipos.
+      const ownsTeams = auth.kind === "admin" && auth.roles.includes("owner");
       sendJson(res, 200, {
         teams: store.listTeams().map((t) => ({
           teamId: t.teamId,
           name: t.name,
-          enrollToken: t.enrollToken,
+          ...(ownsTeams ? { enrollToken: t.enrollToken } : {}),
           createdAt: t.createdAt,
           slackWebhookConfigured: t.slackWebhookUrl !== undefined,
           agentCount: store.listAgents(t.teamId).length,

@@ -142,14 +142,23 @@ describe("M8: spawn env hygiene", () => {
   it("SCOPEGATE_ENV_PASSTHROUGH=1 restores legacy full-inherit", async () => {
     process.env.SUPER_SECRET_TOKEN = "leak-me-not";
     process.env.SCOPEGATE_ENV_PASSTHROUGH = "1";
+    // La guarda del arranque vive ahora en el constructor de UpstreamProxy (no
+    // sólo en el entry del CLI), así que para ejercitar la rama legacy de
+    // buildSpawnEnv hay que armar el override EXPLÍCITO — que es exactamente el
+    // caso de uso para el que existe. El guard no se relaja.
+    process.env.SCOPEGATE_ALLOW_ENV_PASSTHROUGH = "1";
     const { UpstreamProxy } = await import("../src/gateway/proxy.js");
     const { Vault } = await import("../src/vault/vault.js");
-    const proxy = new UpstreamProxy([], Vault.open(), { agentId: "test-agent" });
-    const env = (
-      proxy as unknown as { buildSpawnEnv(up: unknown): Record<string, string> }
-    ).buildSpawnEnv({ name: "x", transport: { kind: "stdio", command: "x" }, auth: { type: "none" } });
-    expect(env.SUPER_SECRET_TOKEN).toBe("leak-me-not");
-    await proxy.closeAll();
+    try {
+      const proxy = new UpstreamProxy([], Vault.open(), { agentId: "test-agent" });
+      const env = (
+        proxy as unknown as { buildSpawnEnv(up: unknown): Record<string, string> }
+      ).buildSpawnEnv({ name: "x", transport: { kind: "stdio", command: "x" }, auth: { type: "none" } });
+      expect(env.SUPER_SECRET_TOKEN).toBe("leak-me-not");
+      await proxy.closeAll();
+    } finally {
+      delete process.env.SCOPEGATE_ALLOW_ENV_PASSTHROUGH;
+    }
   });
 
   it("a spawned upstream gets vault refs and minted env — never gateway secrets", async () => {

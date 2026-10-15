@@ -790,6 +790,45 @@ describe("cloud server — fail-closed del admin por defecto (2026-10-15)", () =
     }
   });
 
+  it("un ADMIN_TOKEN vacío o de sólo espacios cuenta como ausente", async () => {
+    // `??` no captura la cadena vacía: con ADMIN_TOKEN="" (una variable creada
+    // sin valor en el panel de Railway) el arranque se saltaba el fail-closed
+    // del token de fábrica y quedaba escuchando con un token que nadie puede
+    // usar — `bearerToken` descarta tokens vacíos — en lugar de negarse a
+    // arrancar y decirlo.
+    const { startCloudServer, resolveAdminToken, DEFAULT_ADMIN_TOKEN } = await import(
+      "../src/cloud/server/index.js"
+    );
+
+    for (const [key, raw] of [
+      ["ADMIN_TOKEN", ""],
+      ["ADMIN_TOKEN", "   "],
+      ["SCOPEGATE_CLOUD_ADMIN_TOKEN", "\t\n"],
+    ] as const) {
+      delete process.env.ADMIN_TOKEN;
+      delete process.env.SCOPEGATE_CLOUD_ADMIN_TOKEN;
+      process.env[key] = raw;
+      expect(resolveAdminToken(), `${key}=${JSON.stringify(raw)}`).toBe(
+        DEFAULT_ADMIN_TOKEN,
+      );
+      await expect(
+        startCloudServer({
+          port: 0,
+          home: path.join(home, `cf-blank-${key}-${raw.length}`),
+          announce: false,
+        }),
+        `${key}=${JSON.stringify(raw)}`,
+      ).rejects.toThrow(/refusing to start/);
+    }
+  });
+
+  it("`option` conserva su semántica: lo que pasa el llamante es lo que se usa", async () => {
+    const { resolveAdminToken } = await import("../src/cloud/server/index.js");
+    process.env.ADMIN_TOKEN = "del-entorno-suficientemente-largo";
+    expect(resolveAdminToken("explicito")).toBe("explicito");
+    expect(resolveAdminToken("")).toBe("");
+  });
+
   it("un ADMIN_TOKEN explícito arranca sin escotilla", async () => {
     const strong = "a".repeat(32);
     process.env.ADMIN_TOKEN = strong;
@@ -917,6 +956,50 @@ describe("cloud admin — aplicación de roles (2026-10-15)", () => {
     const out = await call("GET", "/v1/admin/teams", { "x-viewer-token": "v" });
     expect(out.status).toBe(200);
     expect(out.body).toContain("teams");
+  });
+
+  it("el viewer lista los equipos pero NUNCA ve el enrollToken", async () => {
+    // El listado es de lectura; el `enrollToken` de cada team no. Con él,
+    // `POST /v1/enroll` (anónimo por diseño) re-enrola un agentId existente y
+    // emite un agentSecret nuevo: el gateway legítimo se queda en 401. El
+    // endpoint ya exigía admin scope, pero eso no distingue roles, así que un
+    // lector del panel podía suplantar a cualquier agente enrolado.
+    const created = await call(
+      "POST",
+      "/v1/admin/teams",
+      { authorization: "Bearer the-admin-token" },
+      { name: "equipo" },
+    );
+    expect(created.status).toBe(201);
+    const { enrollToken } = JSON.parse(created.body) as { enrollToken: string };
+
+    const viewer = await call("GET", "/v1/admin/teams", { "x-viewer-token": "v" });
+    expect(viewer.status).toBe(200);
+    const body = JSON.parse(viewer.body) as { teams: Record<string, unknown>[] };
+    // El panel sigue necesitando el resto de campos para listar equipos.
+    expect(body.teams).toHaveLength(1);
+    expect(body.teams[0].name).toBe("equipo");
+    expect(body.teams[0].agentCount).toBe(0);
+    expect(body.teams[0]).not.toHaveProperty("enrollToken");
+    // Ni siquiera como valor suelto en el JSON serializado.
+    expect(viewer.body).not.toContain(enrollToken);
+    expect(viewer.body).not.toContain("enrollToken");
+  });
+
+  it("el owner sigue viendo el enrollToken (sin regresión)", async () => {
+    const created = await call(
+      "POST",
+      "/v1/admin/teams",
+      { authorization: "Bearer the-admin-token" },
+      { name: "equipo" },
+    );
+    const { enrollToken } = JSON.parse(created.body) as { enrollToken: string };
+
+    const owner = await call("GET", "/v1/admin/teams", {
+      authorization: "Bearer the-admin-token",
+    });
+    const body = JSON.parse(owner.body) as { teams: { enrollToken?: string }[] };
+    expect(body.teams[0].enrollToken).toBe(enrollToken);
   });
 
   it("el token de admin conserva acceso total (sin regresión)", async () => {
