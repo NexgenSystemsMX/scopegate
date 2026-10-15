@@ -95,6 +95,9 @@ export const AUDIT_KINDS = [
   "secret_added",
   "secret_rotated",
   "secret_deleted",
+  // Drop-and-respawn forzado de upstreams: es lo que hace observable en el
+  // runtime una credencial recién escrita en el vault (2026-10-15).
+  "upstreams_respawned",
   // EPIC-06 (QM keychain): consumo atómico de un grant `once` y promoción
   // admin-gated de un grant a audiencia "org". Append-only, como el resto.
   "grant_claimed",

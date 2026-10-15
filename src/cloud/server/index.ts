@@ -47,17 +47,27 @@ import { makeSlackAlerter, type AlertPoster } from "./alerts.js";
 import { loadOrCreateCloudIdentity, type CloudIdentity } from "./keys.js";
 import { HttpError } from "./model.js";
 import { handleApiRequest } from "./router.js";
-import { makeDevSsoAdapter } from "./sso.js";
+import { makeDevSsoAdapter, makeNullSsoAdapter, ALLOW_HEADER_SSO_ENV } from "./sso.js";
 import { FileStore, type Store } from "./store.js";
 
 export const DEFAULT_ADMIN_TOKEN = "dev-admin-token";
+/**
+ * Escape hatch for throwaway local demos. Without it, `startCloudServer`
+ * REFUSES to boot on the built-in default token — see the fail-closed block
+ * below. Never set this in a real deployment.
+ */
+export const ALLOW_DEFAULT_ADMIN_ENV = "SCOPEGATE_CLOUD_ALLOW_DEFAULT_ADMIN_TOKEN";
 
 export interface CloudServerOptions {
   /** Listen port. 0 = ephemeral (tests); the actual port is on the result. */
   port: number;
   /** Cloud data home (created on first boot). */
   home: string;
-  /** Admin bearer. Default: env ADMIN_TOKEN ?? SCOPEGATE_CLOUD_ADMIN_TOKEN ?? DEFAULT_ADMIN_TOKEN. */
+  /**
+   * Admin bearer. Default: env ADMIN_TOKEN ?? SCOPEGATE_CLOUD_ADMIN_TOKEN.
+   * If neither is set, the server REFUSES to boot (the built-in default is a
+   * known constant); see ALLOW_DEFAULT_ADMIN_ENV for the local-demo opt-out.
+   */
   adminToken?: string;
   /** Injectable for tests — defaults to the real Slack webhook POST. */
   alertPoster?: AlertPoster;
@@ -312,10 +322,23 @@ export async function startCloudServer(
   const announce = opts.announce ?? true;
 
   if (adminToken === DEFAULT_ADMIN_TOKEN) {
+    // Fail-closed, not warn-and-continue. This plane issues enroll tokens and
+    // signs the policies every gateway pulls: booting it with a password that
+    // sits in the source means whoever reaches the port owns every enrolled
+    // gateway — and the plane is meant to be reachable from a public domain.
+    // Previously this only printed a warning and started listening anyway.
+    if (process.env[ALLOW_DEFAULT_ADMIN_ENV] !== "1") {
+      throw new Error(
+        `refusing to start: the admin token is the built-in default ` +
+          `('${DEFAULT_ADMIN_TOKEN}') and env ADMIN_TOKEN / SCOPEGATE_CLOUD_ADMIN_TOKEN ` +
+          `are unset. Set one to a strong random value (32+ bytes). ` +
+          `For a throwaway local demo only, set ${ALLOW_DEFAULT_ADMIN_ENV}=1.`,
+      );
+    }
     console.error(
-      "[scopegate-cloud] WARN: using the default admin token 'dev-admin-token' " +
-        "(env ADMIN_TOKEN unset). Dev-grade only — set ADMIN_TOKEN before " +
-        "exposing this control plane beyond localhost.",
+      `[scopegate-cloud] WARN: using the default admin token '${DEFAULT_ADMIN_TOKEN}' ` +
+        `— allowed only because ${ALLOW_DEFAULT_ADMIN_ENV}=1. Never do this in a ` +
+        `deployment reachable from anywhere but localhost.`,
     );
   }
 
@@ -323,7 +346,10 @@ export async function startCloudServer(
     store,
     cloudIdentity,
     adminToken,
-    sso: makeDevSsoAdapter(adminToken),
+    sso:
+      process.env[ALLOW_HEADER_SSO_ENV] === "1"
+        ? makeDevSsoAdapter(adminToken)
+        : makeNullSsoAdapter(),
     alerter: makeSlackAlerter(opts.alertPoster),
   };
 

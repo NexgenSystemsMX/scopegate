@@ -40,6 +40,7 @@ import type {
   StoredAuditEvent,
   Team,
 } from "./model.js";
+import { orderDecisions } from "./model.js";
 import type { Store } from "./store.js";
 
 /** Minimal subset of pg.Pool — the real Pool satisfies it; tests inject a mock. */
@@ -559,10 +560,17 @@ export class PostgresStore implements Store {
     );
   }
 
-  approvalDecisions(teamId: string, since?: string): ApprovalDecision[] {
-    return this.decisions.filter(
-      (d) => d.teamId === teamId && (since === undefined || d.ts > since),
-    );
+  approvalDecisions(teamId: string, since?: string, sinceId?: string): ApprovalDecision[] {
+    return this.decisions
+      .filter((d) => {
+        if (d.teamId !== teamId) return false;
+        if (since === undefined) return true;
+        if (d.ts !== since) return d.ts > since;
+        // Mismo milisegundo: sin `sinceId` se conserva el comportamiento previo
+        // (`d.ts > since` ⇒ false); con él, el cursor pasa a ser (ts, id).
+        return sinceId === undefined ? false : d.approvalId > sinceId;
+      })
+      .sort(orderDecisions);
   }
 
   // --------------------------------------------------------- audit export

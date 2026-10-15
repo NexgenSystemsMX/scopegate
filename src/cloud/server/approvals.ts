@@ -256,8 +256,9 @@ export function listDecisions(
   teamId: string,
   since?: string,
   forAgentId?: string,
+  sinceId?: string,
 ): ApprovalDecision[] {
   return store
-    .approvalDecisions(teamId, since)
+    .approvalDecisions(teamId, since, sinceId)
     .filter((d) => (forAgentId === undefined ? true : d.agentId === forAgentId));
 }

@@ -85,6 +85,7 @@ import { startCloudSync } from "../cloud/client/sync.js";
 import { cloudRevocationCheckpoint } from "../cloud/client/revocation-sync.js";
 import { loadRegistryManifest, manifestToUpstream } from "../registry/loader.js";
 import { startHttpGateway, requireHttpToken, type HttpGatewayHandle } from "./http.js";
+import { loadNotifyConfig, notifySecretRefs } from "../notify/config.js";
 
 /** One-shot guard for the `first_tool_call` telemetry event (opt-in only). */
 let firstToolCallTracked = false;
@@ -151,6 +152,32 @@ export interface GatewayOptions {
 }
 
 /**
+ * Fail-closed check for the env-inheritance escape hatch.
+ *
+ * `SCOPEGATE_ENV_PASSTHROUGH=1` makes `buildSpawnEnv` hand the WHOLE process
+ * environment to every stdio child, skipping the `SPAWN_ENV_SECRET_RE` scrub.
+ * In a deployed gateway that environment holds the vault master key backend
+ * setting, `GH_APP_PRIVATE_KEY`, `HULY_BOT_PASSWORD` and
+ * `SCOPEGATE_ADMIN_TOKEN` — so the flag turns a hardened gateway into a
+ * one-bit exfiltration primitive: any tool the agent can invoke sees every
+ * credential the gateway holds.
+ *
+ * It is a legacy escape hatch, measured ABSENT on all 21 deployed
+ * ScopeGate services across both environments (2026-10-15). Keep it that way.
+ * Exported (and parameterised over `env`) so the check is testable without
+ * booting — and without killing the test runner.
+ */
+export function assertEnvPassthroughDisabled(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.SCOPEGATE_ENV_PASSTHROUGH !== "1") return;
+  if (env.SCOPEGATE_ALLOW_ENV_PASSTHROUGH === "1") return;
+  throw new Error(
+    "SCOPEGATE_ENV_PASSTHROUGH=1 would inherit the entire process environment " +
+      "into every spawned upstream, bypassing the secret scrub. Refusing to start. " +
+      "Unset it, or set SCOPEGATE_ALLOW_ENV_PASSTHROUGH=1 to re-enable deliberately.",
+  );
+}
+
+/**
  * Boots the gateway and serves it. Resolves once the transport is up; in
  * http mode it also returns the handle (port + close) for tests — the CLI
  * ignores it.
@@ -161,6 +188,13 @@ export async function runGateway(
   // Fail FAST in http mode — before spawning a single upstream: no bearer,
   // no network port. startHttpGateway re-checks (it is also a public API).
   if (options.transport === "http") requireHttpToken();
+  // Fail-closed on the env escape hatch, same idiom as the policy load below.
+  try {
+    assertEnvPassthroughDisabled();
+  } catch (e) {
+    log("error", `refusing to start (fail-closed): ${errorMessage(e)}`);
+    process.exit(1);
+  }
   const cfg = loadConfig();
   const vault = Vault.open();
   // Fail-closed first load: an INVALID policies.yaml aborts startup (the
@@ -303,8 +337,23 @@ export async function runGateway(
               ...a,
               activeGrants: policy.activeGrants(a.agentId).length,
             })),
-          upstreamsUsingSecret: (ref: string) =>
-            cfg.upstreams.filter((u) => secretRefsOf(u.auth).includes(ref)).map((u) => u.name),
+          upstreamsUsingSecret: (ref: string) => {
+            const ups = cfg.upstreams
+              .filter((u) => secretRefsOf(u.auth).includes(ref))
+              .map((u) => u.name);
+            // Los refs del notificador viven en notify.json, no en `upstreams`:
+            // sin esto el guard de borrado los ve como «no usados por nadie» y
+            // los deja borrar con 200, en silencio (ver notifySecretRefs()).
+            const notify = notifySecretRefs(loadNotifyConfig()).includes(ref) ? ["notify"] : [];
+            return [...ups, ...notify];
+          },
+          /**
+           * Fuerza el drop-and-respawn de los upstreams indicados (todos los
+           * habilitados si se omite la lista) para que una credencial rotada en
+           * el vault llegue de verdad al proceso hijo. Sin esto, escribir el
+           * vault no cambia el runtime: el env del hijo se fija al arrancarlo.
+           */
+          respawnUpstreams: (names) => proxy.respawnUpstreams(names),
           reload: async () => {
             // policy.startWatching() ya recarga el archivo solo; esto fuerza
             // el reintento de conexiones que fallaron por un secreto ausente,

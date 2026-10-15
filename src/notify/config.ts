@@ -116,3 +116,25 @@ export function loadNotifyConfig(): NotifyConfig {
   }
   return { enabled: true, slackWebhookRef: ref, notifiers };
 }
+
+/**
+ * Vault refs the notifier holds, so the console's delete guard counts them as
+ * "in use".
+ *
+ * Why this exists: `upstreamsUsingSecret` only walks `cfg.upstreams[].auth`, so
+ * a ref that lives in `notify.json` reports `usedBy: []` — and a ref with an
+ * empty `usedBy` is deletable with a plain 200. Measured 2026-10-15: the
+ * `sg_webhook_hmac` of all nine deployed gateways reported `usedBy: []`, so any
+ * of them could have been deleted from the console. The effect is silent: the
+ * gateway drops the signature header and the receiver answers 401 with no
+ * retry, so the approval event is lost for good.
+ *
+ * Pure over the config so it can be tested without touching the filesystem.
+ */
+export function notifySecretRefs(cfg: NotifyConfig): string[] {
+  if (!cfg.enabled) return [];
+  const refs = new Set<string>();
+  if (cfg.slackWebhookRef) refs.add(cfg.slackWebhookRef);
+  for (const c of cfg.notifiers ?? []) if (c.ref) refs.add(c.ref);
+  return [...refs];
+}
