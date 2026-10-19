@@ -24,8 +24,8 @@ premortem del ciclo de implementación.
 
 | Componente | Presupuesto | Estado |
 |---|---|---|
-| Hop adicional al proxy (idempotente, sin re-ensamblado de cuerpo) | **+15 ms p50 / +40 ms p95** sobre el tiempo de la llamada al upstream | `PENDIENTE: medición` — no hay proxy que medir; los valores son el techo aceptable que fija este diseño |
-| Validación de capability + redención de lease | **≤ 5 ms p95** (lookup por clave, sin escaneo) | `PENDIENTE: medición` |
+| Hop adicional al proxy (idempotente, sin re-ensamblado de cuerpo) | **+15 ms p50 / +40 ms p95** sobre el tiempo de la llamada al upstream | `PENDIENTE: banco de pruebas del proxy (ciclo de implementación)` — no hay proxy que medir; los valores son el techo aceptable que fija este diseño |
+| Validación de capability + redención de lease | **≤ 5 ms p95** (lookup por clave, sin escaneo) | `PENDIENTE: banco de pruebas del proxy (ciclo de implementación)` |
 | Inyección y reenvío | sin buffer: el proxy **no** reensambla cuerpos ni tramas SSE | requisito, no número |
 
 Nota que viene del repo: el borde ya sabe lo que cuesta el buffering. La regla de este diseño es la misma
@@ -52,6 +52,9 @@ El premortem del paso 3 dejó escrito que el lease no da disponibilidad. Estos s
    decisión nueva.
 5. **N+1 como mínimo operativo**, no N+1 "si hay presupuesto": el `PENDIENTE: producto` del §1.3 aplica al
    SLO, no a la redundancia.
+6. **Fallo de un solo tenant = deny para ese tenant, nada para los demás.** Si su KEK no está disponible
+   (KMS niega) o su partición del store falla, se purgan sus leases y sus redenciones pasan a deny; los
+   otros tenants siguen operando. El aislamiento del §4.2 no es solo de datos: también de fallo.
 
 ---
 
@@ -124,8 +127,10 @@ Opciones admitidas, en orden de preferencia:
 2. **Derivación fuera del proceso**: la KEK se compone al arrancar desde material que un operador provee
    fuera de banda y que el plano no persistes.
 
-**Decisión: `PENDIENTE: usuario`.** Las dos son defendibles y la elección cambia el modelo de amenaza, el
-coste y el procedimiento de recuperación. Este documento no la toma.
+**Decisión: KMS externo (opción 1), aprobada por el usuario el 2026-10-19.** Queda como prerrequisito del
+ciclo de implementación abrir el issue que añada `@aws-sdk/client-kms`, porque hoy `package.json` solo
+tiene `@aws-sdk/client-sts`: sin issue previo, la regla del repo prohíbe la dependencia nueva. La opción 2
+queda como plan B si el issue no se aprueba.
 
 **Riesgo residual declarado**: con KMS accesible por el proceso comprometido, un atacante con control del
 cloud descifra los tenants que ese KMS permita. La KEK por tenant **contiene** el radio, no lo elimina.
@@ -168,6 +173,10 @@ cloud**; el gateway deja de ser el firmante de ese hecho. Decisión de este dise
 - El **gateway** conserva la cadena de lo que sigue ocurriendo en local (decisiones de política, tools).
 - Las dos cadenas se exportan y se verifican por separado; **no se concatenan**, porque tienen productores
   distintos y concatenarlas permitiría que un productor lavara eventos del otro.
+- **Lectura de R7** («la misma cadena de hashes y firma que hoy»): se interpreta como *mismo formato y
+  mismo tipo de firma* (hash-chain + Ed25519, verificable con el mismo código), **no** como una única
+  cadena compartida. Si producto quería una sola cadena global, este diseño la contradice a propósito y
+  la contradicción se resuelve antes de implementar, no después.
 
 ---
 
