@@ -107,6 +107,15 @@ require the live Railway services.
 
 Full details: [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## SWARM methodology (11 steps)
+
+Non-trivial work — a feature, a fix, a remediation wave — runs under [`docs/METODOLOGIA-SWARM.md`](docs/METODOLOGIA-SWARM.md): 3 phases / 11 steps, each owing a named artifact on disk (`docs/state/AS-IS-YYYYMMDD.md` → `docs/specs/FEAT-*` → `docs/plans/BLUEPRINT-v1.md` → `docs/plans/BACKLOG-EPICS-v2.md` → … → `docs/qa/QA-E2E-COMPLETO-YYYYMMDD.md`). Templates live in `docs/plans/SWARM-TEMPLATES/`. Those four directories are new and do not overlap the product docs in `docs/agents/` or the runbook.
+
+- Steps 1-3 are plan-only: no product code, no commits to `master`. Step 4 needs explicit user authorization.
+- The no-secrets rule applies to the artifacts too: no capability value, access token, vault content or audit dump with sensitive material ever lands in `docs/qa/` or `docs/state/`. Config keeps `secretRef` names only.
+- A blueprint that loosens any invariant listed above (human review of agent-proposed policy, fail-closed hard limits, audit of every privileged action) is rejected at step 2, not discovered at step 5.
+- This repo has no `ops/` ring, so SWARM is the only orchestration contract here. `LEARNINGS.md`, `CONTRIBUTING.md` and the invariants in this file outrank any blueprint.
+
 <!-- ECOSISTEMA-SYNC:2026-08-03 — English rendering of the common block synced across all 5 ecosystem repos (nexum, kimi-tag, scopegate, nexum-cli, org). The canonical Spanish version carries the same marker; edit both together. Source: Railway inventory + analysis of the 5 repos (2026-08-03). -->
 
 ## Nexgen Ecosystem
